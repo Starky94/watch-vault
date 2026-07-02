@@ -1,9 +1,14 @@
 import { useState } from 'react'
 import './App.css'
 
+const primaryViews = {
+  home: 'Home',
+  movies: 'Movies',
+}
+
 const navItems = [
-  { label: 'Home', icon: HomeIcon, active: true },
-  { label: 'Movies', icon: ClapperIcon },
+  { label: 'Home', icon: HomeIcon, view: primaryViews.home },
+  { label: 'Movies', icon: ClapperIcon, view: primaryViews.movies },
   { label: 'TV Shows', icon: TvIcon },
   { label: 'Watchlist', icon: BookmarkIcon },
   { label: 'Favorites', icon: HeartIcon },
@@ -19,7 +24,9 @@ const genres = [
   { label: 'Thriller', color: '#ff6cb6' },
 ]
 
-const tabs = ['All', 'Movies', 'TV Shows', 'Watching', 'Completed', 'Plan to Watch', 'Favorites']
+const homeTabs = ['All', 'Movies', 'TV Shows', 'Watching', 'Completed', 'Plan to Watch', 'Favorites']
+
+const movieTabs = ['All Movies', 'Popular', 'Now Playing', 'Upcoming', 'Top Rated', 'Favorites']
 
 const stats = [
   { label: 'Watched', value: '24', trend: '+ 20%', tone: 'violet', icon: TicketIcon },
@@ -57,24 +64,76 @@ const newEpisodes = [
   { title: 'Astra Division', meta: 'Tomorrow', copy: 'The crew finally reaches the signal source beyond Titan.' },
 ]
 
+const featuredMovie = {
+  title: 'Dune: Part Two',
+  year: '2024',
+  genres: ['Adventure', 'Sci-Fi'],
+  rating: 'PG-13',
+  runtime: '2h 46m',
+  score: '8.7/10',
+  audience: '92%',
+  summary: 'Paul Atreides unites with the Fremen and seeks revenge against the conspirators who destroyed his family.',
+  theme: 'theme-dune-hero',
+}
+
+const movieStats = [
+  { label: 'Movies Watched', value: '28', trend: '+27%', tone: 'violet', icon: TicketIcon },
+  { label: 'Average Rating', value: '4.2', trend: '+0.3', tone: 'gold', icon: StarBadgeIcon },
+  { label: 'In Watchlist', value: '56', trend: '+12%', tone: 'orange', icon: BookmarkStackIcon },
+  { label: 'Hours Watched', value: '48h 32m', trend: '+16%', tone: 'blue', icon: ClockIcon },
+]
+
+const popularMovies = [
+  { title: 'Dune: Part Two', year: '2024', rating: '8.7', meta: '2h 46m', theme: 'theme-dune' },
+  { title: 'Godzilla x Kong', year: '2024', rating: '7.1', meta: '1h 55m', theme: 'theme-godzilla' },
+  { title: 'Civil War', year: '2024', rating: '7.0', meta: '1h 49m', theme: 'theme-civil-war' },
+  { title: 'Kung Fu Panda 4', year: '2024', rating: '6.9', meta: '1h 34m', theme: 'theme-kung-fu' },
+  { title: 'Kingdom of the Planet of the Apes', year: '2024', rating: '7.6', meta: '2h 25m', theme: 'theme-apes' },
+  { title: 'The Fall Guy', year: '2024', rating: '7.2', meta: '2h 06m', theme: 'theme-fall-guy' },
+]
+
+const recentMovies = [
+  { title: 'IF', year: '2024', rating: '6.5', meta: '1h 44m', theme: 'theme-if' },
+  { title: 'Furiosa', year: '2024', rating: '7.7', meta: '2h 28m', theme: 'theme-furiosa' },
+  { title: 'Inside Out 2', year: '2024', rating: '8.2', meta: '1h 36m', theme: 'theme-inside-out' },
+  { title: 'The Garfield Movie', year: '2024', rating: '5.6', meta: '1h 41m', theme: 'theme-garfield' },
+  { title: 'Bad Boys: Ride or Die', year: '2024', rating: '6.6', meta: '1h 55m', theme: 'theme-bad-boys' },
+  { title: 'A Quiet Place: Day One', year: '2024', rating: '6.7', meta: '1h 39m', theme: 'theme-quiet-place' },
+]
+
+const movieWatchlist = [
+  { title: 'Oppenheimer', year: '2023', meta: 'Drama, Biography', rating: '4.6', theme: 'theme-oppenheimer' },
+  { title: 'Interstellar', year: '2014', meta: 'Sci-Fi, Adventure', rating: '4.8', theme: 'theme-interstellar' },
+  { title: 'The Dark Knight', year: '2008', meta: 'Action, Crime', rating: '4.7', theme: 'theme-dark-knight' },
+  { title: 'Inception', year: '2010', meta: 'Sci-Fi, Thriller', rating: '4.6', theme: 'theme-inception' },
+]
+
+const mobileNavItems = [
+  { label: 'Home', icon: HomeIcon, view: primaryViews.home },
+  { label: 'Search', icon: SearchIcon, view: primaryViews.movies },
+  { label: 'Watchlist', icon: BookmarkIcon },
+  { label: 'Stats', icon: BarsIcon },
+  { label: 'More', icon: MoreIcon },
+]
+
 function App() {
-  const [activeTab, setActiveTab] = useState('All')
+  const [activeView, setActiveView] = useState(primaryViews.home)
+  const [activeTab, setActiveTab] = useState(homeTabs[0])
+  const [activeMovieTab, setActiveMovieTab] = useState(movieTabs[0])
 
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-mark" aria-hidden="true">
-            <PlayLogo />
-          </div>
-          <div>
-            <p className="brand-name">CineTrack</p>
-          </div>
-        </div>
+        <Brand />
 
         <nav className="sidebar-nav" aria-label="Primary">
-          {navItems.map(({ label, icon: Icon, active }) => (
-            <button key={label} type="button" className={`nav-item${active ? ' active' : ''}`}>
+          {navItems.map(({ label, icon: Icon, view }) => (
+            <button
+              key={label}
+              type="button"
+              className={`nav-item${view === activeView ? ' active' : ''}`}
+              onClick={view ? () => setActiveView(view) : undefined}
+            >
               <Icon />
               <span>{label}</span>
             </button>
@@ -112,192 +171,377 @@ function App() {
       </aside>
 
       <main className="dashboard">
-        <header className="topbar desktop-only">
-          <label className="searchbar" aria-label="Search">
-            <SearchIcon />
-            <input type="text" placeholder="Search movies, shows, people..." />
-          </label>
+        <DesktopTopbar activeView={activeView} />
+        <MobileHeader />
 
-          <div className="topbar-actions">
-            <button type="button" className="icon-button">
-              <BellIcon />
-              <span className="notification-dot" />
-            </button>
+        {activeView === primaryViews.home ? (
+          <HomeScreen activeTab={activeTab} setActiveTab={setActiveTab} />
+        ) : (
+          <MoviesScreen activeTab={activeMovieTab} setActiveTab={setActiveMovieTab} />
+        )}
 
-            <button type="button" className="profile-button">
-              <div className="avatar">A</div>
-              <span>Alex Morgan</span>
-              <ChevronDown />
-            </button>
-          </div>
-        </header>
-
-        <header className="mobile-header mobile-only">
-          <div className="brand">
-            <div className="brand-mark" aria-hidden="true">
-              <PlayLogo />
-            </div>
-            <p className="brand-name">CineTrack</p>
-          </div>
-
-          <div className="mobile-actions">
-            <button type="button" className="icon-button">
-              <SearchIcon />
-            </button>
-            <button type="button" className="icon-button">
-              <BellIcon />
-            </button>
-            <button type="button" className="avatar-button">
-              <div className="avatar small">A</div>
-            </button>
-          </div>
-        </header>
-
-        <section className="tab-row" aria-label="Content filters">
-          {tabs.map((tab) => (
-            <button
-              key={tab}
-              type="button"
-              className={`filter-pill${tab === activeTab ? ' active' : ''}`}
-              onClick={() => setActiveTab(tab)}
-            >
-              {tab}
-            </button>
-          ))}
-        </section>
-
-        <section className="hero-panel">
-          <div className="hero-copy">
-            <p className="eyebrow">Good evening, Alex! 🍿</p>
-            <h1>Track every story. Every screen.</h1>
-            <p className="hero-subcopy">Your next favorite is already on your list.</p>
-
-            <div className="hero-actions">
-              <button type="button" className="primary-button">
-                <PlusIcon />
-                <span>Add to Watchlist</span>
-              </button>
-              <button type="button" className="secondary-button">
-                <SparklesIcon />
-                <span>Discover</span>
-              </button>
-            </div>
-          </div>
-
-          <div className="hero-art" aria-hidden="true">
-            <div className="skyline-glow" />
-            <div className="skyline skyline-left" />
-            <div className="skyline skyline-right" />
-            <div className="couch" />
-            <div className="person person-left" />
-            <div className="person person-right" />
-          </div>
-
-          <div className="stats-panel">
-            <div className="stats-header">
-              <span>Your Stats</span>
-              <button type="button" className="month-button">
-                This Month
-                <ChevronDown />
-              </button>
-            </div>
-
-            <div className="stats-list">
-              {stats.map(({ label, value, trend, tone, icon: Icon }) => (
-                <article key={label} className="stat-card">
-                  <div>
-                    <p className="stat-label">{label}</p>
-                    <div className="stat-row">
-                      <strong>{value}</strong>
-                      <span className="trend">{trend}</span>
-                    </div>
-                  </div>
-                  <div className={`stat-icon ${tone}`}>
-                    <Icon />
-                  </div>
-                </article>
-              ))}
-            </div>
-          </div>
-        </section>
-
-        <section className="mobile-stats mobile-only">
-          {stats.map(({ label, value, tone, icon: Icon }) => (
-            <article key={label} className="mini-stat">
-              <div className={`stat-icon ${tone}`}>
-                <Icon />
-              </div>
-              <strong>{value}</strong>
-              <span>{label.replace('Time Watched', 'Time').replace('Shows Completed', 'Completed').replace('Movies Watched', 'Movies')}</span>
-            </article>
-          ))}
-        </section>
-
-        <ContentSection title="Continue Watching" action="See all">
-          <div className="feature-grid">
-            {continueWatching.map((item) => (
-              <ProgressCard key={item.title} item={item} />
-            ))}
-          </div>
-        </ContentSection>
-
-        <section className="split-row">
-          <ContentSection title="Watchlist" action="See all" compact>
-            <div className="compact-grid">
-              {watchlist.map((item) => (
-                <RatingCard key={item.title} item={item} />
-              ))}
-            </div>
-          </ContentSection>
-
-          <ContentSection title="Trending Now" action="See all" compact>
-            <div className="compact-grid compact-grid--trending">
-              {trending.map((item) => (
-                <RatingCard key={item.title} item={item} />
-              ))}
-            </div>
-          </ContentSection>
-        </section>
-
-        <ContentSection title="New Episodes" action="See all">
-          <div className="episode-grid">
-            {newEpisodes.map((episode) => (
-              <article key={episode.title} className="episode-card">
-                <div className={`episode-poster ${episode.title === 'Fragments' ? 'theme-fragments' : 'theme-astra'}`} />
-                <div className="episode-copy">
-                  <span className="episode-meta">{episode.meta}</span>
-                  <h3>{episode.title}</h3>
-                  <p>{episode.copy}</p>
-                </div>
-              </article>
-            ))}
-          </div>
-        </ContentSection>
-
-        <nav className="mobile-nav mobile-only" aria-label="Bottom navigation">
-          <button type="button" className="mobile-nav-item active">
-            <HomeIcon />
-            <span>Home</span>
-          </button>
-          <button type="button" className="mobile-nav-item">
-            <SearchIcon />
-            <span>Search</span>
-          </button>
-          <button type="button" className="mobile-nav-item">
-            <BookmarkIcon />
-            <span>Watchlist</span>
-          </button>
-          <button type="button" className="mobile-nav-item">
-            <BarsIcon />
-            <span>Stats</span>
-          </button>
-          <button type="button" className="mobile-nav-item">
-            <MoreIcon />
-            <span>More</span>
-          </button>
-        </nav>
+        <MobileNav activeView={activeView} setActiveView={setActiveView} />
       </main>
     </div>
+  )
+}
+
+function Brand() {
+  return (
+    <div className="brand">
+      <div className="brand-mark" aria-hidden="true">
+        <PlayLogo />
+      </div>
+      <div>
+        <p className="brand-name">CineTrack</p>
+      </div>
+    </div>
+  )
+}
+
+function DesktopTopbar({ activeView }) {
+  return (
+    <header className="topbar desktop-only">
+      <label className="searchbar" aria-label="Search">
+        <SearchIcon />
+        <input
+          type="text"
+          placeholder={
+            activeView === primaryViews.movies
+              ? 'Search movies, actors, directors...'
+              : 'Search movies, shows, people...'
+          }
+        />
+      </label>
+
+      <div className="topbar-actions">
+        <button type="button" className="icon-button">
+          <BellIcon />
+          <span className="notification-dot" />
+        </button>
+
+        <button type="button" className="profile-button">
+          <div className="avatar">A</div>
+          <span>Alex Morgan</span>
+          <ChevronDown />
+        </button>
+      </div>
+    </header>
+  )
+}
+
+function MobileHeader() {
+  return (
+    <header className="mobile-header mobile-only">
+      <Brand />
+
+      <div className="mobile-actions">
+        <button type="button" className="icon-button">
+          <SearchIcon />
+        </button>
+        <button type="button" className="icon-button">
+          <BellIcon />
+        </button>
+        <button type="button" className="avatar-button">
+          <div className="avatar small">A</div>
+        </button>
+      </div>
+    </header>
+  )
+}
+
+function HomeScreen({ activeTab, setActiveTab }) {
+  return (
+    <>
+      <section className="tab-row" aria-label="Content filters">
+        {homeTabs.map((tab) => (
+          <button
+            key={tab}
+            type="button"
+            className={`filter-pill${tab === activeTab ? ' active' : ''}`}
+            onClick={() => setActiveTab(tab)}
+          >
+            {tab}
+          </button>
+        ))}
+      </section>
+
+      <section className="hero-panel">
+        <div className="hero-copy">
+          <p className="eyebrow">Good evening, Alex! 🍿</p>
+          <h1>Track every story. Every screen.</h1>
+          <p className="hero-subcopy">Your next favorite is already on your list.</p>
+
+          <div className="hero-actions">
+            <button type="button" className="primary-button">
+              <PlusIcon />
+              <span>Add to Watchlist</span>
+            </button>
+            <button type="button" className="secondary-button">
+              <SparklesIcon />
+              <span>Discover</span>
+            </button>
+          </div>
+        </div>
+
+        <div className="hero-art" aria-hidden="true">
+          <div className="skyline-glow" />
+          <div className="skyline skyline-left" />
+          <div className="skyline skyline-right" />
+          <div className="couch" />
+          <div className="person person-left" />
+          <div className="person person-right" />
+        </div>
+
+        <StatsPanel title="Your Stats" items={stats} />
+      </section>
+
+      <section className="mobile-stats mobile-only">
+        {stats.map(({ label, value, tone, icon: Icon }) => (
+          <article key={label} className="mini-stat">
+            <div className={`stat-icon ${tone}`}>
+              <Icon />
+            </div>
+            <strong>{value}</strong>
+            <span>{label.replace('Time Watched', 'Time').replace('Shows Completed', 'Completed').replace('Movies Watched', 'Movies')}</span>
+          </article>
+        ))}
+      </section>
+
+      <ContentSection title="Continue Watching" action="See all">
+        <div className="feature-grid">
+          {continueWatching.map((item) => (
+            <ProgressCard key={item.title} item={item} />
+          ))}
+        </div>
+      </ContentSection>
+
+      <section className="split-row">
+        <ContentSection title="Watchlist" action="See all" compact>
+          <div className="compact-grid">
+            {watchlist.map((item) => (
+              <RatingCard key={item.title} item={item} />
+            ))}
+          </div>
+        </ContentSection>
+
+        <ContentSection title="Trending Now" action="See all" compact>
+          <div className="compact-grid compact-grid--trending">
+            {trending.map((item) => (
+              <RatingCard key={item.title} item={item} />
+            ))}
+          </div>
+        </ContentSection>
+      </section>
+
+      <ContentSection title="New Episodes" action="See all">
+        <div className="episode-grid">
+          {newEpisodes.map((episode) => (
+            <article key={episode.title} className="episode-card">
+              <div className={`episode-poster ${episode.title === 'Fragments' ? 'theme-fragments' : 'theme-astra'}`} />
+              <div className="episode-copy">
+                <span className="episode-meta">{episode.meta}</span>
+                <h3>{episode.title}</h3>
+                <p>{episode.copy}</p>
+              </div>
+            </article>
+          ))}
+        </div>
+      </ContentSection>
+    </>
+  )
+}
+
+function MoviesScreen({ activeTab, setActiveTab }) {
+  return (
+    <section className="movies-page">
+      <div className="movies-heading">
+        <h1>Movies</h1>
+        <p>Discover, track, and organize your favorite films.</p>
+      </div>
+
+      <section className="tab-row movies-tab-row" aria-label="Movie filters">
+        {movieTabs.map((tab) => (
+          <button
+            key={tab}
+            type="button"
+            className={`filter-pill${tab === activeTab ? ' active' : ''}`}
+            onClick={() => setActiveTab(tab)}
+          >
+            {tab}
+          </button>
+        ))}
+      </section>
+
+      <div className="movies-layout">
+        <div className="movies-main">
+          <article className="featured-movie-card">
+            <div className="featured-movie-copy">
+              <span className="feature-label">Featured</span>
+              <h2>{featuredMovie.title}</h2>
+              <div className="featured-movie-meta">
+                <span>{featuredMovie.year}</span>
+                <span>{featuredMovie.genres.join(', ')}</span>
+                <span>{featuredMovie.rating}</span>
+                <span>{featuredMovie.runtime}</span>
+              </div>
+              <div className="featured-movie-scores">
+                <span className="movie-score">
+                  <StarIcon />
+                  {featuredMovie.score}
+                </span>
+                <span className="movie-score tomato-score">
+                  <TomatoIcon />
+                  {featuredMovie.audience}
+                </span>
+              </div>
+              <p>{featuredMovie.summary}</p>
+
+              <div className="hero-actions movie-actions">
+                <button type="button" className="primary-button">
+                  <PlusIcon />
+                  <span>Add to Watchlist</span>
+                </button>
+                <button type="button" className="secondary-button">
+                  <CheckIcon />
+                  <span>Mark as Watched</span>
+                </button>
+              </div>
+            </div>
+
+            <div className={`featured-movie-art ${featuredMovie.theme}`} aria-hidden="true">
+              <button type="button" className="feature-arrow" aria-label="Next featured movie">
+                <ChevronRight />
+              </button>
+              <div className="feature-dots">
+                <span className="active" />
+                <span />
+                <span />
+                <span />
+                <span />
+              </div>
+            </div>
+          </article>
+
+          <ContentSection title="Popular Right Now" action="View all">
+            <div className="movie-card-grid">
+              {popularMovies.map((movie) => (
+                <MovieCard key={movie.title} movie={movie} />
+              ))}
+            </div>
+          </ContentSection>
+
+          <ContentSection title="Recently Released" action="View all">
+            <div className="movie-card-grid">
+              {recentMovies.map((movie) => (
+                <MovieCard key={movie.title} movie={movie} />
+              ))}
+            </div>
+          </ContentSection>
+        </div>
+
+        <aside className="movies-rail">
+          <StatsPanel title="Your Movie Stats" items={movieStats} monthLabel="This Month" />
+          <MovieWatchlistPanel items={movieWatchlist} />
+        </aside>
+      </div>
+
+      <section className="movie-mobile-stats mobile-only">
+        {movieStats.map(({ label, value, tone, icon: Icon }) => (
+          <article key={label} className="mini-stat">
+            <div className={`stat-icon ${tone}`}>
+              <Icon />
+            </div>
+            <strong>{value}</strong>
+            <span>{label.replace('Movies Watched', 'Watched').replace('Average Rating', 'Rating').replace('In Watchlist', 'Watchlist').replace('Hours Watched', 'Hours')}</span>
+          </article>
+        ))}
+      </section>
+    </section>
+  )
+}
+
+function MobileNav({ activeView, setActiveView }) {
+  return (
+    <nav className="mobile-nav mobile-only" aria-label="Bottom navigation">
+      {mobileNavItems.map(({ label, icon: Icon, view }) => (
+        <button
+          key={label}
+          type="button"
+          className={`mobile-nav-item${view === activeView ? ' active' : ''}`}
+          onClick={view ? () => setActiveView(view) : undefined}
+        >
+          <Icon />
+          <span>{label}</span>
+        </button>
+      ))}
+    </nav>
+  )
+}
+
+function StatsPanel({ title, items, monthLabel = 'This Month' }) {
+  return (
+    <div className="stats-panel">
+      <div className="stats-header">
+        <span>{title}</span>
+        <button type="button" className="month-button">
+          {monthLabel}
+          <ChevronDown />
+        </button>
+      </div>
+
+      <div className="stats-list">
+        {items.map(({ label, value, trend, tone, icon: Icon }) => (
+          <article key={label} className="stat-card">
+            <div>
+              <p className="stat-label">{label}</p>
+              <div className="stat-row">
+                <strong>{value}</strong>
+                <span className="trend">{trend}</span>
+              </div>
+            </div>
+            <div className={`stat-icon ${tone}`}>
+              <Icon />
+            </div>
+          </article>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function MovieWatchlistPanel({ items }) {
+  return (
+    <section className="movie-watchlist-panel">
+      <div className="section-header">
+        <h2>Your Watchlist</h2>
+        <button type="button" className="section-link">
+          View all
+        </button>
+      </div>
+
+      <div className="movie-watchlist-list">
+        {items.map((item) => (
+          <article key={item.title} className="movie-watchlist-item">
+            <div className={`movie-watchlist-poster ${item.theme}`} />
+            <div className="movie-watchlist-copy">
+              <h3>{item.title}</h3>
+              <p>{item.year}</p>
+              <span>{item.meta}</span>
+            </div>
+            <div className="movie-watchlist-meta">
+              <button type="button" className="poster-menu" aria-label={`More options for ${item.title}`}>
+                <MoreIcon />
+              </button>
+              <span className="star-rating">
+                <StarIcon />
+                {item.rating}
+              </span>
+            </div>
+          </article>
+        ))}
+      </div>
+    </section>
   )
 }
 
@@ -349,6 +593,25 @@ function RatingCard({ item }) {
             {item.rating}
           </span>
           <span>{item.subtitle ?? ''}</span>
+        </div>
+      </div>
+    </article>
+  )
+}
+
+function MovieCard({ movie }) {
+  return (
+    <article className="movie-card">
+      <div className={`movie-card-poster ${movie.theme}`} />
+      <div className="movie-card-copy">
+        <h3>{movie.title}</h3>
+        <p>{movie.year}</p>
+        <div className="rating-row">
+          <span className="star-rating">
+            <StarIcon />
+            {movie.rating}
+          </span>
+          <span>{movie.meta}</span>
         </div>
       </div>
     </article>
@@ -511,26 +774,30 @@ function CheckIcon() {
   )
 }
 
-function StarIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-      <path d="m12 4 2.1 4.4 4.9.7-3.5 3.4.8 4.8L12 15l-4.3 2.3.8-4.8L5 9.1l4.9-.7L12 4Z" />
-    </svg>
-  )
-}
-
-function ChevronDown() {
+function StarBadgeIcon() {
   return (
     <IconBase>
-      <path d="m8 10 4 4 4-4" />
+      <path d="M12 4.5 13.7 8l3.8.5-2.8 2.6.7 3.8-3.4-1.8-3.4 1.8.7-3.8L6.5 8.5 10.3 8 12 4.5Z" />
+      <path d="M12 15.2V19.5" />
     </IconBase>
   )
 }
 
-function ChevronRight() {
+function BookmarkStackIcon() {
   return (
     <IconBase>
-      <path d="m10 8 4 4-4 4" />
+      <path d="M8 5.5h8a1 1 0 0 1 1 1v10l-5-2.6-5 2.6v-10a1 1 0 0 1 1-1Z" />
+      <path d="M6 8.5H5a1 1 0 0 0-1 1v9l5-2.5" />
+    </IconBase>
+  )
+}
+
+function MoreIcon() {
+  return (
+    <IconBase>
+      <circle cx="6.5" cy="12" r=".9" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="12" r=".9" fill="currentColor" stroke="none" />
+      <circle cx="17.5" cy="12" r=".9" fill="currentColor" stroke="none" />
     </IconBase>
   )
 }
@@ -544,13 +811,38 @@ function ArrowRight() {
   )
 }
 
-function MoreIcon() {
+function ChevronRight() {
   return (
     <IconBase>
-      <circle cx="6.5" cy="12" r="1" fill="currentColor" stroke="none" />
-      <circle cx="12" cy="12" r="1" fill="currentColor" stroke="none" />
-      <circle cx="17.5" cy="12" r="1" fill="currentColor" stroke="none" />
+      <path d="m9 6 6 6-6 6" />
     </IconBase>
+  )
+}
+
+function ChevronDown() {
+  return (
+    <IconBase>
+      <path d="m6 9 6 6 6-6" />
+    </IconBase>
+  )
+}
+
+function TomatoIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M12 6.4c4 0 7 2.8 7 6.8s-3 6.8-7 6.8-7-2.8-7-6.8 3-6.8 7-6.8Z" fill="#ff7a45" />
+      <path d="M12 6.4c.7-1.4 2-2.5 3.6-3" stroke="#6ddc91" strokeWidth="1.6" strokeLinecap="round" />
+      <path d="M12 6.4c-.9-1.2-2.2-2-3.9-2.4" stroke="#7dea9b" strokeWidth="1.6" strokeLinecap="round" />
+      <path d="M9 8c1.1-.7 2.1-1 3-1s2 .3 3 1" stroke="#ffd3c0" strokeWidth="1.4" strokeLinecap="round" opacity=".55" />
+    </svg>
+  )
+}
+
+function StarIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="m12 4 2.1 4.4 4.9.7-3.5 3.4.8 4.8L12 15l-4.3 2.3.8-4.8L5 9.1l4.9-.7L12 4Z" />
+    </svg>
   )
 }
 

@@ -1,0 +1,45 @@
+services:
+  db:
+    ports:
+      - "5432:5432"
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    command: ["npm", "run", "server"]
+    ports:
+      - "3001:3001"
+    volumes:
+      - .:/app
+      - api-node-modules:/app/node_modules
+
+  web:
+    profiles: ["prod"]
+
+  web-dev:
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "4173"]
+    depends_on:
+      api:
+        condition: service_started
+    ports:
+      - "4173:4173"
+    restart: unless-stopped
+    volumes:
+      - .:/app
+      - web-node-modules:/app/node_modules
+
+  importer:
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    volumes:
+      - .:/app
+      - api-node-modules:/app/node_modules
+
+volumes:
+  api-node-modules:
+  web-node-modules:
