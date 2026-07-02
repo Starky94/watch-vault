@@ -752,6 +752,20 @@
   grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
+.section-message {
+  margin: 0;
+  padding: 18px 20px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 18px;
+  background: rgba(12, 15, 27, 0.68);
+  color: var(--text-secondary);
+}
+
+.section-message.error {
+  border-color: rgba(255, 107, 122, 0.3);
+  color: #ffb8c0;
+}
+
 .split-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.08fr);
@@ -1078,8 +1092,49 @@
   grid-template-columns: repeat(6, minmax(0, 1fr));
 }
 
+.popular-movies-slider {
+  display: flex;
+  gap: 18px;
+  overflow-x: auto;
+  padding: 4px 2px 10px;
+  scroll-snap-type: x proximity;
+  scrollbar-width: thin;
+}
+
+.popular-movies-slider .movie-card {
+  flex: 0 0 188px;
+  scroll-snap-align: start;
+}
+
+.popular-movies-catalog {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  padding-top: 4px;
+}
+
+.popular-movies-catalog .movie-card {
+  min-width: 0;
+}
+
 .movie-card-poster {
   aspect-ratio: 0.72;
+}
+
+.movie-card-poster-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.movie-card-poster.has-image::before {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent 22%),
+    linear-gradient(180deg, transparent 45%, rgba(5, 8, 16, 0.38) 100%);
+}
+
+.movie-card-poster.has-image::after {
+  height: 36%;
+  background: linear-gradient(180deg, transparent, rgba(8, 11, 19, 0.5));
 }
 
 .movie-card-copy h3 {
@@ -1296,7 +1351,8 @@
 .theme-oppenheimer,
 .theme-interstellar,
 .theme-dark-knight,
-.theme-inception {
+.theme-inception,
+.theme-catalog {
   background-size: cover;
 }
 
@@ -1394,6 +1450,13 @@
   background:
     radial-gradient(circle at 48% 16%, rgba(151, 211, 255, 0.28), transparent 18%),
     linear-gradient(135deg, #23415a 0%, #1d2637 48%, #10131c 100%);
+}
+
+.theme-catalog {
+  background:
+    radial-gradient(circle at 52% 16%, rgba(133, 183, 255, 0.3), transparent 18%),
+    radial-gradient(circle at 28% 72%, rgba(255, 169, 101, 0.18), transparent 22%),
+    linear-gradient(135deg, #31486a 0%, #253149 42%, #101420 100%);
 }
 
 @media (max-width: 1400px) {
@@ -1530,6 +1593,25 @@
     flex: 0 0 148px;
   }
 
+  .popular-movies-slider {
+    padding-bottom: 4px;
+  }
+
+  .popular-movies-slider .movie-card {
+    flex-basis: 148px;
+  }
+
+  .popular-movies-catalog {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    overflow: visible;
+    padding-bottom: 0;
+  }
+
+  .popular-movies-catalog .movie-card {
+    flex-basis: auto;
+  }
+
   .split-row,
   .episode-grid,
   .movies-rail {
@@ -1638,6 +1720,10 @@
 
   .movie-card {
     flex-basis: 132px;
+  }
+
+  .popular-movies-catalog {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .media-copy h3,

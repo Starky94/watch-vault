@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import './App.css'
 
 const primaryViews = {
@@ -27,6 +27,10 @@ const genres = [
 const homeTabs = ['All', 'Movies', 'TV Shows', 'Watching', 'Completed', 'Plan to Watch', 'Favorites']
 
 const movieTabs = ['All Movies', 'Popular', 'Now Playing', 'Upcoming', 'Top Rated', 'Favorites']
+const movieScreenModes = {
+  overview: 'overview',
+  popularList: 'popularList',
+}
 
 const stats = [
   { label: 'Watched', value: '24', trend: '+ 20%', tone: 'violet', icon: TicketIcon },
@@ -83,15 +87,6 @@ const movieStats = [
   { label: 'Hours Watched', value: '48h 32m', trend: '+16%', tone: 'blue', icon: ClockIcon },
 ]
 
-const popularMovies = [
-  { title: 'Dune: Part Two', year: '2024', rating: '8.7', meta: '2h 46m', theme: 'theme-dune' },
-  { title: 'Godzilla x Kong', year: '2024', rating: '7.1', meta: '1h 55m', theme: 'theme-godzilla' },
-  { title: 'Civil War', year: '2024', rating: '7.0', meta: '1h 49m', theme: 'theme-civil-war' },
-  { title: 'Kung Fu Panda 4', year: '2024', rating: '6.9', meta: '1h 34m', theme: 'theme-kung-fu' },
-  { title: 'Kingdom of the Planet of the Apes', year: '2024', rating: '7.6', meta: '2h 25m', theme: 'theme-apes' },
-  { title: 'The Fall Guy', year: '2024', rating: '7.2', meta: '2h 06m', theme: 'theme-fall-guy' },
-]
-
 const recentMovies = [
   { title: 'IF', year: '2024', rating: '6.5', meta: '1h 44m', theme: 'theme-if' },
   { title: 'Furiosa', year: '2024', rating: '7.7', meta: '2h 28m', theme: 'theme-furiosa' },
@@ -120,6 +115,87 @@ function App() {
   const [activeView, setActiveView] = useState(primaryViews.home)
   const [activeTab, setActiveTab] = useState(homeTabs[0])
   const [activeMovieTab, setActiveMovieTab] = useState(movieTabs[0])
+  const [moviesScreenMode, setMoviesScreenMode] = useState(movieScreenModes.overview)
+  const [popularMoviesState, setPopularMoviesState] = useState({
+    status: 'idle',
+    movies: [],
+    error: '',
+  })
+
+  function handleMovieViewSelection(view) {
+    setActiveView(view)
+
+    if (view !== primaryViews.movies) {
+      return
+    }
+
+    if (activeMovieTab === 'Popular') {
+      setMoviesScreenMode(movieScreenModes.popularList)
+      return
+    }
+
+    setMoviesScreenMode(movieScreenModes.overview)
+  }
+
+  function handleMovieTabChange(tab) {
+    setActiveMovieTab(tab)
+    setMoviesScreenMode(tab === 'Popular' ? movieScreenModes.popularList : movieScreenModes.overview)
+  }
+
+  function handleOpenPopularMovies() {
+    setActiveView(primaryViews.movies)
+    setActiveMovieTab('Popular')
+    setMoviesScreenMode(movieScreenModes.popularList)
+  }
+
+  useEffect(() => {
+    if (activeView !== primaryViews.movies || popularMoviesState.status !== 'idle') {
+      return
+    }
+
+    let cancelled = false
+
+    async function loadPopularMovies() {
+      setPopularMoviesState({
+        status: 'loading',
+        movies: [],
+        error: '',
+      })
+
+      try {
+        const response = await fetch('/api/movies')
+
+        if (!response.ok) {
+          throw new Error(`Request failed with status ${response.status}`)
+        }
+
+        const payload = await response.json()
+        const movies = Array.isArray(payload.movies) ? payload.movies.map(mapMovieRowToCard) : []
+
+        if (!cancelled) {
+          setPopularMoviesState({
+            status: 'success',
+            movies,
+            error: '',
+          })
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setPopularMoviesState({
+            status: 'error',
+            movies: [],
+            error: error instanceof Error ? error.message : 'Unable to load movies right now.',
+          })
+        }
+      }
+    }
+
+    loadPopularMovies()
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeView])
 
   return (
     <div className="app-shell">
@@ -132,7 +208,7 @@ function App() {
               key={label}
               type="button"
               className={`nav-item${view === activeView ? ' active' : ''}`}
-              onClick={view ? () => setActiveView(view) : undefined}
+              onClick={view ? () => handleMovieViewSelection(view) : undefined}
             >
               <Icon />
               <span>{label}</span>
@@ -177,10 +253,16 @@ function App() {
         {activeView === primaryViews.home ? (
           <HomeScreen activeTab={activeTab} setActiveTab={setActiveTab} />
         ) : (
-          <MoviesScreen activeTab={activeMovieTab} setActiveTab={setActiveMovieTab} />
+          <MoviesScreen
+            activeTab={activeMovieTab}
+            setActiveTab={handleMovieTabChange}
+            screenMode={moviesScreenMode}
+            popularMoviesState={popularMoviesState}
+            onOpenPopularMovies={handleOpenPopularMovies}
+          />
         )}
 
-        <MobileNav activeView={activeView} setActiveView={setActiveView} />
+        <MobileNav activeView={activeView} setActiveView={handleMovieViewSelection} />
       </main>
     </div>
   )
@@ -352,12 +434,18 @@ function HomeScreen({ activeTab, setActiveTab }) {
   )
 }
 
-function MoviesScreen({ activeTab, setActiveTab }) {
+function MoviesScreen({ activeTab, setActiveTab, screenMode, popularMoviesState, onOpenPopularMovies }) {
+  const isPopularListMode = screenMode === movieScreenModes.popularList && activeTab === 'Popular'
+
   return (
     <section className="movies-page">
       <div className="movies-heading">
         <h1>Movies</h1>
-        <p>Discover, track, and organize your favorite films.</p>
+        <p>
+          {isPopularListMode
+            ? 'Browse the 30 most popular movies imported from your local database.'
+            : 'Discover, track, and organize your favorite films.'}
+        </p>
       </div>
 
       <section className="tab-row movies-tab-row" aria-label="Movie filters">
@@ -373,90 +461,94 @@ function MoviesScreen({ activeTab, setActiveTab }) {
         ))}
       </section>
 
-      <div className="movies-layout">
-        <div className="movies-main">
-          <article className="featured-movie-card">
-            <div className="featured-movie-copy">
-              <span className="feature-label">Featured</span>
-              <h2>{featuredMovie.title}</h2>
-              <div className="featured-movie-meta">
-                <span>{featuredMovie.year}</span>
-                <span>{featuredMovie.genres.join(', ')}</span>
-                <span>{featuredMovie.rating}</span>
-                <span>{featuredMovie.runtime}</span>
-              </div>
-              <div className="featured-movie-scores">
-                <span className="movie-score">
-                  <StarIcon />
-                  {featuredMovie.score}
-                </span>
-                <span className="movie-score tomato-score">
-                  <TomatoIcon />
-                  {featuredMovie.audience}
-                </span>
-              </div>
-              <p>{featuredMovie.summary}</p>
+      {isPopularListMode ? (
+        <ContentSection title="Popular Right Now">
+          <PopularMoviesGrid popularMoviesState={popularMoviesState} layout="catalog" />
+        </ContentSection>
+      ) : (
+        <>
+          <div className="movies-layout">
+            <div className="movies-main">
+              <article className="featured-movie-card">
+                <div className="featured-movie-copy">
+                  <span className="feature-label">Featured</span>
+                  <h2>{featuredMovie.title}</h2>
+                  <div className="featured-movie-meta">
+                    <span>{featuredMovie.year}</span>
+                    <span>{featuredMovie.genres.join(', ')}</span>
+                    <span>{featuredMovie.rating}</span>
+                    <span>{featuredMovie.runtime}</span>
+                  </div>
+                  <div className="featured-movie-scores">
+                    <span className="movie-score">
+                      <StarIcon />
+                      {featuredMovie.score}
+                    </span>
+                    <span className="movie-score tomato-score">
+                      <TomatoIcon />
+                      {featuredMovie.audience}
+                    </span>
+                  </div>
+                  <p>{featuredMovie.summary}</p>
 
-              <div className="hero-actions movie-actions">
-                <button type="button" className="primary-button">
-                  <PlusIcon />
-                  <span>Add to Watchlist</span>
-                </button>
-                <button type="button" className="secondary-button">
-                  <CheckIcon />
-                  <span>Mark as Watched</span>
-                </button>
-              </div>
+                  <div className="hero-actions movie-actions">
+                    <button type="button" className="primary-button">
+                      <PlusIcon />
+                      <span>Add to Watchlist</span>
+                    </button>
+                    <button type="button" className="secondary-button">
+                      <CheckIcon />
+                      <span>Mark as Watched</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className={`featured-movie-art ${featuredMovie.theme}`} aria-hidden="true">
+                  <button type="button" className="feature-arrow" aria-label="Next featured movie">
+                    <ChevronRight />
+                  </button>
+                  <div className="feature-dots">
+                    <span className="active" />
+                    <span />
+                    <span />
+                    <span />
+                    <span />
+                  </div>
+                </div>
+              </article>
+
+              <ContentSection title="Popular Right Now" action="View all" onAction={onOpenPopularMovies}>
+                <PopularMoviesGrid popularMoviesState={popularMoviesState} />
+              </ContentSection>
+
+              <ContentSection title="Recently Released" action="View all">
+                <div className="movie-card-grid">
+                  {recentMovies.map((movie) => (
+                    <MovieCard key={movie.title} movie={movie} />
+                  ))}
+                </div>
+              </ContentSection>
             </div>
 
-            <div className={`featured-movie-art ${featuredMovie.theme}`} aria-hidden="true">
-              <button type="button" className="feature-arrow" aria-label="Next featured movie">
-                <ChevronRight />
-              </button>
-              <div className="feature-dots">
-                <span className="active" />
-                <span />
-                <span />
-                <span />
-                <span />
-              </div>
-            </div>
-          </article>
+            <aside className="movies-rail">
+              <StatsPanel title="Your Movie Stats" items={movieStats} monthLabel="This Month" />
+              <MovieWatchlistPanel items={movieWatchlist} />
+            </aside>
+          </div>
 
-          <ContentSection title="Popular Right Now" action="View all">
-            <div className="movie-card-grid">
-              {popularMovies.map((movie) => (
-                <MovieCard key={movie.title} movie={movie} />
-              ))}
-            </div>
-          </ContentSection>
-
-          <ContentSection title="Recently Released" action="View all">
-            <div className="movie-card-grid">
-              {recentMovies.map((movie) => (
-                <MovieCard key={movie.title} movie={movie} />
-              ))}
-            </div>
-          </ContentSection>
-        </div>
-
-        <aside className="movies-rail">
-          <StatsPanel title="Your Movie Stats" items={movieStats} monthLabel="This Month" />
-          <MovieWatchlistPanel items={movieWatchlist} />
-        </aside>
-      </div>
-
-      <section className="movie-mobile-stats mobile-only">
-        {movieStats.map(({ label, value, tone, icon: Icon }) => (
-          <article key={label} className="mini-stat">
-            <div className={`stat-icon ${tone}`}>
-              <Icon />
-            </div>
-            <strong>{value}</strong>
-            <span>{label.replace('Movies Watched', 'Watched').replace('Average Rating', 'Rating').replace('In Watchlist', 'Watchlist').replace('Hours Watched', 'Hours')}</span>
-          </article>
-        ))}
-      </section>
+          <section className="movie-mobile-stats mobile-only">
+            {movieStats.map(({ label, value, tone, icon: Icon }) => (
+              <article key={label} className="mini-stat">
+                <div className={`stat-icon ${tone}`}>
+                  <Icon />
+                </div>
+                <strong>{value}</strong>
+                <span>{label.replace('Movies Watched', 'Watched').replace('Average Rating', 'Rating').replace('In Watchlist', 'Watchlist').replace('Hours Watched', 'Hours')}</span>
+              </article>
+            ))}
+          </section>
+        </>
+      )}
     </section>
   )
 }
@@ -545,14 +637,16 @@ function MovieWatchlistPanel({ items }) {
   )
 }
 
-function ContentSection({ title, action, compact = false, children }) {
+function ContentSection({ title, action, onAction, compact = false, children }) {
   return (
     <section className={`content-section${compact ? ' compact-section' : ''}`}>
       <div className="section-header">
         <h2>{title}</h2>
-        <button type="button" className="section-link">
-          {action}
-        </button>
+        {action ? (
+          <button type="button" className="section-link" onClick={onAction}>
+            {action}
+          </button>
+        ) : null}
       </div>
       {children}
     </section>
@@ -600,9 +694,22 @@ function RatingCard({ item }) {
 }
 
 function MovieCard({ movie }) {
+  const [posterUnavailable, setPosterUnavailable] = useState(false)
+  const showPosterImage = Boolean(movie.posterUrl) && !posterUnavailable
+
   return (
     <article className="movie-card">
-      <div className={`movie-card-poster ${movie.theme}`} />
+      <div className={`movie-card-poster ${showPosterImage ? 'has-image' : movie.theme}`}>
+        {showPosterImage ? (
+          <img
+            src={movie.posterUrl}
+            alt={`${movie.title} poster`}
+            className="movie-card-poster-image"
+            loading="lazy"
+            onError={() => setPosterUnavailable(true)}
+          />
+        ) : null}
+      </div>
       <div className="movie-card-copy">
         <h3>{movie.title}</h3>
         <p>{movie.year}</p>
@@ -616,6 +723,95 @@ function MovieCard({ movie }) {
       </div>
     </article>
   )
+}
+
+function PopularMoviesGrid({ popularMoviesState, layout = 'slider' }) {
+  if (popularMoviesState.status === 'loading' || popularMoviesState.status === 'idle') {
+    return <SectionMessage message="Loading popular movies from your local database..." />
+  }
+
+  if (popularMoviesState.status === 'error') {
+    return <SectionMessage message={`Could not load popular movies. ${popularMoviesState.error}`} tone="error" />
+  }
+
+  if (popularMoviesState.movies.length === 0) {
+    return <SectionMessage message="No movies are available in the local database yet." />
+  }
+
+  const movies = layout === 'catalog' ? popularMoviesState.movies : popularMoviesState.movies.slice(0, 10)
+
+  return (
+    <div
+      className={`movie-card-grid${layout === 'catalog' ? ' popular-movies-catalog' : ' popular-movies-slider'}`}
+      aria-label={layout === 'catalog' ? 'Popular movies list' : 'Popular movies slider'}
+    >
+      {movies.map((movie) => (
+        <MovieCard key={movie.id} movie={movie} />
+      ))}
+    </div>
+  )
+}
+
+function SectionMessage({ message, tone = 'neutral' }) {
+  return <p className={`section-message${tone === 'error' ? ' error' : ''}`}>{message}</p>
+}
+
+function mapMovieRowToCard(movie) {
+  return {
+    id: movie.tmdb_id,
+    title: movie.title,
+    year: formatMovieYear(movie.release_date),
+    rating: formatMovieRating(movie.vote_average),
+    meta: formatMovieMeta(movie),
+    posterUrl: resolveMoviePosterUrl(movie.poster_path),
+    theme: 'theme-catalog',
+  }
+}
+
+function formatMovieYear(releaseDate) {
+  if (!releaseDate) {
+    return 'Release TBA'
+  }
+
+  return String(releaseDate).slice(0, 4)
+}
+
+function formatMovieRating(voteAverage) {
+  if (typeof voteAverage !== 'number') {
+    return 'N/A'
+  }
+
+  return voteAverage.toFixed(1)
+}
+
+function formatMovieMeta(movie) {
+  const details = []
+
+  if (typeof movie.vote_count === 'number') {
+    details.push(formatVoteCount(movie.vote_count))
+  }
+
+  if (details.length === 0) {
+    return 'From local DB'
+  }
+
+  return details.join(' • ')
+}
+
+function formatVoteCount(voteCount) {
+  if (voteCount >= 1000) {
+    return `${(voteCount / 1000).toFixed(1)}k votes`
+  }
+
+  return `${voteCount} votes`
+}
+
+function resolveMoviePosterUrl(posterPath) {
+  if (!posterPath) {
+    return null
+  }
+
+  return `https://image.tmdb.org/t/p/w500${posterPath}`
 }
 
 function IconBase({ children, ...props }) {

@@ -138,7 +138,8 @@ export async function listMovies(pool) {
       import_rank,
       imported_at
     FROM movies
-    ORDER BY import_rank ASC, tmdb_id ASC
+    ORDER BY popularity DESC NULLS LAST, tmdb_id ASC
+    LIMIT 30
   `)
 
   return result.rows

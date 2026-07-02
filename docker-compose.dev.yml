@@ -7,12 +7,15 @@ services:
     build:
       context: .
       dockerfile: docker/api/Dockerfile
-    command: ["npm", "run", "server"]
+    command: ["npm", "run", "server:watch"]
     ports:
       - "3001:3001"
     volumes:
       - .:/app
       - api-node-modules:/app/node_modules
+    environment:
+      CHOKIDAR_USEPOLLING: "true"
+      CHOKIDAR_INTERVAL: "1000"
 
   web:
     profiles: ["prod"]
@@ -21,16 +24,20 @@ services:
     build:
       context: .
       dockerfile: docker/api/Dockerfile
-    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "4173"]
+    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "8080", "--strictPort"]
     depends_on:
       api:
         condition: service_started
     ports:
-      - "4173:4173"
+      - "8080:8080"
     restart: unless-stopped
     volumes:
       - .:/app
       - web-node-modules:/app/node_modules
+    environment:
+      CHOKIDAR_USEPOLLING: "true"
+      CHOKIDAR_INTERVAL: "1000"
+      VITE_API_PROXY_TARGET: http://api:3001
 
   importer:
     build:
