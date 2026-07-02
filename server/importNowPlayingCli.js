@@ -1,6 +1,6 @@
 import { loadConfig } from './config.js'
 import { createPool } from './database.js'
-import { importPopularMovies } from './movieImportService.js'
+import { importNowPlayingMovies } from './movieImportService.js'
 
 async function run() {
   const config = loadConfig({
@@ -11,14 +11,14 @@ async function run() {
   const pool = createPool(config.databaseUrl)
 
   try {
-    const result = await importPopularMovies(pool, {
+    const result = await importNowPlayingMovies(pool, {
       token: config.tmdbBearerToken,
       baseUrl: config.tmdbBaseUrl,
       count: 30,
     })
 
     console.log(
-      `Fetched ${result.fetchedCount} movies from TMDB. Inserted ${result.insertedCount} new movies and refreshed ${result.updatedCount} existing movies.`
+      `Fetched ${result.fetchedCount} now playing movies from TMDB. Inserted ${result.insertedCount} new movies and refreshed ${result.updatedCount} existing movies.`
     )
   } finally {
     await pool.end()

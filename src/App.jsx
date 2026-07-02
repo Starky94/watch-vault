@@ -30,6 +30,7 @@ const movieTabs = ['All Movies', 'Popular', 'Now Playing', 'Upcoming', 'Top Rate
 const movieScreenModes = {
   overview: 'overview',
   popularList: 'popularList',
+  nowPlayingList: 'nowPlayingList',
 }
 
 const stats = [
@@ -68,32 +69,11 @@ const newEpisodes = [
   { title: 'Astra Division', meta: 'Tomorrow', copy: 'The crew finally reaches the signal source beyond Titan.' },
 ]
 
-const featuredMovie = {
-  title: 'Dune: Part Two',
-  year: '2024',
-  genres: ['Adventure', 'Sci-Fi'],
-  rating: 'PG-13',
-  runtime: '2h 46m',
-  score: '8.7/10',
-  audience: '92%',
-  summary: 'Paul Atreides unites with the Fremen and seeks revenge against the conspirators who destroyed his family.',
-  theme: 'theme-dune-hero',
-}
-
 const movieStats = [
   { label: 'Movies Watched', value: '28', trend: '+27%', tone: 'violet', icon: TicketIcon },
   { label: 'Average Rating', value: '4.2', trend: '+0.3', tone: 'gold', icon: StarBadgeIcon },
   { label: 'In Watchlist', value: '56', trend: '+12%', tone: 'orange', icon: BookmarkStackIcon },
   { label: 'Hours Watched', value: '48h 32m', trend: '+16%', tone: 'blue', icon: ClockIcon },
-]
-
-const recentMovies = [
-  { title: 'IF', year: '2024', rating: '6.5', meta: '1h 44m', theme: 'theme-if' },
-  { title: 'Furiosa', year: '2024', rating: '7.7', meta: '2h 28m', theme: 'theme-furiosa' },
-  { title: 'Inside Out 2', year: '2024', rating: '8.2', meta: '1h 36m', theme: 'theme-inside-out' },
-  { title: 'The Garfield Movie', year: '2024', rating: '5.6', meta: '1h 41m', theme: 'theme-garfield' },
-  { title: 'Bad Boys: Ride or Die', year: '2024', rating: '6.6', meta: '1h 55m', theme: 'theme-bad-boys' },
-  { title: 'A Quiet Place: Day One', year: '2024', rating: '6.7', meta: '1h 39m', theme: 'theme-quiet-place' },
 ]
 
 const movieWatchlist = [
@@ -119,6 +99,12 @@ function App() {
   const [popularMoviesState, setPopularMoviesState] = useState({
     status: 'idle',
     movies: [],
+    featuredMovie: null,
+    error: '',
+  })
+  const [recentMoviesState, setRecentMoviesState] = useState({
+    status: 'idle',
+    movies: [],
     error: '',
   })
 
@@ -134,18 +120,40 @@ function App() {
       return
     }
 
+    if (activeMovieTab === 'Now Playing') {
+      setMoviesScreenMode(movieScreenModes.nowPlayingList)
+      return
+    }
+
     setMoviesScreenMode(movieScreenModes.overview)
   }
 
   function handleMovieTabChange(tab) {
     setActiveMovieTab(tab)
-    setMoviesScreenMode(tab === 'Popular' ? movieScreenModes.popularList : movieScreenModes.overview)
+
+    if (tab === 'Popular') {
+      setMoviesScreenMode(movieScreenModes.popularList)
+      return
+    }
+
+    if (tab === 'Now Playing') {
+      setMoviesScreenMode(movieScreenModes.nowPlayingList)
+      return
+    }
+
+    setMoviesScreenMode(movieScreenModes.overview)
   }
 
   function handleOpenPopularMovies() {
     setActiveView(primaryViews.movies)
     setActiveMovieTab('Popular')
     setMoviesScreenMode(movieScreenModes.popularList)
+  }
+
+  function handleOpenRecentlyReleasedMovies() {
+    setActiveView(primaryViews.movies)
+    setActiveMovieTab('Now Playing')
+    setMoviesScreenMode(movieScreenModes.nowPlayingList)
   }
 
   useEffect(() => {
@@ -156,11 +164,12 @@ function App() {
     let cancelled = false
 
     async function loadPopularMovies() {
-      setPopularMoviesState({
-        status: 'loading',
-        movies: [],
-        error: '',
-      })
+        setPopularMoviesState({
+          status: 'loading',
+          movies: [],
+          featuredMovie: null,
+          error: '',
+        })
 
       try {
         const response = await fetch('/api/movies')
@@ -171,11 +180,13 @@ function App() {
 
         const payload = await response.json()
         const movies = Array.isArray(payload.movies) ? payload.movies.map(mapMovieRowToCard) : []
+        const featuredMovie = payload.featuredMovie ? mapFeaturedMoviePayload(payload.featuredMovie) : null
 
         if (!cancelled) {
           setPopularMoviesState({
             status: 'success',
             movies,
+            featuredMovie,
             error: '',
           })
         }
@@ -184,6 +195,7 @@ function App() {
           setPopularMoviesState({
             status: 'error',
             movies: [],
+            featuredMovie: null,
             error: error instanceof Error ? error.message : 'Unable to load movies right now.',
           })
         }
@@ -191,6 +203,55 @@ function App() {
     }
 
     loadPopularMovies()
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeView])
+
+  useEffect(() => {
+    if (activeView !== primaryViews.movies || recentMoviesState.status !== 'idle') {
+      return
+    }
+
+    let cancelled = false
+
+    async function loadRecentMovies() {
+      setRecentMoviesState({
+        status: 'loading',
+        movies: [],
+        error: '',
+      })
+
+      try {
+        const response = await fetch('/api/movies/recently-released?limit=30')
+
+        if (!response.ok) {
+          throw new Error(`Request failed with status ${response.status}`)
+        }
+
+        const payload = await response.json()
+        const movies = Array.isArray(payload.movies) ? payload.movies.map(mapMovieRowToCard) : []
+
+        if (!cancelled) {
+          setRecentMoviesState({
+            status: 'success',
+            movies,
+            error: '',
+          })
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setRecentMoviesState({
+            status: 'error',
+            movies: [],
+            error: error instanceof Error ? error.message : 'Unable to load recently released movies right now.',
+          })
+        }
+      }
+    }
+
+    loadRecentMovies()
 
     return () => {
       cancelled = true
@@ -258,7 +319,9 @@ function App() {
             setActiveTab={handleMovieTabChange}
             screenMode={moviesScreenMode}
             popularMoviesState={popularMoviesState}
+            recentMoviesState={recentMoviesState}
             onOpenPopularMovies={handleOpenPopularMovies}
+            onOpenRecentlyReleasedMovies={handleOpenRecentlyReleasedMovies}
           />
         )}
 
@@ -434,8 +497,9 @@ function HomeScreen({ activeTab, setActiveTab }) {
   )
 }
 
-function MoviesScreen({ activeTab, setActiveTab, screenMode, popularMoviesState, onOpenPopularMovies }) {
+function MoviesScreen({ activeTab, setActiveTab, screenMode, popularMoviesState, recentMoviesState, onOpenPopularMovies, onOpenRecentlyReleasedMovies }) {
   const isPopularListMode = screenMode === movieScreenModes.popularList && activeTab === 'Popular'
+  const isNowPlayingListMode = screenMode === movieScreenModes.nowPlayingList && activeTab === 'Now Playing'
 
   return (
     <section className="movies-page">
@@ -444,6 +508,8 @@ function MoviesScreen({ activeTab, setActiveTab, screenMode, popularMoviesState,
         <p>
           {isPopularListMode
             ? 'Browse the 30 most popular movies imported from your local database.'
+            : isNowPlayingListMode
+              ? 'Browse the latest 30 released movies from your local database.'
             : 'Discover, track, and organize your favorite films.'}
         </p>
       </div>
@@ -465,68 +531,22 @@ function MoviesScreen({ activeTab, setActiveTab, screenMode, popularMoviesState,
         <ContentSection title="Popular Right Now">
           <PopularMoviesGrid popularMoviesState={popularMoviesState} layout="catalog" />
         </ContentSection>
+      ) : isNowPlayingListMode ? (
+        <ContentSection title="Now Playing">
+          <RecentlyReleasedSlider recentMoviesState={recentMoviesState} layout="catalog" />
+        </ContentSection>
       ) : (
         <>
           <div className="movies-layout">
             <div className="movies-main">
-              <article className="featured-movie-card">
-                <div className="featured-movie-copy">
-                  <span className="feature-label">Featured</span>
-                  <h2>{featuredMovie.title}</h2>
-                  <div className="featured-movie-meta">
-                    <span>{featuredMovie.year}</span>
-                    <span>{featuredMovie.genres.join(', ')}</span>
-                    <span>{featuredMovie.rating}</span>
-                    <span>{featuredMovie.runtime}</span>
-                  </div>
-                  <div className="featured-movie-scores">
-                    <span className="movie-score">
-                      <StarIcon />
-                      {featuredMovie.score}
-                    </span>
-                    <span className="movie-score tomato-score">
-                      <TomatoIcon />
-                      {featuredMovie.audience}
-                    </span>
-                  </div>
-                  <p>{featuredMovie.summary}</p>
-
-                  <div className="hero-actions movie-actions">
-                    <button type="button" className="primary-button">
-                      <PlusIcon />
-                      <span>Add to Watchlist</span>
-                    </button>
-                    <button type="button" className="secondary-button">
-                      <CheckIcon />
-                      <span>Mark as Watched</span>
-                    </button>
-                  </div>
-                </div>
-
-                <div className={`featured-movie-art ${featuredMovie.theme}`} aria-hidden="true">
-                  <button type="button" className="feature-arrow" aria-label="Next featured movie">
-                    <ChevronRight />
-                  </button>
-                  <div className="feature-dots">
-                    <span className="active" />
-                    <span />
-                    <span />
-                    <span />
-                    <span />
-                  </div>
-                </div>
-              </article>
+              <FeaturedMovieCard popularMoviesState={popularMoviesState} />
 
               <ContentSection title="Popular Right Now" action="View all" onAction={onOpenPopularMovies}>
                 <PopularMoviesGrid popularMoviesState={popularMoviesState} />
               </ContentSection>
 
-              <ContentSection title="Recently Released" action="View all">
-                <div className="movie-card-grid">
-                  {recentMovies.map((movie) => (
-                    <MovieCard key={movie.title} movie={movie} />
-                  ))}
-                </div>
+              <ContentSection title="Recently Released" action="View all" onAction={onOpenRecentlyReleasedMovies}>
+                <RecentlyReleasedSlider recentMoviesState={recentMoviesState} />
               </ContentSection>
             </div>
 
@@ -725,6 +745,82 @@ function MovieCard({ movie }) {
   )
 }
 
+function FeaturedMovieCard({ popularMoviesState }) {
+  if (popularMoviesState.status === 'loading' || popularMoviesState.status === 'idle') {
+    return <SectionMessage message="Loading featured movie from your local database..." />
+  }
+
+  if (popularMoviesState.status === 'error') {
+    return <SectionMessage message={`Could not load the featured movie. ${popularMoviesState.error}`} tone="error" />
+  }
+
+  if (!popularMoviesState.featuredMovie) {
+    return <SectionMessage message="No featured movie is available in the local database yet." />
+  }
+
+  const movie = popularMoviesState.featuredMovie
+  const showBackdropImage = Boolean(movie.backdropUrl)
+  const artStyle = showBackdropImage
+    ? {
+        backgroundImage: `linear-gradient(180deg, rgba(10, 13, 24, 0.12), rgba(8, 11, 19, 0.24)), url(${movie.backdropUrl})`,
+      }
+    : undefined
+
+  return (
+    <article className="featured-movie-card">
+      <div className="featured-movie-copy">
+        <span className="feature-label">Featured</span>
+        <h2>{movie.title}</h2>
+        <div className="featured-movie-meta">
+          <span>{movie.year}</span>
+          <span>{movie.genreLabel}</span>
+          <span>{movie.rating}</span>
+          <span>{movie.runtime}</span>
+        </div>
+        <div className="featured-movie-scores">
+          <span className="movie-score">
+            <StarIcon />
+            {movie.score}
+          </span>
+          <span className="movie-score tomato-score">
+            <TomatoIcon />
+            {movie.audience}
+          </span>
+        </div>
+        <p>{movie.summary}</p>
+
+        <div className="hero-actions movie-actions">
+          <button type="button" className="primary-button">
+            <PlusIcon />
+            <span>Add to Watchlist</span>
+          </button>
+          <button type="button" className="secondary-button">
+            <CheckIcon />
+            <span>Mark as Watched</span>
+          </button>
+        </div>
+      </div>
+
+      <div
+        className={`featured-movie-art${showBackdropImage ? ' has-image' : ' theme-catalog'}`}
+        style={artStyle}
+        aria-hidden="true"
+      >
+        <button type="button" className="feature-arrow" aria-label="Next featured movie">
+          <ChevronRight />
+        </button>
+        <div className="feature-dots">
+          <span className="active" />
+          <span />
+          <span />
+          <span />
+          <span />
+        </div>
+      </div>
+    </article>
+  )
+}
+
 function PopularMoviesGrid({ popularMoviesState, layout = 'slider' }) {
   if (popularMoviesState.status === 'loading' || popularMoviesState.status === 'idle') {
     return <SectionMessage message="Loading popular movies from your local database..." />
@@ -752,6 +848,33 @@ function PopularMoviesGrid({ popularMoviesState, layout = 'slider' }) {
   )
 }
 
+function RecentlyReleasedSlider({ recentMoviesState, layout = 'slider' }) {
+  if (recentMoviesState.status === 'loading' || recentMoviesState.status === 'idle') {
+    return <SectionMessage message="Loading recently released movies from your local database..." />
+  }
+
+  if (recentMoviesState.status === 'error') {
+    return <SectionMessage message={`Could not load recently released movies. ${recentMoviesState.error}`} tone="error" />
+  }
+
+  if (recentMoviesState.movies.length === 0) {
+    return <SectionMessage message="No recently released movies are available in the local database yet." />
+  }
+
+  const movies = layout === 'catalog' ? recentMoviesState.movies : recentMoviesState.movies.slice(0, 10)
+
+  return (
+    <div
+      className={`movie-card-grid${layout === 'catalog' ? ' popular-movies-catalog' : ' popular-movies-slider'}`}
+      aria-label={layout === 'catalog' ? 'Now playing movies list' : 'Recently released movies slider'}
+    >
+      {movies.map((movie) => (
+        <MovieCard key={movie.id} movie={movie} />
+      ))}
+    </div>
+  )
+}
+
 function SectionMessage({ message, tone = 'neutral' }) {
   return <p className={`section-message${tone === 'error' ? ' error' : ''}`}>{message}</p>
 }
@@ -763,8 +886,25 @@ function mapMovieRowToCard(movie) {
     year: formatMovieYear(movie.release_date),
     rating: formatMovieRating(movie.vote_average),
     meta: formatMovieMeta(movie),
+    releaseDate: movie.release_date || null,
     posterUrl: resolveMoviePosterUrl(movie.poster_path),
     theme: 'theme-catalog',
+  }
+}
+
+function mapFeaturedMoviePayload(movie) {
+  return {
+    id: movie.id,
+    title: movie.title,
+    year: movie.year || 'Release TBA',
+    genreLabel: Array.isArray(movie.genres) && movie.genres.length > 0 ? movie.genres.join(', ') : 'Genre TBA',
+    rating: movie.rating || 'NR',
+    runtime: movie.runtime || 'Runtime TBA',
+    score: movie.score || 'N/A',
+    audience: movie.audience || 'No votes',
+    summary: movie.summary || 'Overview not available yet.',
+    posterUrl: resolveMoviePosterUrl(movie.posterPath),
+    backdropUrl: resolveMovieBackdropUrl(movie.backdropPath),
   }
 }
 
@@ -812,6 +952,14 @@ function resolveMoviePosterUrl(posterPath) {
   }
 
   return `https://image.tmdb.org/t/p/w500${posterPath}`
+}
+
+function resolveMovieBackdropUrl(backdropPath) {
+  if (!backdropPath) {
+    return null
+  }
+
+  return `https://image.tmdb.org/t/p/w780${backdropPath}`
 }
 
 function IconBase({ children, ...props }) {

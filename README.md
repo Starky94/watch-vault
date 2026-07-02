@@ -1,6 +1,6 @@
 # watch-vault
 
-WatchVault ships with a Docker-first stack for the Vite web app, Node API, Postgres database, and a scheduled TMDB importer.
+WatchVault ships with a Docker-first stack for the Vite web app, Node API, Postgres database, and scheduled TMDB importers.
 
 ## Setup
 
@@ -22,7 +22,7 @@ Services:
 - API (through reverse proxy): `http://localhost:8080/api/health`
 - Postgres: internal `db:5432`
 
-The importer runs automatically every 10 minutes and logs each import attempt.
+The popular importer runs automatically every 10 minutes, and the Now Playing importer runs once every 24 hours. Both log each import attempt and share a TMDB client throttle capped below 40 requests per second.
 
 Use this mode when you want the production-style static web image. Frontend changes require rebuilding the `web` image.
 
@@ -61,10 +61,11 @@ docker compose down
 - `npm run server` starts the API outside Docker.
 - `npm run server:watch` starts the API with automatic reload on file changes.
 - `npm run import:movies` runs a one-off TMDB import.
+- `npm run import:now-playing` runs a one-off TMDB Now Playing import for movies released in the last 30 days.
 - `npm run dev:stack` starts frontend and backend together outside Docker.
 - `npm test` runs the backend unit tests.
 
 ## API
 
 - `GET /api/health` returns a basic health response.
-- `GET /api/movies` returns the imported movies ordered by import rank.
+- `GET /api/movies` returns the imported popular movies ordered by popularity plus a featured movie payload derived from the top result.

@@ -1052,6 +1052,12 @@
   min-height: 100%;
 }
 
+.featured-movie-art.has-image {
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+}
+
 .feature-arrow {
   position: absolute;
   right: 18px;
@@ -1132,9 +1138,20 @@
     linear-gradient(180deg, transparent 45%, rgba(5, 8, 16, 0.38) 100%);
 }
 
+.featured-movie-art.has-image::before {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), transparent 18%),
+    linear-gradient(180deg, transparent 30%, rgba(5, 8, 16, 0.18) 60%, rgba(5, 8, 16, 0.74) 100%);
+}
+
 .movie-card-poster.has-image::after {
   height: 36%;
   background: linear-gradient(180deg, transparent, rgba(8, 11, 19, 0.5));
+}
+
+.featured-movie-art.has-image::after {
+  height: 42%;
+  background: linear-gradient(180deg, transparent, rgba(8, 11, 19, 0.82));
 }
 
 .movie-card-copy h3 {

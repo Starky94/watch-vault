@@ -3,6 +3,7 @@
 set -u
 
 interval_seconds="${IMPORT_INTERVAL_SECONDS:-600}"
+import_command="${IMPORT_COMMAND:-npm run import:movies}"
 
 handle_shutdown() {
   echo "Importer received shutdown signal, exiting."
@@ -13,9 +14,9 @@ trap handle_shutdown INT TERM
 
 while true
 do
-  echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] Starting TMDB import."
+  echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] Starting TMDB import: ${import_command}."
 
-  if npm run import:movies; then
+  if sh -c "$import_command"; then
     echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] TMDB import completed."
   else
     echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] TMDB import failed; retrying after sleep."
