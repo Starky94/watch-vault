@@ -12,6 +12,7 @@
     "preview": "vite preview",
     "import:movies": "node server/importMoviesCli.js",
     "import:now-playing": "node server/importNowPlayingCli.js",
+    "import:upcoming": "node server/importUpcomingCli.js",
     "dev:stack": "node scripts/dev-stack.js",
     "test": "node --test"
   },

@@ -4,9 +4,11 @@ import { loadConfig } from '../config.js'
 import {
   collectNowPlayingMovies,
   collectPopularMovies,
+  collectUpcomingMovies,
   enrichMoviesWithDetails,
   importNowPlayingMovies,
   importPopularMovies,
+  importUpcomingMovies,
   normalizeMovie,
   syncMissingGenres,
 } from '../movieImportService.js'
@@ -204,6 +206,79 @@ test('collectNowPlayingMovies stops cleanly when TMDB returns fewer than 30 qual
 
   assert.equal(movies.length, 1)
   assert.equal(movies[0].tmdbId, 1)
+})
+
+test('collectUpcomingMovies keeps only future movies within the next 30 days sorted ascending', async () => {
+  const responses = [
+    {
+      total_pages: 2,
+      results: [
+        { id: 7, title: 'Same Day', release_date: '2026-07-02', genre_ids: [] },
+        { id: 2, title: 'Sooner', release_date: '2026-07-04', genre_ids: [] },
+        { id: 3, title: 'Too Far', release_date: '2026-08-05', genre_ids: [] },
+      ],
+    },
+    {
+      total_pages: 2,
+      results: [
+        { id: 2, title: 'Sooner Duplicate', release_date: '2026-07-04', genre_ids: [] },
+        { id: 1, title: 'Later', release_date: '2026-07-20', genre_ids: [] },
+        { id: 4, title: 'Undated', release_date: null, genre_ids: [] },
+        { id: 5, title: 'Past', release_date: '2026-06-30', genre_ids: [] },
+      ],
+    },
+  ]
+
+  const movies = await collectUpcomingMovies(
+    async () => ({
+      ok: true,
+      async json() {
+        return responses.shift() ?? { total_pages: 0, results: [] }
+      },
+    }),
+    {
+      token: 'token',
+      baseUrl: 'https://api.themoviedb.org/3',
+      count: 30,
+      now: new Date('2026-07-02T12:00:00.000Z'),
+    }
+  )
+
+  assert.deepEqual(
+    movies.map((movie) => ({ tmdbId: movie.tmdbId, releaseDate: movie.releaseDate })),
+    [
+      { tmdbId: 2, releaseDate: '2026-07-04' },
+      { tmdbId: 1, releaseDate: '2026-07-20' },
+    ]
+  )
+})
+
+test('collectUpcomingMovies stops cleanly when TMDB returns fewer than 30 qualifying future movies', async () => {
+  const movies = await collectUpcomingMovies(
+    async () => ({
+      ok: true,
+      async json() {
+        return {
+          total_pages: 1,
+          results: [
+            { id: 10, title: 'Future 1', release_date: '2026-07-10', genre_ids: [] },
+            { id: 11, title: 'Future 2', release_date: '2026-07-18', genre_ids: [] },
+          ],
+        }
+      },
+    }),
+    {
+      token: 'token',
+      baseUrl: 'https://api.themoviedb.org/3',
+      count: 30,
+      now: new Date('2026-07-02T12:00:00.000Z'),
+    }
+  )
+
+  assert.deepEqual(
+    movies.map((movie) => movie.tmdbId),
+    [10, 11]
+  )
 })
 
 test('upsertMovies inserts unseen rows and updates duplicates', async () => {
@@ -594,5 +669,120 @@ test('importNowPlayingMovies returns the qualifying subset and updates existing 
   assert.equal(result.insertedCount, 1)
   assert.equal(result.updatedCount, 1)
   assert.equal(result.movies.length, 2)
+  assert.equal(executed.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS movies')), true)
+})
+
+test('importUpcomingMovies returns the qualifying subset and updates existing rows', async () => {
+  const executed = []
+  const existingIds = new Set([2])
+  const pool = {
+    async query(sql, params) {
+      executed.push(sql)
+
+      if (sql.includes('FROM genres')) {
+        return { rows: [] }
+      }
+
+      if (sql.includes('INSERT INTO genres')) {
+        return { rowCount: 1 }
+      }
+
+      if (sql.includes('CREATE TABLE IF NOT EXISTS movies') || sql.includes('CREATE TABLE IF NOT EXISTS genres') || sql.includes('ALTER TABLE movies')) {
+        return { rowCount: null }
+      }
+
+      throw new Error(`Unexpected query: ${sql} ${params ?? ''}`)
+    },
+    async connect() {
+      return {
+        async query(sql, params) {
+          if (sql === 'BEGIN' || sql === 'COMMIT') {
+            return { rowCount: null }
+          }
+
+          if (sql.includes('INSERT INTO movies')) {
+            const tmdbId = params[0]
+            if (existingIds.has(tmdbId)) {
+              return { rowCount: 1, rows: [{ inserted: false }] }
+            }
+
+            existingIds.add(tmdbId)
+            return { rowCount: 1, rows: [{ inserted: true }] }
+          }
+
+          throw new Error(`Unexpected query: ${sql}`)
+        },
+        release() {},
+      }
+    },
+  }
+  const fetchImpl = async (url) => {
+    const parsed = new URL(url)
+
+    if (parsed.pathname.endsWith('/movie/upcoming')) {
+      return {
+        ok: true,
+        async json() {
+          return {
+            total_pages: 1,
+            results: [
+              { id: 1, title: 'Movie 1', release_date: '2026-07-08', genre_ids: [18] },
+              { id: 2, title: 'Movie 2', release_date: '2026-07-15', genre_ids: [18] },
+              { id: 3, title: 'Too Far', release_date: '2026-08-10', genre_ids: [18] },
+            ],
+          }
+        },
+      }
+    }
+
+    if (parsed.pathname.endsWith('/genre/movie/list')) {
+      return {
+        ok: true,
+        async json() {
+          return {
+            genres: [{ id: 18, name: 'Drama' }],
+          }
+        },
+      }
+    }
+
+    if (parsed.pathname.includes('/movie/')) {
+      return {
+        ok: true,
+        async json() {
+          return {
+            runtime: 120,
+            release_dates: {
+              results: [
+                {
+                  iso_3166_1: 'US',
+                  release_dates: [{ certification: 'PG-13' }],
+                },
+              ],
+            },
+          }
+        },
+      }
+    }
+
+    throw new Error(`Unexpected URL: ${url}`)
+  }
+
+  const result = await importUpcomingMovies(pool, {
+    fetchImpl,
+    token: 'token',
+    baseUrl: 'https://api.themoviedb.org/3',
+    count: 30,
+    now: new Date('2026-07-02T12:00:00.000Z'),
+  })
+
+  assert.equal(result.fetchedCount, 2)
+  assert.equal(result.insertedCount, 1)
+  assert.equal(result.updatedCount, 1)
+  assert.equal(result.movies.length, 2)
+  assert.deepEqual(
+    result.movies.map((movie) => movie.tmdbId),
+    [1, 2]
+  )
   assert.equal(executed.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS movies')), true)
 })

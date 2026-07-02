@@ -1,4 +1,10 @@
-import { fetchMovieDetails, fetchMovieGenres, fetchNowPlayingMoviesPage, fetchPopularMoviesPage } from './tmdbClient.js'
+import {
+  fetchMovieDetails,
+  fetchMovieGenres,
+  fetchNowPlayingMoviesPage,
+  fetchPopularMoviesPage,
+  fetchUpcomingMoviesPage,
+} from './tmdbClient.js'
 import { ensureMoviesTable, listKnownGenreIds, upsertGenres, upsertMovies } from './database.js'
 
 export function normalizeMovie(movie, index) {
@@ -145,6 +151,26 @@ function isWithinLast30Days(releaseDate, now = new Date()) {
   return parsedReleaseDate >= threshold
 }
 
+function isWithinNext30Days(releaseDate, now = new Date()) {
+  if (!releaseDate) {
+    return false
+  }
+
+  const parsedReleaseDate = new Date(`${releaseDate}T00:00:00.000Z`)
+
+  if (Number.isNaN(parsedReleaseDate.getTime())) {
+    return false
+  }
+
+  const start = new Date(now)
+  start.setUTCHours(0, 0, 0, 0)
+
+  const end = new Date(start)
+  end.setUTCDate(end.getUTCDate() + 30)
+
+  return parsedReleaseDate > start && parsedReleaseDate <= end
+}
+
 export async function collectNowPlayingMovies(fetchImpl, options) {
   const { token, baseUrl, count = 30, now = new Date() } = options
   const collected = []
@@ -179,6 +205,51 @@ export async function collectNowPlayingMovies(fetchImpl, options) {
 
     page += 1
   }
+
+  return collected.slice(0, count).map((movie, index) => normalizeMovie(movie, index))
+}
+
+export async function collectUpcomingMovies(fetchImpl, options) {
+  const { token, baseUrl, count = 30, now = new Date() } = options
+  const collected = []
+  const seenIds = new Set()
+  let page = 1
+
+  while (collected.length < count) {
+    const payload = await fetchUpcomingMoviesPage(fetchImpl, {
+      token,
+      page,
+      baseUrl,
+    })
+
+    const results = Array.isArray(payload.results) ? payload.results : []
+
+    for (const movie of results) {
+      if (seenIds.has(movie.id) || !isWithinNext30Days(movie.release_date, now)) {
+        continue
+      }
+
+      seenIds.add(movie.id)
+      collected.push(movie)
+    }
+
+    if (results.length === 0 || page >= (payload.total_pages ?? page)) {
+      break
+    }
+
+    page += 1
+  }
+
+  collected.sort((left, right) => {
+    const leftDate = left.release_date ?? ''
+    const rightDate = right.release_date ?? ''
+
+    if (leftDate !== rightDate) {
+      return leftDate.localeCompare(rightDate)
+    }
+
+    return left.id - right.id
+  })
 
   return collected.slice(0, count).map((movie, index) => normalizeMovie(movie, index))
 }
@@ -226,6 +297,43 @@ export async function importPopularMovies(pool, options) {
 export async function importNowPlayingMovies(pool, options) {
   const { fetchImpl = fetch, token, baseUrl, count = 30, now = new Date() } = options
   const movies = await collectNowPlayingMovies(fetchImpl, {
+    token,
+    baseUrl,
+    count,
+    now,
+  })
+
+  await ensureMoviesTable(pool)
+  await syncMissingGenres(
+    pool,
+    fetchImpl,
+    {
+      token,
+      baseUrl,
+    },
+    movies
+  )
+  const enrichedMovies = await enrichMoviesWithDetails(
+    fetchImpl,
+    {
+      token,
+      baseUrl,
+    },
+    movies
+  )
+  const importSummary = await upsertMovies(pool, enrichedMovies)
+
+  return {
+    fetchedCount: enrichedMovies.length,
+    insertedCount: importSummary.insertedCount,
+    updatedCount: importSummary.updatedCount,
+    movies: enrichedMovies,
+  }
+}
+
+export async function importUpcomingMovies(pool, options) {
+  const { fetchImpl = fetch, token, baseUrl, count = 30, now = new Date() } = options
+  const movies = await collectUpcomingMovies(fetchImpl, {
     token,
     baseUrl,
     count,

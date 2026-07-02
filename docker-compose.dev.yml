@@ -47,6 +47,14 @@ services:
       - .:/app
       - api-node-modules:/app/node_modules
 
+  importer-upcoming:
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    volumes:
+      - .:/app
+      - api-node-modules:/app/node_modules
+
 volumes:
   api-node-modules:
   web-node-modules:

@@ -22,7 +22,7 @@ Services:
 - API (through reverse proxy): `http://localhost:8080/api/health`
 - Postgres: internal `db:5432`
 
-The popular importer runs automatically every 10 minutes, and the Now Playing importer runs once every 24 hours. Both log each import attempt and share a TMDB client throttle capped below 40 requests per second.
+The popular importer runs automatically every 10 minutes, and the Now Playing plus Upcoming importers each run once every 24 hours. All importers log each attempt and share a TMDB client throttle capped below 40 requests per second.
 
 Use this mode when you want the production-style static web image. Frontend changes require rebuilding the `web` image.
 
@@ -62,6 +62,7 @@ docker compose down
 - `npm run server:watch` starts the API with automatic reload on file changes.
 - `npm run import:movies` runs a one-off TMDB import.
 - `npm run import:now-playing` runs a one-off TMDB Now Playing import for movies released in the last 30 days.
+- `npm run import:upcoming` runs a one-off TMDB Upcoming import for movies releasing in the next 30 days.
 - `npm run dev:stack` starts frontend and backend together outside Docker.
 - `npm test` runs the backend unit tests.
 
@@ -69,3 +70,5 @@ docker compose down
 
 - `GET /api/health` returns a basic health response.
 - `GET /api/movies` returns the imported popular movies ordered by popularity plus a featured movie payload derived from the top result.
+- `GET /api/movies/recently-released` returns recently released movies from the local DB.
+- `GET /api/movies/upcoming` returns upcoming movies releasing in the next 30 days from the local DB.

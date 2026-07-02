@@ -243,6 +243,48 @@ export async function listMovies(pool) {
   return result.rows
 }
 
+export async function getMovieByTmdbId(pool, tmdbId) {
+  const result = await pool.query(
+    `
+    SELECT
+      movies.tmdb_id,
+      movies.title,
+      movies.original_title,
+      movies.overview,
+      movies.release_date,
+      movies.original_language,
+      movies.poster_path,
+      movies.backdrop_path,
+      movies.popularity,
+      movies.vote_average,
+      movies.vote_count,
+      movies.adult,
+      movies.video,
+      movies.genre_ids,
+      COALESCE(
+        ARRAY_REMOVE(ARRAY_AGG(genres.name ORDER BY genre_ids.ordinality), NULL),
+        '{}'
+      ) AS genre_names,
+      movies.runtime_minutes,
+      movies.certification,
+      movies.detail_payload,
+      movies.raw_payload,
+      movies.import_rank,
+      movies.imported_at
+    FROM movies
+    LEFT JOIN LATERAL UNNEST(movies.genre_ids) WITH ORDINALITY AS genre_ids(tmdb_genre_id, ordinality) ON TRUE
+    LEFT JOIN genres ON genres.tmdb_genre_id = genre_ids.tmdb_genre_id
+    WHERE movies.tmdb_id = $1 OR movies.id = $1
+    GROUP BY movies.id
+    ORDER BY CASE WHEN movies.tmdb_id = $1 THEN 0 ELSE 1 END
+    LIMIT 1
+  `,
+    [tmdbId]
+  )
+
+  return result.rows[0] ?? null
+}
+
 export async function listRecentlyReleasedMovies(pool, options = {}) {
   const { limit = 10 } = options
   const normalizedLimit = Number.isInteger(limit) ? Math.max(1, Math.min(limit, 30)) : 10
@@ -287,4 +329,106 @@ export async function listRecentlyReleasedMovies(pool, options = {}) {
   )
 
   return result.rows
+}
+
+export async function listTopRatedMovies(pool, options = {}) {
+  const { limit = 10 } = options
+  const normalizedLimit = Number.isInteger(limit) ? Math.max(1, Math.min(limit, 30)) : 10
+
+  const result = await pool.query(
+    `
+    SELECT
+      movies.tmdb_id,
+      movies.title,
+      movies.original_title,
+      movies.overview,
+      movies.release_date,
+      movies.original_language,
+      movies.poster_path,
+      movies.backdrop_path,
+      movies.popularity,
+      movies.vote_average,
+      movies.vote_count,
+      movies.adult,
+      movies.video,
+      movies.genre_ids,
+      COALESCE(
+        ARRAY_REMOVE(ARRAY_AGG(genres.name ORDER BY genre_ids.ordinality), NULL),
+        '{}'
+      ) AS genre_names,
+      movies.runtime_minutes,
+      movies.certification,
+      movies.detail_payload,
+      movies.raw_payload,
+      movies.import_rank,
+      movies.imported_at
+    FROM movies
+    LEFT JOIN LATERAL UNNEST(movies.genre_ids) WITH ORDINALITY AS genre_ids(tmdb_genre_id, ordinality) ON TRUE
+    LEFT JOIN genres ON genres.tmdb_genre_id = genre_ids.tmdb_genre_id
+    WHERE movies.release_date IS NOT NULL
+      AND movies.release_date <= CURRENT_DATE
+    GROUP BY movies.id
+    ORDER BY movies.vote_average DESC NULLS LAST, movies.vote_count DESC NULLS LAST, movies.tmdb_id ASC
+    LIMIT $1
+  `,
+    [normalizedLimit]
+  )
+
+  return result.rows
+}
+
+export async function listUpcomingMovies(pool, options = {}) {
+  const { limit = 10 } = options
+  const normalizedLimit = Number.isInteger(limit) ? Math.max(1, Math.min(limit, 30)) : 10
+
+  const result = await pool.query(
+    `
+    SELECT
+      movies.tmdb_id,
+      movies.title,
+      movies.original_title,
+      movies.overview,
+      movies.release_date,
+      movies.original_language,
+      movies.poster_path,
+      movies.backdrop_path,
+      movies.popularity,
+      movies.vote_average,
+      movies.vote_count,
+      movies.adult,
+      movies.video,
+      movies.genre_ids,
+      COALESCE(
+        ARRAY_REMOVE(ARRAY_AGG(genres.name ORDER BY genre_ids.ordinality), NULL),
+        '{}'
+      ) AS genre_names,
+      movies.runtime_minutes,
+      movies.certification,
+      movies.detail_payload,
+      movies.raw_payload,
+      movies.import_rank,
+      movies.imported_at
+    FROM movies
+    LEFT JOIN LATERAL UNNEST(movies.genre_ids) WITH ORDINALITY AS genre_ids(tmdb_genre_id, ordinality) ON TRUE
+    LEFT JOIN genres ON genres.tmdb_genre_id = genre_ids.tmdb_genre_id
+    WHERE movies.release_date IS NOT NULL
+      AND movies.release_date > CURRENT_DATE
+      AND movies.release_date <= CURRENT_DATE + INTERVAL '30 days'
+    GROUP BY movies.id
+    ORDER BY movies.release_date ASC, movies.tmdb_id ASC
+    LIMIT $1
+  `,
+    [normalizedLimit]
+  )
+
+  return result.rows
+}
+
+export async function countMovies(pool) {
+  const result = await pool.query(`
+    SELECT COUNT(*)::INTEGER AS movie_count
+    FROM movies
+  `)
+
+  return result.rows[0]?.movie_count ?? 0
 }

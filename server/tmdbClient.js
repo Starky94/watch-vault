@@ -72,6 +72,19 @@ export async function fetchNowPlayingMoviesPage(fetchImpl, options) {
   })
 }
 
+export async function fetchUpcomingMoviesPage(fetchImpl, options) {
+  const { token, page, baseUrl } = options
+
+  return tmdbRequest(fetchImpl, {
+    token,
+    baseUrl,
+    path: 'movie/upcoming',
+    searchParams: {
+      page,
+    },
+  })
+}
+
 export async function fetchPopularMoviesPage(fetchImpl, options) {
   const { token, page, baseUrl } = options
 
