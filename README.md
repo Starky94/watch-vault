@@ -47,6 +47,23 @@ Isolation notes:
 - The unique project name gives the stack its own containers, network, and Postgres volume.
 - The dedicated `WEB_PORT` prevents collision with the existing `:8080` deployment.
 
+### Auto deploy for `:8181`
+
+This repo includes a deployment script that is intentionally locked to the WatchVault `:8181` production target on `46.101.143.222`.
+
+```bash
+npm run deploy:prod-8181
+```
+
+What it does:
+- verifies the repo is `watchvault`
+- uploads the current codebase to `/var/www/watchvault-8181`
+- refuses to continue unless the remote `.env.production` is still configured for `WEB_PORT=8181`
+- runs `docker compose --env-file .env.production -p watchvault-8181 up -d --build`
+- verifies `http://127.0.0.1:8181/api/health` on the server
+
+This script is intentionally not reusable for other repositories, hosts, directories, or ports.
+
 ### Development stack
 
 ```bash

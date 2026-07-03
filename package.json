@@ -15,6 +15,7 @@
     "import:upcoming": "node server/importUpcomingCli.js",
     "backfill:movie-credits": "node server/backfillMovieCreditsCli.js",
     "dev:stack": "node scripts/dev-stack.js",
+    "deploy:prod-8181": "bash scripts/deploy-production-8181.sh",
     "test": "node --test"
   },
   "dependencies": {
