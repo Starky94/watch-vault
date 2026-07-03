@@ -14,7 +14,8 @@ function isSchemaSetupQuery(sql) {
     sql.includes('CREATE UNIQUE INDEX IF NOT EXISTS movie_cast_unique_credit_idx') ||
     sql.includes('CREATE TABLE IF NOT EXISTS users') ||
     sql.includes('INSERT INTO users') ||
-    sql.includes('CREATE TABLE IF NOT EXISTS watchlist_items')
+    sql.includes('CREATE TABLE IF NOT EXISTS watchlist_items') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS watched_movies')
   )
 }
 
@@ -64,6 +65,7 @@ test('ensureMoviesTable creates normalized cast tables and watchlist tables', as
   assert.equal(executedSql.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS users')), true)
   assert.equal(executedSql.some((sql) => sql.includes('INSERT INTO users')), true)
   assert.equal(executedSql.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS watchlist_items')), true)
+  assert.equal(executedSql.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS watched_movies')), true)
   assert.equal(executedSql.some((sql) => sql.includes('UPDATE movies')), true)
 })
 
@@ -477,6 +479,268 @@ test('POST /api/watchlist rejects adds beyond the 30 movie limit', async () => {
     assert.equal(response.status, 409)
     assert.deepEqual(payload, {
       error: 'You can save up to 30 movies in your watchlist.',
+    })
+  } finally {
+    await closeServer(server)
+  }
+})
+
+test('GET /api/watched rejects unauthenticated requests', async () => {
+  const pool = {
+    async query(sql) {
+      if (isSchemaSetupQuery(sql)) {
+        return { rowCount: null }
+      }
+
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+
+  const app = await createApp(pool)
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/watched`)
+    const payload = await response.json()
+
+    assert.equal(response.status, 401)
+    assert.equal(payload.error, 'Authentication required')
+  } finally {
+    await closeServer(server)
+  }
+})
+
+test('watched endpoints toggle watched state, remove watchlist entries, and return stats', async () => {
+  const movieRow = {
+    tmdb_id: 42,
+    title: 'Dune: Part Two',
+    original_title: 'Dune: Part Two',
+    overview: 'Movie overview',
+    release_date: '2024-03-01',
+    original_language: 'en',
+    poster_path: '/poster.jpg',
+    backdrop_path: '/backdrop.jpg',
+    popularity: 100,
+    vote_average: 8.7,
+    vote_count: 2150,
+    adult: false,
+    video: false,
+    genre_ids: [12, 878],
+    genre_names: ['Adventure', 'Sci-Fi'],
+    runtime_minutes: 166,
+    certification: 'PG-13',
+    detail_payload: {},
+    raw_payload: {},
+    import_rank: 1,
+    imported_at: '2026-07-02T00:00:00.000Z',
+  }
+  const watchlists = new Map([
+    ['florind', [{ ...movieRow, watchlisted_at: '2026-07-03T09:00:00.000Z' }]],
+    ['alex', []],
+  ])
+  const watched = new Map([
+    ['florind', []],
+    ['alex', []],
+  ])
+
+  const pool = {
+    async query(sql, params) {
+      if (isSchemaSetupQuery(sql)) {
+        return { rowCount: null }
+      }
+
+      if (sql.includes('deleted_watched AS')) {
+        const [username, movieId] = params
+
+        if (!watched.has(username)) {
+          return {
+            rows: [{ has_user: false, has_movie: false, removed: false }],
+          }
+        }
+
+        if (movieId !== 42) {
+          return {
+            rows: [{ has_user: true, has_movie: false, removed: false }],
+          }
+        }
+
+        const existing = watched.get(username) ?? []
+        const nextMovies = existing.filter((movie) => Number(movie.tmdb_id) !== movieId)
+        const removed = nextMovies.length !== existing.length
+        watched.set(username, nextMovies)
+
+        return {
+          rows: [{ has_user: true, has_movie: true, removed }],
+        }
+      }
+
+      if (sql.includes('inserted_watched AS')) {
+        const [username, movieId] = params
+
+        if (!watched.has(username)) {
+          return {
+            rows: [{ has_user: false, has_movie: false, removed_from_watchlist: false, created_at: null }],
+          }
+        }
+
+        if (movieId !== 42) {
+          return {
+            rows: [{ has_user: true, has_movie: false, removed_from_watchlist: false, created_at: null }],
+          }
+        }
+
+        const existingWatched = watched.get(username) ?? []
+        const createdAt = existingWatched[0]?.watched_at ?? '2026-07-03T11:30:00.000Z'
+
+        if (existingWatched.length === 0) {
+          watched.set(username, [{ ...movieRow, watched_at: createdAt }])
+        }
+
+        const existingWatchlist = watchlists.get(username) ?? []
+        const nextWatchlist = existingWatchlist.filter((movie) => Number(movie.tmdb_id) !== movieId)
+        const removedFromWatchlist = nextWatchlist.length !== existingWatchlist.length
+        watchlists.set(username, nextWatchlist)
+
+        return {
+          rows: [{ has_user: true, has_movie: true, removed_from_watchlist: removedFromWatchlist, created_at: createdAt }],
+        }
+      }
+
+      if (sql.includes('watched_totals AS')) {
+        const username = params[0]
+
+        if (!watched.has(username)) {
+          return {
+            rows: [{ has_user: false, movies_watched: 0, time_watched_minutes: 0, watchlist_count: 0 }],
+          }
+        }
+
+        const watchedMovies = watched.get(username) ?? []
+        const watchlistMovies = watchlists.get(username) ?? []
+
+        return {
+          rows: [
+            {
+              has_user: true,
+              movies_watched: watchedMovies.length,
+              time_watched_minutes: watchedMovies.reduce((total, movie) => total + (movie.runtime_minutes ?? 0), 0),
+              watchlist_count: watchlistMovies.length,
+            },
+          ],
+        }
+      }
+
+      if (sql.includes('FROM users') && sql.includes('WHERE username = $1') && sql.includes('LIMIT 1')) {
+        const username = params[0]
+
+        if (!watched.has(username)) {
+          return { rows: [] }
+        }
+
+        return {
+          rows: [
+            {
+              id: username === 'florind' ? 1 : 2,
+              username,
+              full_name: username === 'florind' ? 'Florin Druta' : 'Alex Morgan',
+            },
+          ],
+        }
+      }
+
+      if (sql.includes('FROM watched_movies') && sql.includes('WHERE users.username = $1')) {
+        return {
+          rows: watched.get(params[0]) ?? [],
+        }
+      }
+
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+
+  const app = await createApp(pool)
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+
+    const addResponse = await fetch(`http://127.0.0.1:${address.port}/api/watched`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-watchvault-username': 'florind',
+      },
+      body: JSON.stringify({
+        movieId: 42,
+      }),
+    })
+    const addPayload = await addResponse.json()
+
+    const florindWatchedResponse = await fetch(`http://127.0.0.1:${address.port}/api/watched`, {
+      headers: {
+        'x-watchvault-username': 'florind',
+      },
+    })
+    const florindWatchedPayload = await florindWatchedResponse.json()
+
+    const alexWatchedResponse = await fetch(`http://127.0.0.1:${address.port}/api/watched`, {
+      headers: {
+        'x-watchvault-username': 'alex',
+      },
+    })
+    const alexWatchedPayload = await alexWatchedResponse.json()
+
+    const removeResponse = await fetch(`http://127.0.0.1:${address.port}/api/watched/42`, {
+      method: 'DELETE',
+      headers: {
+        'x-watchvault-username': 'florind',
+      },
+    })
+    const removePayload = await removeResponse.json()
+
+    assert.equal(addResponse.status, 200)
+    assert.equal(addPayload.movie.id, 42)
+    assert.equal(addPayload.removedFromWatchlist, true)
+    assert.deepEqual(addPayload.stats, {
+      moviesWatched: 1,
+      timeWatchedMinutes: 166,
+      watchlistCount: 0,
+    })
+    assert.equal(florindWatchedResponse.status, 200)
+    assert.equal(florindWatchedPayload.count, 1)
+    assert.deepEqual(florindWatchedPayload.movies[0], {
+      id: 42,
+      title: 'Dune: Part Two',
+      year: '2024',
+      meta: 'Adventure, Sci-Fi',
+      rating: 8.7,
+      type: 'Movies',
+      posterUrl: 'https://image.tmdb.org/t/p/w500/poster.jpg',
+      backdropUrl: 'https://image.tmdb.org/t/p/w1280/backdrop.jpg',
+      watchedAt: '2026-07-03T11:30:00.000Z',
+      runtimeMinutes: 166,
+    })
+    assert.deepEqual(florindWatchedPayload.stats, {
+      moviesWatched: 1,
+      timeWatchedMinutes: 166,
+      watchlistCount: 0,
+    })
+    assert.equal(alexWatchedResponse.status, 200)
+    assert.equal(alexWatchedPayload.count, 0)
+    assert.deepEqual(alexWatchedPayload.stats, {
+      moviesWatched: 0,
+      timeWatchedMinutes: 0,
+      watchlistCount: 0,
+    })
+    assert.equal(removeResponse.status, 200)
+    assert.deepEqual(removePayload, {
+      removed: true,
+      stats: {
+        moviesWatched: 0,
+        timeWatchedMinutes: 0,
+        watchlistCount: 0,
+      },
     })
   } finally {
     await closeServer(server)

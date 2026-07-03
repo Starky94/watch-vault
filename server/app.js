@@ -2,15 +2,19 @@ import express from 'express'
 import { loadConfig } from './config.js'
 import {
   addMovieToWatchlistForUser,
+  addMovieToWatchedForUser,
   countMovies,
   countStoredDataBytes,
   ensureMoviesTable,
   findUserByCredentials,
   findUserByUsername,
+  getMovieStatsForUser,
   getMovieByTmdbId,
   listWatchlistMoviesForUser,
+  listWatchedMoviesForUser,
   listMovies,
   listRecentlyReleasedMovies,
+  removeMovieFromWatchedForUser,
   removeMovieFromWatchlistForUser,
   listSimilarMovies,
   listTopRatedMovies,
@@ -179,6 +183,137 @@ export async function createApp(pool, options = {}) {
 
       response.status(200).json({
         removed: result.removed,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/watched', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+
+      if (!user) {
+        response.status(401).json({
+          error: 'Authentication required',
+        })
+        return
+      }
+
+      const [movies, stats] = await Promise.all([
+        listWatchedMoviesForUser(pool, user.username),
+        getMovieStatsForUser(pool, user.username),
+      ])
+
+      response.json({
+        count: movies.length,
+        movies: movies.map(mapWatchedMovie),
+        stats: mapMovieStats(stats),
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/watched', async (request, response, next) => {
+    const movieId = Number.parseInt(request.body?.movieId, 10)
+
+    if (!Number.isInteger(movieId)) {
+      response.status(400).json({
+        error: 'movieId must be a valid integer',
+      })
+      return
+    }
+
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+
+      if (!user) {
+        response.status(401).json({
+          error: 'Authentication required',
+        })
+        return
+      }
+
+      const result = await addMovieToWatchedForUser(pool, {
+        username: user.username,
+        movieId,
+      })
+
+      if (result.status === 'missing_movie') {
+        response.status(404).json({
+          error: `Movie ${movieId} was not found in the local database`,
+        })
+        return
+      }
+
+      if (result.status === 'missing_user') {
+        response.status(401).json({
+          error: 'Authentication required',
+        })
+        return
+      }
+
+      const [movies, stats] = await Promise.all([
+        listWatchedMoviesForUser(pool, user.username),
+        getMovieStatsForUser(pool, user.username),
+      ])
+      const watchedMovie = movies.find((movie) => Number(movie.tmdb_id) === movieId) ?? null
+
+      response.status(200).json({
+        movie: watchedMovie ? mapWatchedMovie(watchedMovie) : null,
+        removedFromWatchlist: result.removedFromWatchlist,
+        stats: mapMovieStats(stats),
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.delete('/api/watched/:movieId', async (request, response, next) => {
+    const movieId = Number.parseInt(request.params.movieId, 10)
+
+    if (!Number.isInteger(movieId)) {
+      response.status(400).json({
+        error: `Invalid movie id: ${request.params.movieId}`,
+      })
+      return
+    }
+
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+
+      if (!user) {
+        response.status(401).json({
+          error: 'Authentication required',
+        })
+        return
+      }
+
+      const result = await removeMovieFromWatchedForUser(pool, {
+        username: user.username,
+        movieId,
+      })
+
+      if (result.status === 'missing_movie') {
+        response.status(404).json({
+          error: `Movie ${movieId} was not found in the local database`,
+        })
+        return
+      }
+
+      if (result.status === 'missing_user') {
+        response.status(401).json({
+          error: 'Authentication required',
+        })
+        return
+      }
+
+      const stats = await getMovieStatsForUser(pool, user.username)
+
+      response.status(200).json({
+        removed: result.removed,
+        stats: mapMovieStats(stats),
       })
     } catch (error) {
       next(error)
@@ -426,6 +561,14 @@ function mapMovieDetail(movie, reviews = []) {
   }
 }
 
+function mapMovieStats(stats) {
+  return {
+    moviesWatched: stats?.moviesWatched ?? 0,
+    timeWatchedMinutes: stats?.timeWatchedMinutes ?? 0,
+    watchlistCount: stats?.watchlistCount ?? 0,
+  }
+}
+
 function mapMovieReview(review) {
   if (!review?.id || !review?.author || !review?.content) {
     return null
@@ -561,5 +704,20 @@ function mapWatchlistMovie(movie) {
     posterUrl: resolvePosterPath(movie.poster_path),
     backdropUrl: resolveBackdropPath(movie.backdrop_path),
     watchlistedAt: movie.watchlisted_at ?? null,
+  }
+}
+
+function mapWatchedMovie(movie) {
+  return {
+    id: movie.tmdb_id,
+    title: movie.title,
+    year: formatMovieYear(movie.release_date),
+    meta: Array.isArray(movie.genre_names) && movie.genre_names.length > 0 ? movie.genre_names.join(', ') : 'Genre TBA',
+    rating: typeof movie.vote_average === 'number' ? movie.vote_average : 0,
+    type: 'Movies',
+    posterUrl: resolvePosterPath(movie.poster_path),
+    backdropUrl: resolveBackdropPath(movie.backdrop_path),
+    watchedAt: movie.watched_at ?? null,
+    runtimeMinutes: typeof movie.runtime_minutes === 'number' ? movie.runtime_minutes : 0,
   }
 }
