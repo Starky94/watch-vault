@@ -34,9 +34,11 @@ async function closeServer(server) {
 
 test('listMovies requests the top 30 titles ordered by popularity descending', async () => {
   let executedSql = ''
+  let executedParams = []
   const pool = {
-    async query(sql) {
+    async query(sql, params) {
       executedSql = sql
+      executedParams = params
       return { rows: [] }
     },
   }
@@ -45,7 +47,9 @@ test('listMovies requests the top 30 titles ordered by popularity descending', a
 
   assert.deepEqual(movies, [])
   assert.match(executedSql, /ORDER BY popularity DESC NULLS LAST, tmdb_id ASC/i)
-  assert.match(executedSql, /LIMIT 30/i)
+  assert.match(executedSql, /LIMIT \$1/i)
+  assert.match(executedSql, /OFFSET \$2/i)
+  assert.deepEqual(executedParams, [30, 0])
 })
 
 test('ensureMoviesTable creates normalized cast tables and watchlist tables', async () => {
@@ -157,6 +161,308 @@ test('POST /api/auth/login rejects invalid credentials', async () => {
 
     assert.equal(response.status, 401)
     assert.equal(payload.error, 'Invalid username or password')
+  } finally {
+    await closeServer(server)
+  }
+})
+
+test('POST /api/auth/change-password updates the password for an authenticated user', async () => {
+  const users = new Map([
+    ['florind', { id: 1, username: 'florind', full_name: 'Florin Druta', password: 'test' }],
+  ])
+
+  const pool = {
+    async query(sql, params) {
+      if (isSchemaSetupQuery(sql)) {
+        return { rowCount: null }
+      }
+
+      if (sql.includes('FROM users') && sql.includes('AND password = $2')) {
+        const [username, password] = params
+        const user = users.get(username)
+
+        if (!user || user.password !== password) {
+          return { rows: [] }
+        }
+
+        return {
+          rows: [
+            {
+              id: user.id,
+              username: user.username,
+              full_name: user.full_name,
+            },
+          ],
+        }
+      }
+
+      if (sql.includes('FROM users') && sql.includes('WHERE username = $1') && sql.includes('LIMIT 1')) {
+        const [username] = params
+        const user = users.get(username)
+
+        return {
+          rows: user
+            ? [
+                {
+                  id: user.id,
+                  username: user.username,
+                  full_name: user.full_name,
+                },
+              ]
+            : [],
+        }
+      }
+
+      if (sql.includes('UPDATE users') && sql.includes('SET') && sql.includes('password = $3')) {
+        const [username, currentPassword, newPassword] = params
+        const user = users.get(username)
+
+        if (!user || user.password !== currentPassword) {
+          return { rows: [] }
+        }
+
+        user.password = newPassword
+
+        return {
+          rows: [
+            {
+              id: user.id,
+              username: user.username,
+              full_name: user.full_name,
+            },
+          ],
+        }
+      }
+
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+
+  const app = await createApp(pool)
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const changePasswordResponse = await fetch(`http://127.0.0.1:${address.port}/api/auth/change-password`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-watchvault-username': 'florind',
+      },
+      body: JSON.stringify({
+        currentPassword: 'test',
+        newPassword: 'fresh-pass',
+        confirmPassword: 'fresh-pass',
+      }),
+    })
+    const changePasswordPayload = await changePasswordResponse.json()
+
+    assert.equal(changePasswordResponse.status, 200)
+    assert.equal(changePasswordPayload.message, 'Password changed successfully')
+
+    const oldPasswordResponse = await fetch(`http://127.0.0.1:${address.port}/api/auth/login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        username: 'florind',
+        password: 'test',
+      }),
+    })
+
+    assert.equal(oldPasswordResponse.status, 401)
+
+    const newPasswordResponse = await fetch(`http://127.0.0.1:${address.port}/api/auth/login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        username: 'florind',
+        password: 'fresh-pass',
+      }),
+    })
+    const newPasswordPayload = await newPasswordResponse.json()
+
+    assert.equal(newPasswordResponse.status, 200)
+    assert.deepEqual(newPasswordPayload.user, {
+      username: 'florind',
+      fullName: 'Florin Druta',
+    })
+  } finally {
+    await closeServer(server)
+  }
+})
+
+test('POST /api/auth/change-password rejects missing authentication', async () => {
+  const pool = {
+    async query(sql) {
+      if (isSchemaSetupQuery(sql)) {
+        return { rowCount: null }
+      }
+
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+
+  const app = await createApp(pool)
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/auth/change-password`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        currentPassword: 'test',
+        newPassword: 'fresh-pass',
+        confirmPassword: 'fresh-pass',
+      }),
+    })
+    const payload = await response.json()
+
+    assert.equal(response.status, 401)
+    assert.equal(payload.error, 'Authentication required')
+  } finally {
+    await closeServer(server)
+  }
+})
+
+test('POST /api/auth/change-password rejects an incorrect current password', async () => {
+  const pool = {
+    async query(sql, params) {
+      if (isSchemaSetupQuery(sql)) {
+        return { rowCount: null }
+      }
+
+      if (sql.includes('FROM users') && sql.includes('WHERE username = $1') && sql.includes('LIMIT 1')) {
+        return {
+          rows: [
+            {
+              id: 1,
+              username: params[0],
+              full_name: 'Florin Druta',
+            },
+          ],
+        }
+      }
+
+      if (sql.includes('UPDATE users') && sql.includes('password = $3')) {
+        return { rows: [] }
+      }
+
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+
+  const app = await createApp(pool)
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/auth/change-password`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-watchvault-username': 'florind',
+      },
+      body: JSON.stringify({
+        currentPassword: 'wrong',
+        newPassword: 'fresh-pass',
+        confirmPassword: 'fresh-pass',
+      }),
+    })
+    const payload = await response.json()
+
+    assert.equal(response.status, 401)
+    assert.equal(payload.error, 'Current password is incorrect')
+  } finally {
+    await closeServer(server)
+  }
+})
+
+test('POST /api/auth/change-password validates new password requirements', async () => {
+  const pool = {
+    async query(sql, params) {
+      if (isSchemaSetupQuery(sql)) {
+        return { rowCount: null }
+      }
+
+      if (sql.includes('FROM users') && sql.includes('WHERE username = $1') && sql.includes('LIMIT 1')) {
+        return {
+          rows: [
+            {
+              id: 1,
+              username: params[0],
+              full_name: 'Florin Druta',
+            },
+          ],
+        }
+      }
+
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+
+  const app = await createApp(pool)
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+
+    const emptyPasswordResponse = await fetch(`http://127.0.0.1:${address.port}/api/auth/change-password`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-watchvault-username': 'florind',
+      },
+      body: JSON.stringify({
+        currentPassword: 'test',
+        newPassword: '   ',
+        confirmPassword: '   ',
+      }),
+    })
+    const emptyPasswordPayload = await emptyPasswordResponse.json()
+
+    assert.equal(emptyPasswordResponse.status, 400)
+    assert.equal(emptyPasswordPayload.error, 'New password is required')
+
+    const samePasswordResponse = await fetch(`http://127.0.0.1:${address.port}/api/auth/change-password`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-watchvault-username': 'florind',
+      },
+      body: JSON.stringify({
+        currentPassword: 'test',
+        newPassword: 'test',
+        confirmPassword: 'test',
+      }),
+    })
+    const samePasswordPayload = await samePasswordResponse.json()
+
+    assert.equal(samePasswordResponse.status, 400)
+    assert.equal(samePasswordPayload.error, 'New password must be different from your current password')
+
+    const mismatchResponse = await fetch(`http://127.0.0.1:${address.port}/api/auth/change-password`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-watchvault-username': 'florind',
+      },
+      body: JSON.stringify({
+        currentPassword: 'test',
+        newPassword: 'fresh-pass',
+        confirmPassword: 'not-the-same',
+      }),
+    })
+    const mismatchPayload = await mismatchResponse.json()
+
+    assert.equal(mismatchResponse.status, 400)
+    assert.equal(mismatchPayload.error, 'New password confirmation does not match')
   } finally {
     await closeServer(server)
   }
@@ -747,7 +1053,7 @@ test('watched endpoints toggle watched state, remove watchlist entries, and retu
   }
 })
 
-test('listRecentlyReleasedMovies requests the latest 10 non-future titles ordered by release date descending', async () => {
+test('listRecentlyReleasedMovies requests paged non-future titles ordered by release date descending', async () => {
   let executedSql = ''
   let executedParams = []
   const pool = {
@@ -765,10 +1071,11 @@ test('listRecentlyReleasedMovies requests the latest 10 non-future titles ordere
   assert.match(executedSql, /movies\.release_date <= CURRENT_DATE/i)
   assert.match(executedSql, /ORDER BY movies\.release_date DESC, movies\.tmdb_id ASC/i)
   assert.match(executedSql, /LIMIT \$1/i)
-  assert.deepEqual(executedParams, [10])
+  assert.match(executedSql, /OFFSET \$2/i)
+  assert.deepEqual(executedParams, [30, 0])
 })
 
-test('listRecentlyReleasedMovies caps the limit at 30', async () => {
+test('listRecentlyReleasedMovies supports page offsets without a hard 30-title ceiling', async () => {
   let executedParams = []
   const pool = {
     async query(_sql, params) {
@@ -777,12 +1084,12 @@ test('listRecentlyReleasedMovies caps the limit at 30', async () => {
     },
   }
 
-  await listRecentlyReleasedMovies(pool, { limit: 50 })
+  await listRecentlyReleasedMovies(pool, { limit: 50, page: 2 })
 
-  assert.deepEqual(executedParams, [30])
+  assert.deepEqual(executedParams, [50, 50])
 })
 
-test('listTopRatedMovies requests the top 10 released titles ordered by score descending', async () => {
+test('listTopRatedMovies requests paged released titles ordered by score descending', async () => {
   let executedSql = ''
   let executedParams = []
   const pool = {
@@ -800,10 +1107,11 @@ test('listTopRatedMovies requests the top 10 released titles ordered by score de
   assert.match(executedSql, /movies\.release_date <= CURRENT_DATE/i)
   assert.match(executedSql, /ORDER BY movies\.vote_average DESC NULLS LAST, movies\.vote_count DESC NULLS LAST, movies\.tmdb_id ASC/i)
   assert.match(executedSql, /LIMIT \$1/i)
-  assert.deepEqual(executedParams, [10])
+  assert.match(executedSql, /OFFSET \$2/i)
+  assert.deepEqual(executedParams, [30, 0])
 })
 
-test('listTopRatedMovies caps the limit at 30', async () => {
+test('listTopRatedMovies supports page offsets without a hard 30-title ceiling', async () => {
   let executedParams = []
   const pool = {
     async query(_sql, params) {
@@ -812,9 +1120,9 @@ test('listTopRatedMovies caps the limit at 30', async () => {
     },
   }
 
-  await listTopRatedMovies(pool, { limit: 50 })
+  await listTopRatedMovies(pool, { limit: 50, page: 2 })
 
-  assert.deepEqual(executedParams, [30])
+  assert.deepEqual(executedParams, [50, 50])
 })
 
 test('countMovies returns the stored movie total', async () => {
@@ -851,7 +1159,7 @@ test('countStoredDataBytes returns the stored data footprint for app tables', as
   assert.match(executedSql, /pg_total_relation_size/i)
 })
 
-test('listUpcomingMovies requests future titles in the next 30 days ordered by release date ascending', async () => {
+test('listUpcomingMovies requests paged future titles in the next 30 days ordered by release date ascending', async () => {
   let executedSql = ''
   let executedParams = []
   const pool = {
@@ -870,10 +1178,11 @@ test('listUpcomingMovies requests future titles in the next 30 days ordered by r
   assert.match(executedSql, /movies\.release_date <= CURRENT_DATE \+ INTERVAL '30 days'/i)
   assert.match(executedSql, /ORDER BY movies\.release_date ASC, movies\.tmdb_id ASC/i)
   assert.match(executedSql, /LIMIT \$1/i)
-  assert.deepEqual(executedParams, [10])
+  assert.match(executedSql, /OFFSET \$2/i)
+  assert.deepEqual(executedParams, [30, 0])
 })
 
-test('listUpcomingMovies caps the limit at 30', async () => {
+test('listUpcomingMovies supports page offsets without a hard 30-title ceiling', async () => {
   let executedParams = []
   const pool = {
     async query(_sql, params) {
@@ -882,9 +1191,9 @@ test('listUpcomingMovies caps the limit at 30', async () => {
     },
   }
 
-  await listUpcomingMovies(pool, { limit: 50 })
+  await listUpcomingMovies(pool, { limit: 50, page: 2 })
 
-  assert.deepEqual(executedParams, [30])
+  assert.deepEqual(executedParams, [50, 50])
 })
 
 test('listSimilarMovies requests up to 10 related titles sharing at least one genre', async () => {
@@ -2116,13 +2425,19 @@ test('GET /api/movies/recently-released forwards a requested limit', async () =>
 
   try {
     const address = server.address()
-    const response = await fetch(`http://127.0.0.1:${address.port}/api/movies/recently-released?limit=30`)
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/movies/recently-released?limit=30&page=2`)
     const payload = await response.json()
 
     assert.equal(response.status, 200)
-    assert.deepEqual(capturedParams, [[30]])
+    assert.deepEqual(capturedParams, [[31, 31]])
     assert.equal(payload.count, 0)
     assert.deepEqual(payload.movies, [])
+    assert.deepEqual(payload.pagination, {
+      page: 2,
+      pageSize: 30,
+      hasNextPage: false,
+      hasPreviousPage: true,
+    })
   } finally {
     await new Promise((resolve, reject) => {
       server.close((error) => {
@@ -2297,13 +2612,19 @@ test('GET /api/movies/top-rated forwards a requested limit', async () => {
 
   try {
     const address = server.address()
-    const response = await fetch(`http://127.0.0.1:${address.port}/api/movies/top-rated?limit=30`)
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/movies/top-rated?limit=30&page=2`)
     const payload = await response.json()
 
     assert.equal(response.status, 200)
-    assert.deepEqual(capturedParams, [[30]])
+    assert.deepEqual(capturedParams, [[31, 31]])
     assert.equal(payload.count, 0)
     assert.deepEqual(payload.movies, [])
+    assert.deepEqual(payload.pagination, {
+      page: 2,
+      pageSize: 30,
+      hasNextPage: false,
+      hasPreviousPage: true,
+    })
   } finally {
     await new Promise((resolve, reject) => {
       server.close((error) => {
@@ -2340,13 +2661,19 @@ test('GET /api/movies/upcoming forwards a requested limit', async () => {
 
   try {
     const address = server.address()
-    const response = await fetch(`http://127.0.0.1:${address.port}/api/movies/upcoming?limit=30`)
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/movies/upcoming?limit=30&page=2`)
     const payload = await response.json()
 
     assert.equal(response.status, 200)
-    assert.deepEqual(capturedParams, [[30]])
+    assert.deepEqual(capturedParams, [[31, 31]])
     assert.equal(payload.count, 0)
     assert.deepEqual(payload.movies, [])
+    assert.deepEqual(payload.pagination, {
+      page: 2,
+      pageSize: 30,
+      hasNextPage: false,
+      hasPreviousPage: true,
+    })
   } finally {
     await new Promise((resolve, reject) => {
       server.close((error) => {

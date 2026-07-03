@@ -473,7 +473,12 @@ export async function replaceMovieCredits(pool, tmdbId, credits) {
   }
 }
 
-export async function listMovies(pool) {
+export async function listMovies(pool, options = {}) {
+  const { limit = 30, page = 1 } = options
+  const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 30
+  const normalizedPage = Number.isInteger(page) ? Math.max(1, page) : 1
+  const offset = (normalizedPage - 1) * normalizedLimit
+
   const result = await pool.query(`
     SELECT
       movies.tmdb_id,
@@ -505,8 +510,9 @@ export async function listMovies(pool) {
     LEFT JOIN genres ON genres.tmdb_genre_id = genre_ids.tmdb_genre_id
     GROUP BY movies.id
     ORDER BY popularity DESC NULLS LAST, tmdb_id ASC
-    LIMIT 30
-  `)
+    LIMIT $1
+    OFFSET $2
+  `, [normalizedLimit, offset])
 
   return result.rows
 }
@@ -541,6 +547,26 @@ export async function findUserByUsername(pool, username) {
       LIMIT 1
     `,
     [username]
+  )
+
+  return result.rows[0] ?? null
+}
+
+export async function updateUserPassword(pool, { username, currentPassword, newPassword }) {
+  const result = await pool.query(
+    `
+      UPDATE users
+      SET
+        password = $3,
+        updated_at = NOW()
+      WHERE username = $1
+        AND password = $2
+      RETURNING
+        id,
+        username,
+        full_name
+    `,
+    [username, currentPassword, newPassword]
   )
 
   return result.rows[0] ?? null
@@ -652,8 +678,10 @@ export async function listMoviesForCreditsBackfill(pool) {
 }
 
 export async function listRecentlyReleasedMovies(pool, options = {}) {
-  const { limit = 10 } = options
-  const normalizedLimit = Number.isInteger(limit) ? Math.max(1, Math.min(limit, 30)) : 10
+  const { limit = 30, page = 1 } = options
+  const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 30
+  const normalizedPage = Number.isInteger(page) ? Math.max(1, page) : 1
+  const offset = (normalizedPage - 1) * normalizedLimit
 
   const result = await pool.query(
     `
@@ -690,16 +718,19 @@ export async function listRecentlyReleasedMovies(pool, options = {}) {
     GROUP BY movies.id
     ORDER BY movies.release_date DESC, movies.tmdb_id ASC
     LIMIT $1
+    OFFSET $2
   `,
-    [normalizedLimit]
+    [normalizedLimit, offset]
   )
 
   return result.rows
 }
 
 export async function listTopRatedMovies(pool, options = {}) {
-  const { limit = 10 } = options
-  const normalizedLimit = Number.isInteger(limit) ? Math.max(1, Math.min(limit, 30)) : 10
+  const { limit = 30, page = 1 } = options
+  const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 30
+  const normalizedPage = Number.isInteger(page) ? Math.max(1, page) : 1
+  const offset = (normalizedPage - 1) * normalizedLimit
 
   const result = await pool.query(
     `
@@ -736,16 +767,19 @@ export async function listTopRatedMovies(pool, options = {}) {
     GROUP BY movies.id
     ORDER BY movies.vote_average DESC NULLS LAST, movies.vote_count DESC NULLS LAST, movies.tmdb_id ASC
     LIMIT $1
+    OFFSET $2
   `,
-    [normalizedLimit]
+    [normalizedLimit, offset]
   )
 
   return result.rows
 }
 
 export async function listUpcomingMovies(pool, options = {}) {
-  const { limit = 10 } = options
-  const normalizedLimit = Number.isInteger(limit) ? Math.max(1, Math.min(limit, 30)) : 10
+  const { limit = 30, page = 1 } = options
+  const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 30
+  const normalizedPage = Number.isInteger(page) ? Math.max(1, page) : 1
+  const offset = (normalizedPage - 1) * normalizedLimit
 
   const result = await pool.query(
     `
@@ -783,8 +817,9 @@ export async function listUpcomingMovies(pool, options = {}) {
     GROUP BY movies.id
     ORDER BY movies.release_date ASC, movies.tmdb_id ASC
     LIMIT $1
+    OFFSET $2
   `,
-    [normalizedLimit]
+    [normalizedLimit, offset]
   )
 
   return result.rows

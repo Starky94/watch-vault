@@ -18,6 +18,7 @@ import {
   removeMovieFromWatchlistForUser,
   listSimilarMovies,
   listTopRatedMovies,
+  updateUserPassword,
   listUpcomingMovies,
 } from './database.js'
 import { adminJobs, findAdminJob, listAdminJobs } from './adminJobs.js'
@@ -61,6 +62,71 @@ export async function createApp(pool, options = {}) {
         fullName: user.full_name,
       },
     })
+  })
+
+  app.post('/api/auth/change-password', async (request, response, next) => {
+    const currentPassword = typeof request.body?.currentPassword === 'string' ? request.body.currentPassword : ''
+    const newPassword = typeof request.body?.newPassword === 'string' ? request.body.newPassword : ''
+    const confirmPasswordProvided = typeof request.body?.confirmPassword === 'string'
+    const confirmPassword = confirmPasswordProvided ? request.body.confirmPassword : ''
+
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+
+      if (!user) {
+        response.status(401).json({
+          error: 'Authentication required',
+        })
+        return
+      }
+
+      if (!currentPassword) {
+        response.status(400).json({
+          error: 'Current password is required',
+        })
+        return
+      }
+
+      if (!newPassword.trim()) {
+        response.status(400).json({
+          error: 'New password is required',
+        })
+        return
+      }
+
+      if (newPassword === currentPassword) {
+        response.status(400).json({
+          error: 'New password must be different from your current password',
+        })
+        return
+      }
+
+      if (confirmPasswordProvided && confirmPassword !== newPassword) {
+        response.status(400).json({
+          error: 'New password confirmation does not match',
+        })
+        return
+      }
+
+      const updatedUser = await updateUserPassword(pool, {
+        username: user.username,
+        currentPassword,
+        newPassword,
+      })
+
+      if (!updatedUser) {
+        response.status(401).json({
+          error: 'Current password is incorrect',
+        })
+        return
+      }
+
+      response.status(200).json({
+        message: 'Password changed successfully',
+      })
+    } catch (error) {
+      next(error)
+    }
   })
 
   app.get('/api/watchlist', async (request, response, next) => {
@@ -363,58 +429,74 @@ export async function createApp(pool, options = {}) {
     }
   })
 
-  app.get('/api/movies', async (_request, response, next) => {
+  app.get('/api/movies', async (request, response, next) => {
     try {
-      const movies = await listMovies(pool)
+      const pagination = readPaginationQuery(request, { defaultLimit: 30 })
+      const movies = await listMovies(pool, {
+        limit: pagination.limit + 1,
+        page: pagination.page,
+      })
+      const pagedMovies = movies.slice(0, pagination.limit)
+
       response.json({
-        count: movies.length,
-        movies,
-        featuredMovie: mapFeaturedMovie(movies[0] ?? null),
+        count: pagedMovies.length,
+        movies: pagedMovies,
+        featuredMovie: mapFeaturedMovie(pagedMovies[0] ?? null),
+        pagination: buildPaginationPayload(pagination, movies.length > pagination.limit),
       })
     } catch (error) {
       next(error)
     }
   })
 
-  app.get('/api/movies/recently-released', async (_request, response, next) => {
+  app.get('/api/movies/recently-released', async (request, response, next) => {
     try {
-      const requestedLimit = Number.parseInt(_request.query.limit, 10)
+      const pagination = readPaginationQuery(request, { defaultLimit: 30 })
       const movies = await listRecentlyReleasedMovies(pool, {
-        limit: Number.isInteger(requestedLimit) ? requestedLimit : 10,
+        limit: pagination.limit + 1,
+        page: pagination.page,
       })
+      const pagedMovies = movies.slice(0, pagination.limit)
       response.json({
-        count: movies.length,
-        movies,
+        count: pagedMovies.length,
+        movies: pagedMovies,
+        pagination: buildPaginationPayload(pagination, movies.length > pagination.limit),
       })
     } catch (error) {
       next(error)
     }
   })
 
-  app.get('/api/movies/top-rated', async (_request, response, next) => {
+  app.get('/api/movies/top-rated', async (request, response, next) => {
     try {
-      const requestedLimit = Number.parseInt(_request.query.limit, 10)
+      const pagination = readPaginationQuery(request, { defaultLimit: 30 })
       const movies = await listTopRatedMovies(pool, {
-        limit: Number.isInteger(requestedLimit) ? requestedLimit : 10,
+        limit: pagination.limit + 1,
+        page: pagination.page,
       })
+      const pagedMovies = movies.slice(0, pagination.limit)
       response.json({
-        count: movies.length,
-        movies,
+        count: pagedMovies.length,
+        movies: pagedMovies,
+        pagination: buildPaginationPayload(pagination, movies.length > pagination.limit),
       })
     } catch (error) {
       next(error)
     }
   })
 
-  app.get('/api/movies/upcoming', async (_request, response, next) => {
+  app.get('/api/movies/upcoming', async (request, response, next) => {
     try {
-      const requestedLimit = Number.parseInt(_request.query.limit, 10)
+      const pagination = readPaginationQuery(request, { defaultLimit: 30 })
       const movies = await listUpcomingMovies(pool, {
-        limit: Number.isInteger(requestedLimit) ? requestedLimit : 10,
+        limit: pagination.limit + 1,
+        page: pagination.page,
       })
+      const pagedMovies = movies.slice(0, pagination.limit)
       response.json({
-        count: movies.length,
-        movies,
+        count: pagedMovies.length,
+        movies: pagedMovies,
+        pagination: buildPaginationPayload(pagination, movies.length > pagination.limit),
       })
     } catch (error) {
       next(error)
@@ -566,6 +648,25 @@ function mapMovieStats(stats) {
     moviesWatched: stats?.moviesWatched ?? 0,
     timeWatchedMinutes: stats?.timeWatchedMinutes ?? 0,
     watchlistCount: stats?.watchlistCount ?? 0,
+  }
+}
+
+function readPaginationQuery(request, { defaultLimit = 30 } = {}) {
+  const requestedLimit = Number.parseInt(request.query.limit, 10)
+  const requestedPage = Number.parseInt(request.query.page, 10)
+
+  return {
+    limit: Number.isInteger(requestedLimit) && requestedLimit > 0 ? requestedLimit : defaultLimit,
+    page: Number.isInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1,
+  }
+}
+
+function buildPaginationPayload(pagination, hasNextPage) {
+  return {
+    page: pagination.page,
+    pageSize: pagination.limit,
+    hasNextPage,
+    hasPreviousPage: pagination.page > 1,
   }
 }
 

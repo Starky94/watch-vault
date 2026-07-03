@@ -12,7 +12,6 @@ const navItems = [
   { label: 'Movies', icon: ClapperIcon, view: primaryViews.movies },
   { label: 'TV Shows', icon: TvIcon },
   { label: 'Watchlist', icon: BookmarkIcon, view: primaryViews.watchlist },
-  { label: 'Favorites', icon: HeartIcon },
   { label: 'Calendar', icon: CalendarIcon },
   { label: 'Stats', icon: BarsIcon },
 ]
@@ -25,7 +24,7 @@ const genres = [
   { label: 'Thriller', color: '#ff6cb6' },
 ]
 
-const movieTabs = ['All Movies', 'Popular', 'Now Playing', 'Upcoming', 'Top Rated', 'Favorites']
+const movieTabs = ['All Movies', 'Popular', 'Now Playing', 'Upcoming', 'Top Rated']
 const movieScreenModes = {
   overview: 'overview',
   popularList: 'popularList',
@@ -38,6 +37,7 @@ const appScreens = {
   dashboard: 'dashboard',
   admin: 'admin',
   login: 'login',
+  account: 'account',
 }
 
 const routeKinds = {
@@ -91,6 +91,7 @@ const mobileNavItems = [
 ]
 
 const watchlistTabs = ['All', 'Movies', 'TV Shows']
+const moviesPageSize = 30
 
 const emptyMovieStats = {
   moviesWatched: 0,
@@ -110,27 +111,19 @@ function App() {
   const [user, setUser] = useState(null)
   const [authStatus, setAuthStatus] = useState('idle')
   const [authError, setAuthError] = useState('')
-  const [popularMoviesState, setPopularMoviesState] = useState({
+  const [changePasswordState, setChangePasswordState] = useState({
     status: 'idle',
-    movies: [],
-    featuredMovie: null,
     error: '',
+    message: '',
   })
-  const [recentMoviesState, setRecentMoviesState] = useState({
-    status: 'idle',
-    movies: [],
-    error: '',
-  })
-  const [upcomingMoviesState, setUpcomingMoviesState] = useState({
-    status: 'idle',
-    movies: [],
-    error: '',
-  })
-  const [topRatedMoviesState, setTopRatedMoviesState] = useState({
-    status: 'idle',
-    movies: [],
-    error: '',
-  })
+  const [popularMoviesPage, setPopularMoviesPage] = useState(1)
+  const [recentMoviesPage, setRecentMoviesPage] = useState(1)
+  const [upcomingMoviesPage, setUpcomingMoviesPage] = useState(1)
+  const [topRatedMoviesPage, setTopRatedMoviesPage] = useState(1)
+  const [popularMoviesState, setPopularMoviesState] = useState(() => createMovieCollectionState({ includeFeaturedMovie: true }))
+  const [recentMoviesState, setRecentMoviesState] = useState(() => createMovieCollectionState())
+  const [upcomingMoviesState, setUpcomingMoviesState] = useState(() => createMovieCollectionState())
+  const [topRatedMoviesState, setTopRatedMoviesState] = useState(() => createMovieCollectionState())
   const [movieDetailState, setMovieDetailState] = useState({
     status: currentRoute.kind === routeKinds.movieDetail ? 'idle' : 'hidden',
     movie: null,
@@ -234,7 +227,26 @@ function App() {
     setCurrentScreen(appScreens.admin)
   }
 
+  function handleOpenAccount() {
+    if (!user) {
+      handleOpenLogin()
+      return
+    }
+
+    setChangePasswordState({
+      status: 'idle',
+      error: '',
+      message: '',
+    })
+    setCurrentScreen(appScreens.account)
+  }
+
   function handleOpenDashboard() {
+    setChangePasswordState({
+      status: 'idle',
+      error: '',
+      message: '',
+    })
     setCurrentScreen(appScreens.dashboard)
   }
 
@@ -256,6 +268,11 @@ function App() {
       status: 'idle',
       stats: emptyMovieStats,
       error: '',
+    })
+    setChangePasswordState({
+      status: 'idle',
+      error: '',
+      message: '',
     })
     setCurrentScreen(appScreens.dashboard)
 
@@ -336,6 +353,47 @@ function App() {
     }
   }
 
+  async function handleChangePassword(passwords) {
+    if (!user) {
+      handleOpenLogin()
+      return
+    }
+
+    setChangePasswordState({
+      status: 'loading',
+      error: '',
+      message: '',
+    })
+
+    try {
+      const response = await fetch('/api/auth/change-password', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...buildAuthHeaders(user),
+        },
+        body: JSON.stringify(passwords),
+      })
+      const payload = await response.json().catch(() => ({}))
+
+      if (!response.ok) {
+        throw new Error(payload.error || `Request failed with status ${response.status}`)
+      }
+
+      setChangePasswordState({
+        status: 'success',
+        error: '',
+        message: payload.message || 'Password changed successfully',
+      })
+    } catch (error) {
+      setChangePasswordState({
+        status: 'error',
+        error: error instanceof Error ? error.message : 'Unable to change your password right now.',
+        message: '',
+      })
+    }
+  }
+
   function handleMovieViewSelection(view) {
     setActiveView(view)
     if (currentRoute.kind === routeKinds.movieDetail) {
@@ -379,22 +437,41 @@ function App() {
   function handleMovieTabChange(tab) {
     setActiveMovieTab(tab)
 
+    if (tab === 'All Movies') {
+      setPopularMoviesPage(1)
+      setRecentMoviesPage(1)
+      setTopRatedMoviesPage(1)
+      setUpcomingMoviesPage(1)
+    }
+
     if (tab === 'Popular') {
+      if (activeMovieTab !== tab) {
+        setPopularMoviesPage(1)
+      }
       setMoviesScreenMode(movieScreenModes.popularList)
       return
     }
 
     if (tab === 'Now Playing') {
+      if (activeMovieTab !== tab) {
+        setRecentMoviesPage(1)
+      }
       setMoviesScreenMode(movieScreenModes.nowPlayingList)
       return
     }
 
     if (tab === 'Top Rated') {
+      if (activeMovieTab !== tab) {
+        setTopRatedMoviesPage(1)
+      }
       setMoviesScreenMode(movieScreenModes.topRatedList)
       return
     }
 
     if (tab === 'Upcoming') {
+      if (activeMovieTab !== tab) {
+        setUpcomingMoviesPage(1)
+      }
       setMoviesScreenMode(movieScreenModes.upcomingList)
       return
     }
@@ -405,24 +482,28 @@ function App() {
   function handleOpenPopularMovies() {
     setActiveView(primaryViews.movies)
     setActiveMovieTab('Popular')
+    setPopularMoviesPage(1)
     setMoviesScreenMode(movieScreenModes.popularList)
   }
 
   function handleOpenRecentlyReleasedMovies() {
     setActiveView(primaryViews.movies)
     setActiveMovieTab('Now Playing')
+    setRecentMoviesPage(1)
     setMoviesScreenMode(movieScreenModes.nowPlayingList)
   }
 
   function handleOpenUpcomingMovies() {
     setActiveView(primaryViews.movies)
     setActiveMovieTab('Upcoming')
+    setUpcomingMoviesPage(1)
     setMoviesScreenMode(movieScreenModes.upcomingList)
   }
 
   function handleOpenTopRatedMovies() {
     setActiveView(primaryViews.movies)
     setActiveMovieTab('Top Rated')
+    setTopRatedMoviesPage(1)
     setMoviesScreenMode(movieScreenModes.topRatedList)
   }
 
@@ -1025,22 +1106,17 @@ function App() {
   }, [currentRoute])
 
   useEffect(() => {
-    if (activeView !== primaryViews.movies || popularMoviesState.status !== 'idle') {
+    if (activeView !== primaryViews.movies) {
       return
     }
 
     let cancelled = false
 
     async function loadPopularMovies() {
-        setPopularMoviesState({
-          status: 'loading',
-          movies: [],
-          featuredMovie: null,
-          error: '',
-        })
+      setPopularMoviesState(createMovieCollectionLoadingState({ page: popularMoviesPage, includeFeaturedMovie: true }))
 
       try {
-        const response = await fetch('/api/movies')
+        const response = await fetch(buildMoviesApiPath('/api/movies', popularMoviesPage))
 
         if (!response.ok) {
           throw new Error(`Request failed with status ${response.status}`)
@@ -1049,12 +1125,14 @@ function App() {
         const payload = await response.json()
         const movies = Array.isArray(payload.movies) ? payload.movies.map(mapMovieRowToCard) : []
         const featuredMovie = payload.featuredMovie ? mapFeaturedMoviePayload(payload.featuredMovie) : null
+        const pagination = mapPaginationPayload(payload.pagination, popularMoviesPage)
 
         if (!cancelled) {
           setPopularMoviesState({
             status: 'success',
             movies,
             featuredMovie,
+            pagination,
             error: '',
           })
         }
@@ -1064,6 +1142,7 @@ function App() {
             status: 'error',
             movies: [],
             featuredMovie: null,
+            pagination: createPaginationState(popularMoviesPage),
             error: error instanceof Error ? error.message : 'Unable to load movies right now.',
           })
         }
@@ -1075,28 +1154,20 @@ function App() {
     return () => {
       cancelled = true
     }
-    // We only want to kick off the first load when the movies view becomes active.
-    // Adding the status dependency would cancel the in-flight request as soon as
-    // we switch from idle to loading, which traps the UI in its loading state.
-    // oxlint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeView])
+  }, [activeView, popularMoviesPage])
 
   useEffect(() => {
-    if (activeView !== primaryViews.movies || upcomingMoviesState.status !== 'idle') {
+    if (activeView !== primaryViews.movies) {
       return
     }
 
     let cancelled = false
 
     async function loadUpcomingMovies() {
-      setUpcomingMoviesState({
-        status: 'loading',
-        movies: [],
-        error: '',
-      })
+      setUpcomingMoviesState(createMovieCollectionLoadingState({ page: upcomingMoviesPage }))
 
       try {
-        const response = await fetch('/api/movies/upcoming?limit=30')
+        const response = await fetch(buildMoviesApiPath('/api/movies/upcoming', upcomingMoviesPage))
 
         if (!response.ok) {
           throw new Error(`Request failed with status ${response.status}`)
@@ -1104,11 +1175,13 @@ function App() {
 
         const payload = await response.json()
         const movies = Array.isArray(payload.movies) ? payload.movies.map(mapMovieRowToCard) : []
+        const pagination = mapPaginationPayload(payload.pagination, upcomingMoviesPage)
 
         if (!cancelled) {
           setUpcomingMoviesState({
             status: 'success',
             movies,
+            pagination,
             error: '',
           })
         }
@@ -1117,6 +1190,7 @@ function App() {
           setUpcomingMoviesState({
             status: 'error',
             movies: [],
+            pagination: createPaginationState(upcomingMoviesPage),
             error: error instanceof Error ? error.message : 'Unable to load upcoming movies right now.',
           })
         }
@@ -1128,25 +1202,20 @@ function App() {
     return () => {
       cancelled = true
     }
-    // oxlint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeView])
+  }, [activeView, upcomingMoviesPage])
 
   useEffect(() => {
-    if (activeView !== primaryViews.movies || recentMoviesState.status !== 'idle') {
+    if (activeView !== primaryViews.movies) {
       return
     }
 
     let cancelled = false
 
     async function loadRecentMovies() {
-      setRecentMoviesState({
-        status: 'loading',
-        movies: [],
-        error: '',
-      })
+      setRecentMoviesState(createMovieCollectionLoadingState({ page: recentMoviesPage }))
 
       try {
-        const response = await fetch('/api/movies/recently-released?limit=30')
+        const response = await fetch(buildMoviesApiPath('/api/movies/recently-released', recentMoviesPage))
 
         if (!response.ok) {
           throw new Error(`Request failed with status ${response.status}`)
@@ -1154,11 +1223,13 @@ function App() {
 
         const payload = await response.json()
         const movies = Array.isArray(payload.movies) ? payload.movies.map(mapMovieRowToCard) : []
+        const pagination = mapPaginationPayload(payload.pagination, recentMoviesPage)
 
         if (!cancelled) {
           setRecentMoviesState({
             status: 'success',
             movies,
+            pagination,
             error: '',
           })
         }
@@ -1167,6 +1238,7 @@ function App() {
           setRecentMoviesState({
             status: 'error',
             movies: [],
+            pagination: createPaginationState(recentMoviesPage),
             error: error instanceof Error ? error.message : 'Unable to load recently released movies right now.',
           })
         }
@@ -1178,25 +1250,20 @@ function App() {
     return () => {
       cancelled = true
     }
-    // oxlint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeView])
+  }, [activeView, recentMoviesPage])
 
   useEffect(() => {
-    if (activeView !== primaryViews.movies || topRatedMoviesState.status !== 'idle') {
+    if (activeView !== primaryViews.movies) {
       return
     }
 
     let cancelled = false
 
     async function loadTopRatedMovies() {
-      setTopRatedMoviesState({
-        status: 'loading',
-        movies: [],
-        error: '',
-      })
+      setTopRatedMoviesState(createMovieCollectionLoadingState({ page: topRatedMoviesPage }))
 
       try {
-        const response = await fetch('/api/movies/top-rated?limit=30')
+        const response = await fetch(buildMoviesApiPath('/api/movies/top-rated', topRatedMoviesPage))
 
         if (!response.ok) {
           throw new Error(`Request failed with status ${response.status}`)
@@ -1204,11 +1271,13 @@ function App() {
 
         const payload = await response.json()
         const movies = Array.isArray(payload.movies) ? payload.movies.map(mapMovieRowToCard) : []
+        const pagination = mapPaginationPayload(payload.pagination, topRatedMoviesPage)
 
         if (!cancelled) {
           setTopRatedMoviesState({
             status: 'success',
             movies,
+            pagination,
             error: '',
           })
         }
@@ -1217,6 +1286,7 @@ function App() {
           setTopRatedMoviesState({
             status: 'error',
             movies: [],
+            pagination: createPaginationState(topRatedMoviesPage),
             error: error instanceof Error ? error.message : 'Unable to load top rated movies right now.',
           })
         }
@@ -1228,8 +1298,7 @@ function App() {
     return () => {
       cancelled = true
     }
-    // oxlint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeView])
+  }, [activeView, topRatedMoviesPage])
 
   const watchlistMovieIds = new Set(watchlistState.movies.map((movie) => Number(movie.id)))
   const watchedMovieIds = new Set(watchedState.movies.map((movie) => Number(movie.id)))
@@ -1296,6 +1365,7 @@ function App() {
               activeView={activeView}
               currentScreen={currentScreen}
               onOpenAdmin={handleOpenAdmin}
+              onOpenAccount={handleOpenAccount}
               onOpenLogin={handleOpenLogin}
               onLogout={handleLogout}
               user={user}
@@ -1309,6 +1379,13 @@ function App() {
                 onBack={handleOpenDashboard}
                 onRunJob={handleRunAdminJob}
               />
+            ) : currentScreen === appScreens.account ? (
+              <AccountScreen
+                changePasswordState={changePasswordState}
+                onBack={handleOpenDashboard}
+                onSubmit={handleChangePassword}
+                user={user}
+              />
             ) : activeView === primaryViews.home ? (
               <HomeScreen user={user} onOpenWatchlistCta={handleOpenWatchlistCta} stats={homeStats} />
             ) : activeView === primaryViews.watchlist ? (
@@ -1317,6 +1394,7 @@ function App() {
                 isSignedIn={Boolean(user)}
                 onTabChange={handleWatchlistTabChange}
                 onOpenLogin={handleOpenLogin}
+                onOpenMovie={handleOpenMovieDetail}
                 watchlistState={watchlistState}
               />
             ) : currentRoute.kind === routeKinds.movieDetail ? (
@@ -1339,9 +1417,13 @@ function App() {
                 setActiveTab={handleMovieTabChange}
                 screenMode={moviesScreenMode}
                 popularMoviesState={popularMoviesState}
+                onChangePopularPage={setPopularMoviesPage}
                 recentMoviesState={recentMoviesState}
+                onChangeRecentPage={setRecentMoviesPage}
                 topRatedMoviesState={topRatedMoviesState}
+                onChangeTopRatedPage={setTopRatedMoviesPage}
                 upcomingMoviesState={upcomingMoviesState}
+                onChangeUpcomingPage={setUpcomingMoviesPage}
                 movieStats={moviesPageStats}
                 watchedActionState={watchedActionState}
                 watchedMovieIds={watchedMovieIds}
@@ -1381,7 +1463,7 @@ function Brand() {
   )
 }
 
-function DesktopTopbar({ activeView, currentScreen, onOpenAdmin, onOpenLogin, onLogout, user }) {
+function DesktopTopbar({ activeView, currentScreen, onOpenAdmin, onOpenAccount, onOpenLogin, onLogout, user }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef(null)
 
@@ -1406,6 +1488,11 @@ function DesktopTopbar({ activeView, currentScreen, onOpenAdmin, onOpenLogin, on
   function handleOpenAdminMenuItem() {
     setMenuOpen(false)
     onOpenAdmin()
+  }
+
+  function handleOpenAccountMenuItem() {
+    setMenuOpen(false)
+    onOpenAccount()
   }
 
   function handleLogoutMenuItem() {
@@ -1452,11 +1539,12 @@ function DesktopTopbar({ activeView, currentScreen, onOpenAdmin, onOpenLogin, on
             {menuOpen ? (
               <div className="profile-dropdown" role="menu" aria-label="Profile options">
                 <div className="profile-dropdown-user">
-                  <span>{user.fullName}</span>
+                  <strong>{user.fullName}</strong>
+                  <span>@{user.username}</span>
                 </div>
-                <button type="button" className="profile-dropdown-item disabled" disabled role="menuitem">
+                <button type="button" className="profile-dropdown-item" onClick={handleOpenAccountMenuItem} role="menuitem">
                   <UserIcon />
-                  <span>Profile</span>
+                  <span>Change Password</span>
                 </button>
                 <button type="button" className="profile-dropdown-item" onClick={handleOpenAdminMenuItem} role="menuitem">
                   <ShieldIcon />
@@ -1757,14 +1845,119 @@ function AdminScreen({ adminOverviewState, adminRunState, onBack, onRunJob }) {
   )
 }
 
+function AccountScreen({ changePasswordState, onBack, onSubmit, user }) {
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+
+  useEffect(() => {
+    if (changePasswordState.status === 'success') {
+      setCurrentPassword('')
+      setNewPassword('')
+      setConfirmPassword('')
+    }
+  }, [changePasswordState.status])
+
+  async function handleSubmit(event) {
+    event.preventDefault()
+    await onSubmit({
+      currentPassword,
+      newPassword,
+      confirmPassword,
+    })
+  }
+
+  return (
+    <section className="account-page">
+      <div className="account-page-header">
+        <div>
+          <p className="admin-kicker">Account</p>
+          <h1>Change your password</h1>
+          <p>
+            {user?.fullName
+              ? `Update the password for ${user.fullName}'s WatchVault account.`
+              : 'Update your WatchVault password.'}
+          </p>
+        </div>
+        <button type="button" className="secondary-button admin-back-button" onClick={onBack}>
+          <ChevronLeftIcon />
+          <span>Back to dashboard</span>
+        </button>
+      </div>
+
+      <div className="account-card">
+        <div className="account-card-copy">
+          <p className="login-kicker">Security</p>
+          <h2>Confirm your current password, then set a new one.</h2>
+          <p>Your signed-in session stays active after the change. Use the new password the next time you sign in.</p>
+        </div>
+
+        <form className="login-form" onSubmit={handleSubmit}>
+          <label className="login-field">
+            <span>Current Password</span>
+            <input
+              type="password"
+              name="currentPassword"
+              autoComplete="current-password"
+              value={currentPassword}
+              onChange={(event) => setCurrentPassword(event.target.value)}
+              required
+            />
+          </label>
+
+          <label className="login-field">
+            <span>New Password</span>
+            <input
+              type="password"
+              name="newPassword"
+              autoComplete="new-password"
+              value={newPassword}
+              onChange={(event) => setNewPassword(event.target.value)}
+              required
+            />
+          </label>
+
+          <label className="login-field">
+            <span>Confirm New Password</span>
+            <input
+              type="password"
+              name="confirmPassword"
+              autoComplete="new-password"
+              value={confirmPassword}
+              onChange={(event) => setConfirmPassword(event.target.value)}
+              required
+            />
+          </label>
+
+          {changePasswordState.error ? <p className="login-error">{changePasswordState.error}</p> : null}
+          {changePasswordState.message ? <p className="account-success">{changePasswordState.message}</p> : null}
+
+          <div className="login-actions">
+            <button type="submit" className="primary-button" disabled={changePasswordState.status === 'loading'}>
+              <span>{changePasswordState.status === 'loading' ? 'Updating...' : 'Update Password'}</span>
+            </button>
+            <button type="button" className="secondary-button" onClick={onBack}>
+              <span>Cancel</span>
+            </button>
+          </div>
+        </form>
+      </div>
+    </section>
+  )
+}
+
 function MoviesScreen({
   activeTab,
   setActiveTab,
   screenMode,
   popularMoviesState,
+  onChangePopularPage,
   recentMoviesState,
+  onChangeRecentPage,
   topRatedMoviesState,
+  onChangeTopRatedPage,
   upcomingMoviesState,
+  onChangeUpcomingPage,
   movieStats,
   watchedActionState,
   watchedMovieIds,
@@ -1791,13 +1984,13 @@ function MoviesScreen({
         <h1>Movies</h1>
         <p>
           {isPopularListMode
-            ? 'Browse the 30 most popular movies imported from your local database.'
+            ? 'Browse popular movies imported from your local database, 30 titles at a time.'
             : isNowPlayingListMode
-              ? 'Browse the latest 30 released movies from your local database.'
+              ? 'Browse recently released movies from your local database, 30 titles at a time.'
               : isTopRatedListMode
-                ? 'Browse the top 30 released movies ordered by score from your local database.'
+                ? 'Browse top rated movies ordered by score, 30 titles at a time.'
               : isUpcomingListMode
-                ? 'Browse the next 30 movies releasing in the next 30 days from your local database.'
+                ? 'Browse upcoming releases from the next 30 days, 30 titles at a time.'
             : 'Discover, track, and organize your favorite films.'}
         </p>
       </div>
@@ -1824,6 +2017,7 @@ function MoviesScreen({
             watchedMovieIds={watchedMovieIds}
             watchlistMovieIds={watchlistMovieIds}
           />
+          <PaginationControls pagination={popularMoviesState.pagination} onPageChange={onChangePopularPage} />
         </ContentSection>
       ) : isNowPlayingListMode ? (
         <ContentSection title="Now Playing">
@@ -1834,6 +2028,7 @@ function MoviesScreen({
             watchedMovieIds={watchedMovieIds}
             watchlistMovieIds={watchlistMovieIds}
           />
+          <PaginationControls pagination={recentMoviesState.pagination} onPageChange={onChangeRecentPage} />
         </ContentSection>
       ) : isTopRatedListMode ? (
         <ContentSection title="Top Rated">
@@ -1844,6 +2039,7 @@ function MoviesScreen({
             watchedMovieIds={watchedMovieIds}
             watchlistMovieIds={watchlistMovieIds}
           />
+          <PaginationControls pagination={topRatedMoviesState.pagination} onPageChange={onChangeTopRatedPage} />
         </ContentSection>
       ) : isUpcomingListMode ? (
         <ContentSection title="Upcoming Soon">
@@ -1854,6 +2050,7 @@ function MoviesScreen({
             watchedMovieIds={watchedMovieIds}
             watchlistMovieIds={watchlistMovieIds}
           />
+          <PaginationControls pagination={upcomingMoviesState.pagination} onPageChange={onChangeUpcomingPage} />
         </ContentSection>
       ) : (
         <>
@@ -1909,7 +2106,11 @@ function MoviesScreen({
 
             <aside className="movies-rail">
               <StatsPanel title="Your Movie Stats" items={movieStats} monthLabel="This Month" />
-              <MovieWatchlistPanel items={watchlistMovies.slice(0, 4)} onOpenWatchlist={onOpenWatchlist} />
+              <MovieWatchlistPanel
+                items={watchlistMovies.slice(0, 4)}
+                onOpenMovie={onOpenMovie}
+                onOpenWatchlist={onOpenWatchlist}
+              />
             </aside>
           </div>
 
@@ -1935,6 +2136,7 @@ function WatchlistScreen({
   isSignedIn,
   onTabChange,
   onOpenLogin,
+  onOpenMovie,
   watchlistState,
 }) {
   const filteredItems = getFilteredWatchlistItems({
@@ -2000,7 +2202,7 @@ function WatchlistScreen({
 
       <div className="watchlist-grid-mobile">
         {filteredItems.map((item) => (
-          <WatchlistCard key={item.id} item={item} compact />
+          <WatchlistCard key={item.id} item={item} compact onOpenMovie={onOpenMovie} />
         ))}
       </div>
 
@@ -2013,12 +2215,17 @@ function WatchlistScreen({
   )
 }
 
-function WatchlistCard({ item, compact = false }) {
+function WatchlistCard({ item, compact = false, onOpenMovie }) {
   const [posterUnavailable, setPosterUnavailable] = useState(false)
   const showPoster = Boolean(item.posterUrl) && !posterUnavailable
 
   return (
-    <article className={`watchlist-card${compact ? ' compact' : ''}`}>
+    <button
+      type="button"
+      className={`watchlist-card watchlist-card-button${compact ? ' compact' : ''}`}
+      onClick={() => onOpenMovie(item)}
+      aria-label={`Open ${item.title}`}
+    >
       <div className={`watchlist-poster accent-${item.accent}${showPoster ? ' has-image' : ''}`}>
         {showPoster ? (
           <img
@@ -2054,15 +2261,10 @@ function WatchlistCard({ item, compact = false }) {
               <StarIcon />
               {item.rating.toFixed(1)}
             </span>
-            <div className="watchlist-card-actions">
-              <button type="button" className="mini-icon-button" aria-label={`More options for ${item.title}`}>
-                <MoreIcon />
-              </button>
-            </div>
           </div>
         )}
       </div>
-    </article>
+    </button>
   )
 }
 
@@ -2451,7 +2653,7 @@ function StatsPanel({ title, items, monthLabel = 'This Month' }) {
   )
 }
 
-function MovieWatchlistPanel({ items, onOpenWatchlist }) {
+function MovieWatchlistPanel({ items, onOpenMovie, onOpenWatchlist }) {
   return (
     <section className="movie-watchlist-panel">
       <div className="section-header">
@@ -2465,19 +2667,24 @@ function MovieWatchlistPanel({ items, onOpenWatchlist }) {
 
       <div className="movie-watchlist-list">
         {items.map((item) => (
-          <MovieWatchlistPanelItem key={item.id} item={item} />
+          <MovieWatchlistPanelItem key={item.id} item={item} onOpenMovie={onOpenMovie} />
         ))}
       </div>
     </section>
   )
 }
 
-function MovieWatchlistPanelItem({ item }) {
+function MovieWatchlistPanelItem({ item, onOpenMovie }) {
   const [posterUnavailable, setPosterUnavailable] = useState(false)
   const showPosterImage = Boolean(item.posterUrl) && !posterUnavailable
 
   return (
-    <article className="movie-watchlist-item">
+    <button
+      type="button"
+      className="movie-watchlist-item movie-watchlist-item-button"
+      onClick={() => onOpenMovie(item)}
+      aria-label={`Open ${item.title}`}
+    >
       <div className={`movie-watchlist-poster ${showPosterImage ? 'has-image' : 'theme-catalog'}`}>
         {showPosterImage ? (
           <img
@@ -2494,16 +2701,11 @@ function MovieWatchlistPanelItem({ item }) {
         <p>{item.year}</p>
         <span>{item.meta}</span>
       </div>
-      <div className="movie-watchlist-meta">
-        <button type="button" className="poster-menu" aria-label={`More options for ${item.title}`}>
-          <MoreIcon />
-        </button>
-        <span className="star-rating">
-          <StarIcon />
-          {item.rating.toFixed(1)}
-        </span>
-      </div>
-    </article>
+      <span className="movie-watchlist-meta star-rating">
+        <StarIcon />
+        {item.rating.toFixed(1)}
+      </span>
+    </button>
   )
 }
 
@@ -2887,6 +3089,35 @@ function SectionMessage({ message, tone = 'neutral' }) {
   return <p className={`section-message${tone === 'error' ? ' error' : ''}`}>{message}</p>
 }
 
+function PaginationControls({ pagination, onPageChange }) {
+  if (!pagination || (!pagination.hasNextPage && !pagination.hasPreviousPage)) {
+    return null
+  }
+
+  return (
+    <div className="pagination-controls" aria-label="Movie pagination">
+      <button
+        type="button"
+        className="secondary-button pagination-button"
+        onClick={() => onPageChange(pagination.page - 1)}
+        disabled={!pagination.hasPreviousPage}
+      >
+        <ChevronLeftIcon />
+        <span>Previous</span>
+      </button>
+      <span className="pagination-label">Page {pagination.page}</span>
+      <button
+        type="button"
+        className="secondary-button pagination-button"
+        onClick={() => onPageChange(pagination.page + 1)}
+        disabled={!pagination.hasNextPage}
+      >
+        <span>Next</span>
+      </button>
+    </div>
+  )
+}
+
 function getFilteredWatchlistItems({ items, activeTab }) {
   return items.filter((item) => {
     if (activeTab === 'Movies' && item.type !== 'Movies') {
@@ -3051,6 +3282,57 @@ async function fetchMovieCollection(path) {
   }
 
   return Array.isArray(payload.movies) ? payload.movies : []
+}
+
+function createMovieCollectionState({ includeFeaturedMovie = false } = {}) {
+  return {
+    status: 'idle',
+    movies: [],
+    pagination: createPaginationState(),
+    ...(includeFeaturedMovie ? { featuredMovie: null } : {}),
+    error: '',
+  }
+}
+
+function createMovieCollectionLoadingState({ page = 1, includeFeaturedMovie = false } = {}) {
+  return {
+    status: 'loading',
+    movies: [],
+    pagination: createPaginationState(page),
+    ...(includeFeaturedMovie ? { featuredMovie: null } : {}),
+    error: '',
+  }
+}
+
+function createPaginationState(page = 1) {
+  return {
+    page,
+    pageSize: moviesPageSize,
+    hasNextPage: false,
+    hasPreviousPage: page > 1,
+  }
+}
+
+function mapPaginationPayload(pagination, fallbackPage = 1) {
+  if (!pagination || typeof pagination !== 'object') {
+    return createPaginationState(fallbackPage)
+  }
+
+  return {
+    page: Number.isInteger(pagination.page) && pagination.page > 0 ? pagination.page : fallbackPage,
+    pageSize: Number.isInteger(pagination.pageSize) && pagination.pageSize > 0 ? pagination.pageSize : moviesPageSize,
+    hasNextPage: Boolean(pagination.hasNextPage),
+    hasPreviousPage: Boolean(pagination.hasPreviousPage),
+  }
+}
+
+function buildMoviesApiPath(basePath, page, pageSize = moviesPageSize) {
+  const params = new URLSearchParams({
+    page: String(page),
+    limit: String(pageSize),
+  })
+
+  return `${basePath}?${params.toString()}`
 }
 
 function countSharedGenres(sourceGenres, candidateGenres) {
@@ -3437,14 +3719,6 @@ function BookmarkIcon() {
   return (
     <IconBase>
       <path d="M7 5.5h10a1 1 0 0 1 1 1v13l-6-3-6 3v-13a1 1 0 0 1 1-1Z" />
-    </IconBase>
-  )
-}
-
-function HeartIcon() {
-  return (
-    <IconBase>
-      <path d="M12 19s-6.5-3.95-6.5-8.6A3.9 3.9 0 0 1 12 7.2a3.9 3.9 0 0 1 6.5 3.2C18.5 15.05 12 19 12 19Z" />
     </IconBase>
   )
 }
