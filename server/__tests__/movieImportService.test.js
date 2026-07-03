@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { loadConfig } from '../config.js'
 import {
+  backfillMovieCredits,
   collectNowPlayingMovies,
   collectPopularMovies,
   collectUpcomingMovies,
@@ -13,6 +14,21 @@ import {
   syncMissingGenres,
 } from '../movieImportService.js'
 import { upsertMovies } from '../database.js'
+
+function isSchemaSetupQuery(sql) {
+  return (
+    sql.includes('CREATE TABLE IF NOT EXISTS movies') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS genres') ||
+    sql.includes('ALTER TABLE movies') ||
+    sql.includes('UPDATE movies') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS cast_members') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS movie_cast') ||
+    sql.includes('CREATE UNIQUE INDEX IF NOT EXISTS movie_cast_unique_credit_idx') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS users') ||
+    sql.includes('INSERT INTO users') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS watchlist_items')
+  )
+}
 
 test('loadConfig throws when DATABASE_URL is missing', () => {
   assert.throws(
@@ -295,11 +311,15 @@ test('upsertMovies inserts unseen rows and updates duplicates', async () => {
       if (sql.includes('INSERT INTO movies')) {
         const tmdbId = params[0]
         if (seen.has(tmdbId)) {
-          return { rowCount: 1, rows: [{ inserted: false }] }
+          return { rowCount: 1, rows: [{ id: tmdbId, inserted: false }] }
         }
 
         seen.add(tmdbId)
-        return { rowCount: 1, rows: [{ inserted: true }] }
+        return { rowCount: 1, rows: [{ id: tmdbId, inserted: true }] }
+      }
+
+      if (sql.includes('DELETE FROM movie_cast')) {
+        return { rowCount: 0 }
       }
 
       throw new Error(`Unexpected query: ${sql}`)
@@ -431,6 +451,10 @@ test('enrichMoviesWithDetails stores runtime and certification from TMDB details
           release_dates: {
             results: [
               {
+                iso_3166_1: 'GB',
+                release_dates: [{ certification: '15' }],
+              },
+              {
                 iso_3166_1: 'US',
                 release_dates: [{ certification: 'PG-13' }],
               },
@@ -449,6 +473,113 @@ test('enrichMoviesWithDetails stores runtime and certification from TMDB details
   assert.equal(movies[0].runtimeMinutes, 166)
   assert.equal(movies[0].certification, 'PG-13')
   assert.equal(movies[0].detailPayload.runtime, 166)
+  assert.deepEqual(movies[0].detailPayload.release_dates.results, [
+    {
+      iso_3166_1: 'US',
+      release_dates: [{ certification: 'PG-13' }],
+    },
+  ])
+  assert.deepEqual(movies[0].credits, {
+    director: null,
+    cast: [],
+  })
+})
+
+test('enrichMoviesWithDetails stores one director and the top 10 ordered cast members', async () => {
+  const movies = await enrichMoviesWithDetails(
+    async (url) => {
+      const parsed = new URL(url)
+
+      if (parsed.pathname.endsWith('/credits')) {
+        return {
+          ok: true,
+          async json() {
+            return {
+              cast: Array.from({ length: 12 }, (_, index) => ({
+                id: index + 1,
+                name: `Actor ${index + 1}`,
+                character: `Role ${index + 1}`,
+                order: 11 - index,
+              })),
+              crew: [
+                { id: 100, name: 'Producer Person', job: 'Producer' },
+                { id: 200, name: 'Denis Villeneuve', job: 'Director', department: 'Directing', profile_path: '/director.jpg' },
+              ],
+            }
+          },
+        }
+      }
+
+      return {
+        ok: true,
+        async json() {
+          return {
+            runtime: 166,
+            release_dates: {
+              results: [],
+            },
+          }
+        },
+      }
+    },
+    {
+      token: 'token',
+      baseUrl: 'https://api.themoviedb.org/3',
+    },
+    [{ tmdbId: 42, genreIds: [] }]
+  )
+
+  assert.equal(movies[0].credits.director.name, 'Denis Villeneuve')
+  assert.equal(movies[0].credits.cast.length, 10)
+  assert.deepEqual(
+    movies[0].credits.cast.slice(0, 3).map((person) => ({ name: person.name, billingOrder: person.billingOrder })),
+    [
+      { name: 'Actor 12', billingOrder: 0 },
+      { name: 'Actor 11', billingOrder: 1 },
+      { name: 'Actor 10', billingOrder: 2 },
+    ]
+  )
+})
+
+test('enrichMoviesWithDetails keeps importing when TMDB credits are unavailable', async () => {
+  const movies = await enrichMoviesWithDetails(
+    async (url) => {
+      const parsed = new URL(url)
+
+      if (parsed.pathname.endsWith('/credits')) {
+        return {
+          ok: false,
+          status: 500,
+          async text() {
+            return 'credits unavailable'
+          },
+        }
+      }
+
+      return {
+        ok: true,
+        async json() {
+          return {
+            runtime: 120,
+            release_dates: {
+              results: [],
+            },
+          }
+        },
+      }
+    },
+    {
+      token: 'token',
+      baseUrl: 'https://api.themoviedb.org/3',
+    },
+    [{ tmdbId: 7, genreIds: [] }]
+  )
+
+  assert.equal(movies[0].runtimeMinutes, 120)
+  assert.deepEqual(movies[0].credits, {
+    director: null,
+    cast: [],
+  })
 })
 
 test('importPopularMovies returns fetched, inserted, and updated counts', async () => {
@@ -466,7 +597,7 @@ test('importPopularMovies returns fetched, inserted, and updated counts', async 
         return { rowCount: 1 }
       }
 
-      if (sql.includes('CREATE TABLE IF NOT EXISTS movies') || sql.includes('CREATE TABLE IF NOT EXISTS genres') || sql.includes('ALTER TABLE movies')) {
+      if (isSchemaSetupQuery(sql)) {
         return { rowCount: null }
       }
 
@@ -482,11 +613,15 @@ test('importPopularMovies returns fetched, inserted, and updated counts', async 
           if (sql.includes('INSERT INTO movies')) {
             const tmdbId = params[0]
             if (existingIds.has(tmdbId)) {
-              return { rowCount: 1, rows: [{ inserted: false }] }
+              return { rowCount: 1, rows: [{ id: tmdbId, inserted: false }] }
             }
 
             existingIds.add(tmdbId)
-            return { rowCount: 1, rows: [{ inserted: true }] }
+            return { rowCount: 1, rows: [{ id: tmdbId, inserted: true }] }
+          }
+
+          if (sql.includes('DELETE FROM movie_cast')) {
+            return { rowCount: 0 }
           }
 
           throw new Error(`Unexpected query: ${sql}`)
@@ -576,7 +711,7 @@ test('importNowPlayingMovies returns the qualifying subset and updates existing 
         return { rowCount: 1 }
       }
 
-      if (sql.includes('CREATE TABLE IF NOT EXISTS movies') || sql.includes('CREATE TABLE IF NOT EXISTS genres') || sql.includes('ALTER TABLE movies')) {
+      if (isSchemaSetupQuery(sql)) {
         return { rowCount: null }
       }
 
@@ -592,11 +727,15 @@ test('importNowPlayingMovies returns the qualifying subset and updates existing 
           if (sql.includes('INSERT INTO movies')) {
             const tmdbId = params[0]
             if (existingIds.has(tmdbId)) {
-              return { rowCount: 1, rows: [{ inserted: false }] }
+              return { rowCount: 1, rows: [{ id: tmdbId, inserted: false }] }
             }
 
             existingIds.add(tmdbId)
-            return { rowCount: 1, rows: [{ inserted: true }] }
+            return { rowCount: 1, rows: [{ id: tmdbId, inserted: true }] }
+          }
+
+          if (sql.includes('DELETE FROM movie_cast')) {
+            return { rowCount: 0 }
           }
 
           throw new Error(`Unexpected query: ${sql}`)
@@ -687,7 +826,7 @@ test('importUpcomingMovies returns the qualifying subset and updates existing ro
         return { rowCount: 1 }
       }
 
-      if (sql.includes('CREATE TABLE IF NOT EXISTS movies') || sql.includes('CREATE TABLE IF NOT EXISTS genres') || sql.includes('ALTER TABLE movies')) {
+      if (isSchemaSetupQuery(sql)) {
         return { rowCount: null }
       }
 
@@ -703,11 +842,15 @@ test('importUpcomingMovies returns the qualifying subset and updates existing ro
           if (sql.includes('INSERT INTO movies')) {
             const tmdbId = params[0]
             if (existingIds.has(tmdbId)) {
-              return { rowCount: 1, rows: [{ inserted: false }] }
+              return { rowCount: 1, rows: [{ id: tmdbId, inserted: false }] }
             }
 
             existingIds.add(tmdbId)
-            return { rowCount: 1, rows: [{ inserted: true }] }
+            return { rowCount: 1, rows: [{ id: tmdbId, inserted: true }] }
+          }
+
+          if (sql.includes('DELETE FROM movie_cast')) {
+            return { rowCount: 0 }
           }
 
           throw new Error(`Unexpected query: ${sql}`)
@@ -785,4 +928,83 @@ test('importUpcomingMovies returns the qualifying subset and updates existing ro
     [1, 2]
   )
   assert.equal(executed.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS movies')), true)
+})
+
+test('backfillMovieCredits refreshes existing movies and reports failures without aborting', async () => {
+  const replacedMovies = []
+  const pool = {
+    async query(sql) {
+      if (isSchemaSetupQuery(sql)) {
+        return { rowCount: null }
+      }
+
+      if (sql.includes('FROM movies')) {
+        return {
+          rows: [
+            { id: 1, tmdb_id: 101, title: 'One' },
+            { id: 2, tmdb_id: 102, title: 'Two' },
+          ],
+        }
+      }
+
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+    async connect() {
+      return {
+        async query(sql, params) {
+          if (sql === 'BEGIN' || sql === 'COMMIT') {
+            return { rowCount: null }
+          }
+
+          if (sql.includes('SELECT id') && sql.includes('FROM movies')) {
+            return { rows: [{ id: params[0] }] }
+          }
+
+          if (sql.includes('DELETE FROM movie_cast')) {
+            replacedMovies.push(params[0])
+            return { rowCount: 1 }
+          }
+
+          if (sql.includes('INSERT INTO cast_members')) {
+            return { rows: [{ id: params[0], inserted: true }] }
+          }
+
+          if (sql.includes('INSERT INTO movie_cast')) {
+            return { rowCount: 1 }
+          }
+
+          throw new Error(`Unexpected query: ${sql}`)
+        },
+        release() {},
+      }
+    },
+  }
+
+  const result = await backfillMovieCredits(pool, {
+    token: 'token',
+    baseUrl: 'https://api.themoviedb.org/3',
+    fetchImpl: async (url) => {
+      if (String(url).endsWith('/102/credits')) {
+        throw new Error('boom')
+      }
+
+      return {
+        ok: true,
+        async json() {
+          return {
+            cast: [{ id: 7, name: 'Actor 7', order: 0, character: 'Lead' }],
+            crew: [{ id: 8, name: 'Director 8', job: 'Director' }],
+          }
+        },
+      }
+    },
+  })
+
+  assert.deepEqual(replacedMovies, [101])
+  assert.deepEqual(result, {
+    processedCount: 2,
+    insertedCount: 2,
+    updatedCount: 1,
+    failedCount: 1,
+  })
 })

@@ -1,11 +1,21 @@
 import {
+  fetchMovieCredits,
   fetchMovieDetails,
   fetchMovieGenres,
   fetchNowPlayingMoviesPage,
   fetchPopularMoviesPage,
   fetchUpcomingMoviesPage,
 } from './tmdbClient.js'
-import { ensureMoviesTable, listKnownGenreIds, upsertGenres, upsertMovies } from './database.js'
+import {
+  ensureMoviesTable,
+  listKnownGenreIds,
+  listMoviesForCreditsBackfill,
+  replaceMovieCredits,
+  upsertGenres,
+  upsertMovies,
+} from './database.js'
+
+const CAST_LIMIT = 10
 
 export function normalizeMovie(movie, index) {
   return {
@@ -38,6 +48,31 @@ function normalizeGenre(genre) {
   }
 }
 
+function sanitizeReleaseDates(releaseDatesPayload) {
+  if (!releaseDatesPayload || typeof releaseDatesPayload !== 'object') {
+    return releaseDatesPayload ?? null
+  }
+
+  const releaseDateResults = Array.isArray(releaseDatesPayload.results) ? releaseDatesPayload.results : []
+  const usRelease = releaseDateResults.find((entry) => entry?.iso_3166_1 === 'US')
+
+  return {
+    ...releaseDatesPayload,
+    results: usRelease ? [usRelease] : [],
+  }
+}
+
+function sanitizeMovieDetailPayload(detailPayload) {
+  if (!detailPayload || typeof detailPayload !== 'object') {
+    return detailPayload ?? null
+  }
+
+  return {
+    ...detailPayload,
+    release_dates: sanitizeReleaseDates(detailPayload.release_dates),
+  }
+}
+
 function extractCertification(detailPayload) {
   const releaseDateResults = detailPayload?.release_dates?.results
 
@@ -57,6 +92,61 @@ function extractCertification(detailPayload) {
 
   const match = selectedRelease.release_dates.find((release) => release?.certification)
   return match?.certification || null
+}
+
+function normalizeMovieCredits(creditsPayload) {
+  const director = Array.isArray(creditsPayload?.crew)
+    ? creditsPayload.crew.find((person) => person?.job === 'Director' && person?.id && person?.name)
+    : null
+
+  const cast = Array.isArray(creditsPayload?.cast)
+    ? [...creditsPayload.cast]
+        .filter((person) => person?.id && person?.name)
+        .sort((left, right) => {
+          const leftOrder = Number.isInteger(left?.order) ? left.order : Number.MAX_SAFE_INTEGER
+          const rightOrder = Number.isInteger(right?.order) ? right.order : Number.MAX_SAFE_INTEGER
+
+          if (leftOrder !== rightOrder) {
+            return leftOrder - rightOrder
+          }
+
+          return String(left.name).localeCompare(String(right.name))
+        })
+        .slice(0, CAST_LIMIT)
+    : []
+
+  return {
+    director: director
+      ? {
+          tmdbPersonId: director.id,
+          name: director.name,
+          profilePath: director.profile_path || null,
+          department: director.department || null,
+          job: director.job || null,
+        }
+      : null,
+    cast: cast.map((person) => ({
+      tmdbPersonId: person.id,
+      name: person.name,
+      profilePath: person.profile_path || null,
+      characterName: person.character || null,
+      billingOrder: Number.isInteger(person.order) ? person.order : null,
+      department: person.known_for_department || null,
+      job: null,
+    })),
+  }
+}
+
+async function fetchNormalizedMovieCredits(fetchImpl, options) {
+  try {
+    const creditsPayload = await fetchMovieCredits(fetchImpl, options)
+    return normalizeMovieCredits(creditsPayload)
+  } catch {
+    return {
+      director: null,
+      cast: [],
+    }
+  }
 }
 
 export async function syncMissingGenres(pool, fetchImpl, options, movies) {
@@ -79,20 +169,62 @@ export async function enrichMoviesWithDetails(fetchImpl, options, movies) {
   const enrichedMovies = []
 
   for (const movie of movies) {
-    const detailPayload = await fetchMovieDetails(fetchImpl, {
+    const detailOptions = {
       ...options,
       movieId: movie.tmdbId,
-    })
+    }
+    const detailPayload = await fetchMovieDetails(fetchImpl, detailOptions)
+    const sanitizedDetailPayload = sanitizeMovieDetailPayload(detailPayload)
+    const credits = await fetchNormalizedMovieCredits(fetchImpl, detailOptions)
 
     enrichedMovies.push({
       ...movie,
-      runtimeMinutes: detailPayload?.runtime ?? null,
-      certification: extractCertification(detailPayload),
-      detailPayload,
+      runtimeMinutes: sanitizedDetailPayload?.runtime ?? null,
+      certification: extractCertification(sanitizedDetailPayload),
+      detailPayload: sanitizedDetailPayload,
+      credits,
     })
   }
 
   return enrichedMovies
+}
+
+export async function backfillMovieCredits(pool, options) {
+  const { fetchImpl = fetch, token, baseUrl } = options
+  await ensureMoviesTable(pool)
+
+  const movies = await listMoviesForCreditsBackfill(pool)
+  let processedCount = 0
+  let insertedCount = 0
+  let updatedCount = 0
+  let failedCount = 0
+
+  for (const movie of movies) {
+    processedCount += 1
+
+    try {
+      const creditsPayload = await fetchMovieCredits(fetchImpl, {
+        token,
+        baseUrl,
+        movieId: movie.tmdb_id,
+      })
+      const result = await replaceMovieCredits(pool, movie.tmdb_id, normalizeMovieCredits(creditsPayload))
+
+      if (result) {
+        insertedCount += result.insertedCastMembersCount ?? 0
+        updatedCount += 1
+      }
+    } catch {
+      failedCount += 1
+    }
+  }
+
+  return {
+    processedCount,
+    insertedCount,
+    updatedCount,
+    failedCount,
+  }
 }
 
 export async function collectPopularMovies(fetchImpl, options) {

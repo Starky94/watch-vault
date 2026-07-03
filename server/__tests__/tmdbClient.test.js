@@ -1,6 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  fetchMovieCredits,
+  fetchMovieReviews,
   fetchPopularMoviesPage,
   fetchUpcomingMoviesPage,
   getTmdbRateLimitConfig,
@@ -53,4 +55,48 @@ test('fetchUpcomingMoviesPage requests the TMDB upcoming endpoint', async () => 
   })
 
   assert.match(requestedUrl, /\/movie\/upcoming\?page=2$/)
+})
+
+test('fetchMovieCredits requests the TMDB credits endpoint', async () => {
+  let requestedUrl = ''
+
+  const fetchImpl = async (url) => {
+    requestedUrl = String(url)
+    return {
+      ok: true,
+      async json() {
+        return { cast: [], crew: [] }
+      },
+    }
+  }
+
+  await fetchMovieCredits(fetchImpl, {
+    token: 'token',
+    baseUrl: 'https://api.themoviedb.org/3',
+    movieId: 42,
+  })
+
+  assert.match(requestedUrl, /\/movie\/42\/credits$/)
+})
+
+test('fetchMovieReviews requests the TMDB reviews endpoint', async () => {
+  let requestedUrl = ''
+
+  const fetchImpl = async (url) => {
+    requestedUrl = String(url)
+    return {
+      ok: true,
+      async json() {
+        return { results: [] }
+      },
+    }
+  }
+
+  await fetchMovieReviews(fetchImpl, {
+    token: 'token',
+    baseUrl: 'https://api.themoviedb.org/3',
+    movieId: 42,
+  })
+
+  assert.match(requestedUrl, /\/movie\/42\/reviews$/)
 })
