@@ -26,6 +26,27 @@ The popular importer runs automatically every 10 minutes, and the Now Playing pl
 
 Use this mode when you want the production-style static web image. Frontend changes require rebuilding the `web` image.
 
+### Second isolated production stack
+
+To run a second independent deployment on a different port, use a distinct Compose project name plus a dedicated env file.
+
+```bash
+cp .env.production.example .env.production
+docker compose --env-file .env.production -p watchvault-8181 up --build -d
+```
+
+Recommended production values in `.env.production`:
+- `APP_ENV_FILE=.env.production`
+- `WEB_PORT=8181`
+- `DATABASE_URL=postgresql://postgres:postgres@db:5432/watchvault`
+- a real `TMDB_BEARER_TOKEN`
+
+Isolation notes:
+- Use a unique Compose project name such as `watchvault-8181`.
+- Keep a dedicated env file for the second stack.
+- The unique project name gives the stack its own containers, network, and Postgres volume.
+- The dedicated `WEB_PORT` prevents collision with the existing `:8080` deployment.
+
 ### Development stack
 
 ```bash
