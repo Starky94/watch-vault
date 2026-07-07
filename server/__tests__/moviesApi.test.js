@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createApp } from '../app.js'
-import { countMovies, countStoredDataBytes, ensureMoviesTable, listMovies, listRecentlyReleasedMovies, listSimilarMovies, listTopRatedMovies, listUpcomingMovies } from '../database.js'
+import { countMovies, countStoredDataBytes, ensureMoviesTable, listGenres, listMovies, listRecentlyReleasedMovies, listSimilarMovies, listTopRatedMovies, listUpcomingMovies } from '../database.js'
 
 function isSchemaSetupQuery(sql) {
   return (
@@ -12,6 +12,7 @@ function isSchemaSetupQuery(sql) {
     sql.includes('CREATE TABLE IF NOT EXISTS cast_members') ||
     sql.includes('CREATE TABLE IF NOT EXISTS movie_cast') ||
     sql.includes('CREATE UNIQUE INDEX IF NOT EXISTS movie_cast_unique_credit_idx') ||
+    sql.includes('ALTER TABLE cast_members') ||
     sql.includes('CREATE TABLE IF NOT EXISTS users') ||
     sql.includes('INSERT INTO users') ||
     sql.includes('CREATE TABLE IF NOT EXISTS watchlist_items') ||
@@ -52,6 +53,46 @@ test('listMovies requests the top 30 titles ordered by popularity descending', a
   assert.deepEqual(executedParams, [30, 0])
 })
 
+test('listMovies applies a case-insensitive genre filter when provided', async () => {
+  let executedSql = ''
+  let executedParams = []
+  const pool = {
+    async query(sql, params) {
+      executedSql = sql
+      executedParams = params
+      return { rows: [] }
+    },
+  }
+
+  const movies = await listMovies(pool, { genre: 'action' })
+
+  assert.deepEqual(movies, [])
+  assert.match(executedSql, /WHERE EXISTS/i)
+  assert.match(executedSql, /LOWER\(selected_genres\.name\) = LOWER\(\$3\)/i)
+  assert.deepEqual(executedParams, [30, 0, 'action'])
+})
+
+test('listGenres returns only used genres ordered alphabetically', async () => {
+  let executedSql = ''
+  const rows = [
+    { tmdb_genre_id: 12, name: 'Adventure', movie_count: 4 },
+    { tmdb_genre_id: 18, name: 'Drama', movie_count: 7 },
+  ]
+  const pool = {
+    async query(sql) {
+      executedSql = sql
+      return { rows }
+    },
+  }
+
+  const genres = await listGenres(pool)
+
+  assert.deepEqual(genres, rows)
+  assert.match(executedSql, /JOIN movies ON genres\.tmdb_genre_id = ANY\(movies\.genre_ids\)/i)
+  assert.match(executedSql, /HAVING COUNT\(DISTINCT movies\.id\) > 0/i)
+  assert.match(executedSql, /ORDER BY LOWER\(genres\.name\) ASC/i)
+})
+
 test('ensureMoviesTable creates normalized cast tables and watchlist tables', async () => {
   const executedSql = []
   const pool = {
@@ -66,6 +107,7 @@ test('ensureMoviesTable creates normalized cast tables and watchlist tables', as
   assert.equal(executedSql.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS cast_members')), true)
   assert.equal(executedSql.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS movie_cast')), true)
   assert.equal(executedSql.some((sql) => sql.includes('CREATE UNIQUE INDEX IF NOT EXISTS movie_cast_unique_credit_idx')), true)
+  assert.equal(executedSql.some((sql) => sql.includes('ALTER TABLE cast_members')), true)
   assert.equal(executedSql.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS users')), true)
   assert.equal(executedSql.some((sql) => sql.includes('INSERT INTO users')), true)
   assert.equal(executedSql.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS watchlist_items')), true)
@@ -1305,6 +1347,103 @@ test('GET /api/movies returns the popular movies payload from the local DB', asy
   }
 })
 
+test('GET /api/genres returns database-backed genres ordered alphabetically', async () => {
+  const pool = {
+    async query(sql) {
+      if (isSchemaSetupQuery(sql)) {
+        return { rowCount: null }
+      }
+
+      if (sql.includes('FROM genres') && sql.includes('movie_count')) {
+        return {
+          rows: [
+            { tmdb_genre_id: 12, name: 'Adventure', movie_count: 4 },
+            { tmdb_genre_id: 18, name: 'Drama', movie_count: 7 },
+          ],
+        }
+      }
+
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+
+  const app = await createApp(pool)
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/genres`)
+    const payload = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.equal(payload.count, 2)
+    assert.deepEqual(payload.genres, [
+      { id: 12, name: 'Adventure', movieCount: 4 },
+      { id: 18, name: 'Drama', movieCount: 7 },
+    ])
+  } finally {
+    await closeServer(server)
+  }
+})
+
+test('GET /api/movies forwards the optional genre filter to the database query', async () => {
+  const rows = [
+    {
+      tmdb_id: 1,
+      title: 'Movie 1',
+      original_title: 'Movie 1',
+      overview: null,
+      release_date: '2024-01-01',
+      original_language: 'en',
+      poster_path: null,
+      backdrop_path: null,
+      popularity: 100,
+      vote_average: 8.5,
+      vote_count: 1000,
+      adult: false,
+      video: false,
+      genre_ids: [28],
+      genre_names: ['Action'],
+      runtime_minutes: 110,
+      certification: 'PG-13',
+      detail_payload: {},
+      raw_payload: {},
+      import_rank: 1,
+      imported_at: '2026-07-02T00:00:00.000Z',
+    },
+  ]
+  const pool = {
+    async query(sql, params) {
+      if (isSchemaSetupQuery(sql)) {
+        return { rowCount: null }
+      }
+
+      if (sql.includes('FROM movies')) {
+        assert.deepEqual(params, [31, 0, 'action'])
+        return { rows }
+      }
+
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+
+  const app = await createApp(pool)
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/movies?genre=action`)
+    const payload = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.equal(payload.count, 1)
+    assert.equal(payload.movies[0].title, 'Movie 1')
+    assert.deepEqual(payload.movies[0].genre_names, ['Action'])
+  } finally {
+    await closeServer(server)
+  }
+})
+
 test('GET /api/movies/:movieId returns a mapped movie detail payload from the local DB', async () => {
   const row = {
     id: 900,
@@ -1384,7 +1523,11 @@ test('GET /api/movies/:movieId returns a mapped movie detail payload from the lo
     },
   }
 
-  const app = await createApp(pool)
+  const app = await createApp(pool, {
+    hydrateMovie: async () => {
+      throw new Error('hydrateMovie should not be called for complete records')
+    },
+  })
   const server = app.listen(0)
 
   try {
@@ -1483,7 +1626,20 @@ test('GET /api/movies/:movieId includes live TMDB reviews when available', async
 
       if (sql.includes('FROM movie_cast')) {
         assert.deepEqual(params, [900])
-        return { rows: [] }
+        return {
+          rows: [
+            {
+              credit_type: 'director',
+              character_name: null,
+              billing_order: null,
+              department: 'Directing',
+              job: 'Director',
+              tmdb_person_id: 300,
+              name: 'Denis Villeneuve',
+              profile_path: '/director.jpg',
+            },
+          ],
+        }
       }
 
       throw new Error(`Unexpected query: ${sql}`)
@@ -1610,7 +1766,20 @@ test('GET /api/movies/:movieId returns an empty review list when TMDB reviews fa
 
       if (sql.includes('FROM movie_cast')) {
         assert.deepEqual(params, [900])
-        return { rows: [] }
+        return {
+          rows: [
+            {
+              credit_type: 'director',
+              character_name: null,
+              billing_order: null,
+              department: 'Directing',
+              job: 'Director',
+              tmdb_person_id: 300,
+              name: 'Denis Villeneuve',
+              profile_path: '/director.jpg',
+            },
+          ],
+        }
       }
 
       throw new Error(`Unexpected query: ${sql}`)
@@ -1653,22 +1822,284 @@ test('GET /api/movies/:movieId returns an empty review list when TMDB reviews fa
   }
 })
 
-test('GET /api/movies/:movieId returns 404 when the movie is missing', async () => {
+test('GET /api/people/:personId returns normalized person detail and refreshes stored data', async () => {
+  const originalFetch = global.fetch
+  const syncQueries = []
+  const queryCalls = []
+
+  const client = {
+    async query(sql, params) {
+      syncQueries.push({ sql, params })
+
+      if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') {
+        return { rowCount: null }
+      }
+
+      if (sql.includes('INSERT INTO cast_members')) {
+        return { rows: [{ id: 10, inserted: false }] }
+      }
+
+      throw new Error(`Unexpected client query: ${sql}`)
+    },
+    release() {},
+  }
+
+  const pool = {
+    async query(sql, params) {
+      if (isSchemaSetupQuery(sql)) {
+        return { rowCount: null }
+      }
+
+      queryCalls.push({ sql, params })
+
+      if (sql.includes('FROM movies') && sql.includes('WHERE tmdb_id = ANY')) {
+        assert.deepEqual(params, [[201, 202]])
+        return {
+          rows: [
+            {
+              tmdb_id: 201,
+              title: 'Dune: Part Two',
+              release_date: '2024-03-01',
+              poster_path: '/dune.jpg',
+              backdrop_path: '/dune-backdrop.jpg',
+              vote_average: 8.7,
+              certification: 'PG-13',
+            },
+          ],
+        }
+      }
+
+      if (sql.includes('shared_credits')) {
+        assert.deepEqual(params, [301, 6])
+        return {
+          rows: [
+            {
+              tmdb_person_id: 302,
+              name: 'Zendaya',
+              profile_path: '/zendaya.jpg',
+              shared_credits: 2,
+            },
+          ],
+        }
+      }
+
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+    async connect() {
+      return client
+    },
+  }
+
+  global.fetch = async (url) => {
+    const value = String(url)
+
+    if (value.endsWith('/person/301')) {
+      return {
+        ok: true,
+        async json() {
+          return {
+            id: 301,
+            name: 'Timothee Chalamet',
+            biography: 'Acclaimed actor and producer.',
+            profile_path: '/timothee.jpg',
+            birthday: '1995-12-27',
+            place_of_birth: 'New York City, USA',
+            known_for_department: 'Acting',
+            popularity: 94.2,
+          }
+        },
+      }
+    }
+
+    if (value.endsWith('/person/301/combined_credits')) {
+      return {
+        ok: true,
+        async json() {
+          return {
+            cast: [
+              {
+                id: 201,
+                media_type: 'movie',
+                title: 'Dune: Part Two',
+                release_date: '2024-03-01',
+                character: 'Paul Atreides',
+                poster_path: '/dune.jpg',
+                backdrop_path: '/dune-backdrop.jpg',
+                vote_average: 8.7,
+                popularity: 100,
+              },
+            ],
+            crew: [
+              {
+                id: 202,
+                media_type: 'movie',
+                title: 'Bones and All',
+                release_date: '2022-11-18',
+                job: 'Producer',
+                poster_path: '/bones.jpg',
+                vote_average: 7.2,
+                popularity: 44,
+                department: 'Production',
+              },
+            ],
+          }
+        },
+      }
+    }
+
+    throw new Error(`Unexpected fetch url: ${value}`)
+  }
+
+  const app = await createApp(pool, {
+    loadRuntimeConfig: () => ({
+      tmdbBearerToken: 'token',
+      tmdbBaseUrl: 'https://example.test',
+    }),
+  })
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const response = await originalFetch(`http://127.0.0.1:${address.port}/api/people/301`)
+    const payload = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.equal(payload.person.name, 'Timothee Chalamet')
+    assert.equal(payload.person.knownForDepartment, 'Acting')
+    assert.equal(payload.knownFor[0].title, 'Dune: Part Two')
+    assert.equal(payload.filmography[1].role, 'Producer')
+    assert.equal(payload.coStars[0].name, 'Zendaya')
+    assert.equal(payload.facts[0].label, 'Birthdate')
+    assert.equal(syncQueries.some(({ sql }) => sql.includes('INSERT INTO cast_members')), true)
+  } finally {
+    global.fetch = originalFetch
+    await closeServer(server)
+  }
+})
+
+test('GET /api/people/:personId returns a server error when TMDB detail refresh fails', async () => {
+  const originalFetch = global.fetch
+
   const pool = {
     async query(sql) {
       if (isSchemaSetupQuery(sql)) {
         return { rowCount: null }
       }
 
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+    async connect() {
+      throw new Error('connect should not be called')
+    },
+  }
+
+  global.fetch = async () => ({
+    ok: false,
+    status: 500,
+    async text() {
+      return 'tmdb unavailable'
+    },
+  })
+
+  const app = await createApp(pool, {
+    loadRuntimeConfig: () => ({
+      tmdbBearerToken: 'token',
+      tmdbBaseUrl: 'https://example.test',
+    }),
+  })
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const response = await originalFetch(`http://127.0.0.1:${address.port}/api/people/301`)
+    const payload = await response.json()
+
+    assert.equal(response.status, 500)
+    assert.match(payload.error, /TMDB request failed/)
+  } finally {
+    global.fetch = originalFetch
+    await closeServer(server)
+  }
+})
+
+test('GET /api/movies/:movieId hydrates a missing movie from TMDB before responding', async () => {
+  let movieLookupCount = 0
+  let hydrateOptions = null
+
+  const pool = {
+    async query(sql, params) {
+      if (isSchemaSetupQuery(sql)) {
+        return { rowCount: null }
+      }
+
       if (sql.includes('WHERE movies.tmdb_id = $1')) {
-        return { rows: [] }
+        movieLookupCount += 1
+
+        if (movieLookupCount === 1) {
+          return { rows: [] }
+        }
+
+        return {
+          rows: [
+            {
+              id: 904,
+              tmdb_id: 404,
+              title: 'Hydrated Movie',
+              original_title: 'Hydrated Movie',
+              overview: 'Fresh from TMDB.',
+              release_date: '2024-06-01',
+              original_language: 'en',
+              poster_path: '/poster.jpg',
+              backdrop_path: '/backdrop.jpg',
+              popularity: 88,
+              vote_average: 8.1,
+              vote_count: 900,
+              adult: false,
+              video: false,
+              genre_ids: [12],
+              genre_names: ['Adventure'],
+              runtime_minutes: 140,
+              certification: 'PG-13',
+              detail_payload: {},
+              raw_payload: {},
+              import_rank: 1,
+              imported_at: '2026-07-02T00:00:00.000Z',
+            },
+          ],
+        }
+      }
+
+      if (sql.includes('FROM movie_cast')) {
+        assert.deepEqual(params, [904])
+        return {
+          rows: [
+            {
+              credit_type: 'director',
+              character_name: null,
+              billing_order: null,
+              department: 'Directing',
+              job: 'Director',
+              tmdb_person_id: 300,
+              name: 'Denis Villeneuve',
+              profile_path: '/director.jpg',
+            },
+          ],
+        }
       }
 
       throw new Error(`Unexpected query: ${sql}`)
     },
   }
 
-  const app = await createApp(pool)
+  const app = await createApp(pool, {
+    loadRuntimeConfig: () => ({
+      tmdbBearerToken: 'token',
+      tmdbBaseUrl: 'https://example.test',
+    }),
+    hydrateMovie: async (_pool, options) => {
+      hydrateOptions = options
+    },
+  })
   const server = app.listen(0)
 
   try {
@@ -1676,8 +2107,17 @@ test('GET /api/movies/:movieId returns 404 when the movie is missing', async () 
     const response = await fetch(`http://127.0.0.1:${address.port}/api/movies/404`)
     const payload = await response.json()
 
-    assert.equal(response.status, 404)
-    assert.equal(payload.error, 'Movie 404 was not found in the local database')
+    assert.equal(response.status, 200)
+    assert.equal(movieLookupCount, 2)
+    assert.deepEqual(hydrateOptions, {
+      token: 'token',
+      baseUrl: 'https://example.test',
+      movieId: 404,
+      importRank: 1,
+    })
+    assert.equal(payload.movie.title, 'Hydrated Movie')
+    assert.equal(payload.movie.runtime, '2h 20m')
+    assert.equal(payload.movie.director?.name, 'Denis Villeneuve')
   } finally {
     await new Promise((resolve, reject) => {
       server.close((error) => {
@@ -1692,8 +2132,8 @@ test('GET /api/movies/:movieId returns 404 when the movie is missing', async () 
   }
 })
 
-test('GET /api/movies/:movieId returns empty credits when none are stored', async () => {
-  const row = {
+test('GET /api/movies/:movieId rehydrates an incomplete movie that has no stored credits', async () => {
+  const incompleteRow = {
     id: 903,
     tmdb_id: 77,
     title: 'No Credits Yet',
@@ -1717,26 +2157,69 @@ test('GET /api/movies/:movieId returns empty credits when none are stored', asyn
     import_rank: 1,
     imported_at: '2026-07-02T00:00:00.000Z',
   }
+  const hydratedRow = {
+    ...incompleteRow,
+    title: 'Hydrated Credits',
+  }
+  let movieLookupCount = 0
+  let hydrateCalls = 0
 
   const pool = {
-    async query(sql) {
+    async query(sql, params) {
       if (isSchemaSetupQuery(sql)) {
         return { rowCount: null }
       }
 
       if (sql.includes('WHERE movies.tmdb_id = $1')) {
-        return { rows: [row] }
+        movieLookupCount += 1
+        return { rows: [movieLookupCount === 1 ? incompleteRow : hydratedRow] }
       }
 
       if (sql.includes('FROM movie_cast')) {
-        return { rows: [] }
+        if (movieLookupCount === 1) {
+          return { rows: [] }
+        }
+
+        assert.deepEqual(params, [903])
+        return {
+          rows: [
+            {
+              credit_type: 'director',
+              character_name: null,
+              billing_order: null,
+              department: 'Directing',
+              job: 'Director',
+              tmdb_person_id: 500,
+              name: 'Director Person',
+              profile_path: '/director.jpg',
+            },
+            {
+              credit_type: 'actor',
+              character_name: 'Lead',
+              billing_order: 0,
+              department: null,
+              job: null,
+              tmdb_person_id: 501,
+              name: 'Lead Actor',
+              profile_path: '/lead.jpg',
+            },
+          ],
+        }
       }
 
       throw new Error(`Unexpected query: ${sql}`)
     },
   }
 
-  const app = await createApp(pool)
+  const app = await createApp(pool, {
+    loadRuntimeConfig: () => ({
+      tmdbBearerToken: 'token',
+      tmdbBaseUrl: 'https://example.test',
+    }),
+    hydrateMovie: async () => {
+      hydrateCalls += 1
+    },
+  })
   const server = app.listen(0)
 
   try {
@@ -1745,8 +2228,10 @@ test('GET /api/movies/:movieId returns empty credits when none are stored', asyn
     const payload = await response.json()
 
     assert.equal(response.status, 200)
-    assert.equal(payload.movie.director, null)
-    assert.deepEqual(payload.movie.cast, [])
+    assert.equal(hydrateCalls, 1)
+    assert.equal(payload.movie.title, 'Hydrated Credits')
+    assert.equal(payload.movie.director?.name, 'Director Person')
+    assert.deepEqual(payload.movie.cast.map((castMember) => castMember.name), ['Lead Actor'])
   } finally {
     await new Promise((resolve, reject) => {
       server.close((error) => {
@@ -1758,6 +2243,141 @@ test('GET /api/movies/:movieId returns empty credits when none are stored', asyn
         resolve()
       })
     })
+  }
+})
+
+test('GET /api/movies/:movieId rehydrates an incomplete movie that lacks detail payload fields', async () => {
+  const incompleteRow = {
+    id: 905,
+    tmdb_id: 55,
+    title: 'Partial Movie',
+    original_title: 'Partial Movie',
+    overview: 'Overview',
+    release_date: '2024-05-01',
+    original_language: 'en',
+    poster_path: '/poster.jpg',
+    backdrop_path: '/backdrop.jpg',
+    popularity: 10,
+    vote_average: 7.5,
+    vote_count: 200,
+    adult: false,
+    video: false,
+    genre_ids: [18],
+    genre_names: ['Drama'],
+    runtime_minutes: null,
+    certification: null,
+    detail_payload: null,
+    raw_payload: {},
+    import_rank: 4,
+    imported_at: '2026-07-02T00:00:00.000Z',
+  }
+  const hydratedRow = {
+    ...incompleteRow,
+    runtime_minutes: 123,
+    certification: 'R',
+    detail_payload: {},
+  }
+  let movieLookupCount = 0
+  let hydrateOptions = null
+
+  const pool = {
+    async query(sql, params) {
+      if (isSchemaSetupQuery(sql)) {
+        return { rowCount: null }
+      }
+
+      if (sql.includes('WHERE movies.tmdb_id = $1')) {
+        movieLookupCount += 1
+        return { rows: [movieLookupCount === 1 ? incompleteRow : hydratedRow] }
+      }
+
+      if (sql.includes('FROM movie_cast')) {
+        return {
+          rows: [
+            {
+              credit_type: 'actor',
+              character_name: 'Lead',
+              billing_order: 0,
+              department: null,
+              job: null,
+              tmdb_person_id: 701,
+              name: 'Lead Actor',
+              profile_path: null,
+            },
+          ],
+        }
+      }
+
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+
+  const app = await createApp(pool, {
+    loadRuntimeConfig: () => ({
+      tmdbBearerToken: 'token',
+      tmdbBaseUrl: 'https://example.test',
+    }),
+    hydrateMovie: async (_pool, options) => {
+      hydrateOptions = options
+    },
+  })
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/movies/55`)
+    const payload = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.equal(movieLookupCount, 2)
+    assert.deepEqual(hydrateOptions, {
+      token: 'token',
+      baseUrl: 'https://example.test',
+      movieId: 55,
+      importRank: 4,
+    })
+    assert.equal(payload.movie.runtime, '2h 3m')
+    assert.equal(payload.movie.certification, 'R')
+  } finally {
+    await closeServer(server)
+  }
+})
+
+test('GET /api/movies/:movieId returns a server error when movie hydration fails', async () => {
+  const pool = {
+    async query(sql) {
+      if (isSchemaSetupQuery(sql)) {
+        return { rowCount: null }
+      }
+
+      if (sql.includes('WHERE movies.tmdb_id = $1')) {
+        return { rows: [] }
+      }
+
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+
+  const app = await createApp(pool, {
+    loadRuntimeConfig: () => ({
+      tmdbBearerToken: 'token',
+      tmdbBaseUrl: 'https://example.test',
+    }),
+    hydrateMovie: async () => {
+      throw new Error('TMDB hydrate failed')
+    },
+  })
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/movies/404`)
+    const payload = await response.json()
+
+    assert.equal(response.status, 500)
+    assert.equal(payload.error, 'TMDB hydrate failed')
+  } finally {
+    await closeServer(server)
   }
 })
 

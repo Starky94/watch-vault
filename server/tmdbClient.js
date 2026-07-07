@@ -141,6 +141,26 @@ export async function fetchMovieReviews(fetchImpl, options) {
   })
 }
 
+export async function fetchPersonDetails(fetchImpl, options) {
+  const { token, baseUrl, personId } = options
+
+  return tmdbRequest(fetchImpl, {
+    token,
+    baseUrl,
+    path: `person/${personId}`,
+  })
+}
+
+export async function fetchPersonCombinedCredits(fetchImpl, options) {
+  const { token, baseUrl, personId } = options
+
+  return tmdbRequest(fetchImpl, {
+    token,
+    baseUrl,
+    path: `person/${personId}/combined_credits`,
+  })
+}
+
 export function resetTmdbRateLimiterForTests() {
   nextRequestAt = 0
   rateLimitQueue = Promise.resolve()

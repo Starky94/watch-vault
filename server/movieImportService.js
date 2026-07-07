@@ -48,6 +48,32 @@ function normalizeGenre(genre) {
   }
 }
 
+function normalizeDetailedMovie(detailPayload, importRank = 1) {
+  const genres = Array.isArray(detailPayload?.genres) ? detailPayload.genres : []
+
+  return {
+    tmdbId: detailPayload?.id,
+    title: detailPayload?.title || 'Untitled',
+    originalTitle: detailPayload?.original_title || null,
+    overview: detailPayload?.overview || null,
+    releaseDate: detailPayload?.release_date || null,
+    originalLanguage: detailPayload?.original_language || null,
+    posterPath: detailPayload?.poster_path || null,
+    backdropPath: detailPayload?.backdrop_path || null,
+    popularity: detailPayload?.popularity ?? null,
+    voteAverage: detailPayload?.vote_average ?? null,
+    voteCount: detailPayload?.vote_count ?? null,
+    adult: Boolean(detailPayload?.adult),
+    video: Boolean(detailPayload?.video),
+    genreIds: genres.map((genre) => genre?.id).filter((genreId) => Number.isInteger(genreId)),
+    runtimeMinutes: null,
+    certification: null,
+    detailPayload: null,
+    rawPayload: detailPayload ?? {},
+    importRank,
+  }
+}
+
 function sanitizeReleaseDates(releaseDatesPayload) {
   if (!releaseDatesPayload || typeof releaseDatesPayload !== 'object') {
     return releaseDatesPayload ?? null
@@ -149,6 +175,11 @@ async function fetchNormalizedMovieCredits(fetchImpl, options) {
   }
 }
 
+async function fetchNormalizedMovieCreditsStrict(fetchImpl, options) {
+  const creditsPayload = await fetchMovieCredits(fetchImpl, options)
+  return normalizeMovieCredits(creditsPayload)
+}
+
 export async function syncMissingGenres(pool, fetchImpl, options, movies) {
   const genreIds = [...new Set(movies.flatMap((movie) => movie.genreIds))]
   const knownGenreIds = await listKnownGenreIds(pool, genreIds)
@@ -187,6 +218,46 @@ export async function enrichMoviesWithDetails(fetchImpl, options, movies) {
   }
 
   return enrichedMovies
+}
+
+export async function hydrateMovieByTmdbId(pool, options) {
+  const { fetchImpl = fetch, token, baseUrl, movieId, importRank = 1 } = options
+
+  await ensureMoviesTable(pool)
+
+  const detailPayload = await fetchMovieDetails(fetchImpl, {
+    token,
+    baseUrl,
+    movieId,
+  })
+  const sanitizedDetailPayload = sanitizeMovieDetailPayload(detailPayload)
+  const credits = await fetchNormalizedMovieCreditsStrict(fetchImpl, {
+    token,
+    baseUrl,
+    movieId,
+  })
+
+  const normalizedMovie = normalizeDetailedMovie(sanitizedDetailPayload, importRank)
+  const hydratedMovie = {
+    ...normalizedMovie,
+    runtimeMinutes: sanitizedDetailPayload?.runtime ?? null,
+    certification: extractCertification(sanitizedDetailPayload),
+    detailPayload: sanitizedDetailPayload,
+    credits,
+  }
+
+  await syncMissingGenres(
+    pool,
+    fetchImpl,
+    {
+      token,
+      baseUrl,
+    },
+    [hydratedMovie]
+  )
+  await upsertMovies(pool, [hydratedMovie])
+
+  return hydratedMovie
 }
 
 export async function backfillMovieCredits(pool, options) {

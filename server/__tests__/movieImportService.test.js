@@ -7,6 +7,7 @@ import {
   collectPopularMovies,
   collectUpcomingMovies,
   enrichMoviesWithDetails,
+  hydrateMovieByTmdbId,
   importNowPlayingMovies,
   importPopularMovies,
   importUpcomingMovies,
@@ -22,6 +23,7 @@ function isSchemaSetupQuery(sql) {
     sql.includes('ALTER TABLE movies') ||
     sql.includes('UPDATE movies') ||
     sql.includes('CREATE TABLE IF NOT EXISTS cast_members') ||
+    sql.includes('ALTER TABLE cast_members') ||
     sql.includes('CREATE TABLE IF NOT EXISTS movie_cast') ||
     sql.includes('CREATE UNIQUE INDEX IF NOT EXISTS movie_cast_unique_credit_idx') ||
     sql.includes('CREATE TABLE IF NOT EXISTS users') ||
@@ -581,6 +583,190 @@ test('enrichMoviesWithDetails keeps importing when TMDB credits are unavailable'
     director: null,
     cast: [],
   })
+})
+
+test('hydrateMovieByTmdbId stores a fully hydrated movie with genres and credits', async () => {
+  const insertedGenres = []
+  const insertedMovieParams = []
+  const insertedCredits = []
+
+  const pool = {
+    async query(sql, params) {
+      if (isSchemaSetupQuery(sql)) {
+        return { rowCount: null }
+      }
+
+      if (sql.includes('FROM genres')) {
+        return { rows: [{ tmdb_genre_id: 878 }] }
+      }
+
+      if (sql.includes('INSERT INTO genres')) {
+        insertedGenres.push(params)
+        return { rowCount: 1 }
+      }
+
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+    async connect() {
+      return {
+        async query(sql, params) {
+          if (sql === 'BEGIN' || sql === 'COMMIT') {
+            return { rowCount: null }
+          }
+
+          if (sql.includes('INSERT INTO movies')) {
+            insertedMovieParams.push(params)
+            return { rows: [{ id: 77, inserted: true }] }
+          }
+
+          if (sql.includes('DELETE FROM movie_cast')) {
+            return { rowCount: 0 }
+          }
+
+          if (sql.includes('INSERT INTO cast_members')) {
+            return { rows: [{ id: insertedCredits.length + 1, inserted: true }] }
+          }
+
+          if (sql.includes('INSERT INTO movie_cast')) {
+            insertedCredits.push(params)
+            return { rowCount: 1 }
+          }
+
+          throw new Error(`Unexpected client query: ${sql}`)
+        },
+        release() {},
+      }
+    },
+  }
+
+  const hydratedMovie = await hydrateMovieByTmdbId(pool, {
+    fetchImpl: async (url) => {
+      const parsed = new URL(url)
+
+      if (parsed.pathname.endsWith('/credits')) {
+        return {
+          ok: true,
+          async json() {
+            return {
+              crew: [{ id: 900, name: 'Denis Villeneuve', job: 'Director', department: 'Directing' }],
+              cast: [{ id: 901, name: 'Timothee Chalamet', character: 'Paul Atreides', order: 0 }],
+            }
+          },
+        }
+      }
+
+      return {
+        ok: true,
+        async json() {
+          return {
+            id: 42,
+            title: 'Dune: Part Two',
+            original_title: 'Dune: Part Two',
+            overview: 'Paul Atreides returns.',
+            release_date: '2024-03-01',
+            original_language: 'en',
+            poster_path: '/poster.jpg',
+            backdrop_path: '/backdrop.jpg',
+            popularity: 99.9,
+            vote_average: 8.7,
+            vote_count: 2150,
+            adult: false,
+            video: false,
+            genres: [
+              { id: 12, name: 'Adventure' },
+              { id: 878, name: 'Science Fiction' },
+            ],
+            runtime: 166,
+            release_dates: {
+              results: [
+                { iso_3166_1: 'US', release_dates: [{ certification: 'PG-13' }] },
+              ],
+            },
+          }
+        },
+      }
+    },
+    token: 'token',
+    baseUrl: 'https://api.themoviedb.org/3',
+    movieId: 42,
+    importRank: 7,
+  })
+
+  assert.equal(hydratedMovie.tmdbId, 42)
+  assert.equal(hydratedMovie.runtimeMinutes, 166)
+  assert.equal(hydratedMovie.certification, 'PG-13')
+  assert.deepEqual(insertedGenres, [[12, 'Adventure']])
+  assert.equal(insertedMovieParams.length, 1)
+  assert.equal(insertedMovieParams[0][0], 42)
+  assert.equal(insertedMovieParams[0][14], 166)
+  assert.equal(insertedMovieParams[0][15], 'PG-13')
+  assert.equal(insertedMovieParams[0][18], 7)
+  assert.deepEqual(insertedCredits, [
+    [77, 1, 'director', null, null, 'Directing', 'Director'],
+    [77, 2, 'actor', 'Paul Atreides', 0, null, null],
+  ])
+})
+
+test('hydrateMovieByTmdbId keeps optional TMDB detail fields nullable', async () => {
+  const insertedMovieParams = []
+
+  const pool = {
+    async query(sql) {
+      if (isSchemaSetupQuery(sql)) {
+        return { rowCount: null }
+      }
+
+      if (sql.includes('FROM genres')) {
+        return { rows: [] }
+      }
+
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+    async connect() {
+      return {
+        async query(sql, params) {
+          if (sql === 'BEGIN' || sql === 'COMMIT' || sql.includes('DELETE FROM movie_cast')) {
+            return { rowCount: null, rows: [] }
+          }
+
+          if (sql.includes('INSERT INTO movies')) {
+            insertedMovieParams.push(params)
+            return { rows: [{ id: 88, inserted: true }] }
+          }
+
+          throw new Error(`Unexpected client query: ${sql}`)
+        },
+        release() {},
+      }
+    },
+  }
+
+  const hydratedMovie = await hydrateMovieByTmdbId(pool, {
+    fetchImpl: async () => ({
+      ok: true,
+      async json() {
+        return {
+          id: 7,
+          title: 'Minimal Movie',
+          genres: [],
+          release_dates: {
+            results: [],
+          },
+        }
+      },
+    }),
+    token: 'token',
+    baseUrl: 'https://api.themoviedb.org/3',
+    movieId: 7,
+  })
+
+  assert.equal(hydratedMovie.runtimeMinutes, null)
+  assert.equal(hydratedMovie.certification, null)
+  assert.equal(insertedMovieParams.length, 1)
+  assert.equal(insertedMovieParams[0][3], null)
+  assert.equal(insertedMovieParams[0][4], null)
+  assert.equal(insertedMovieParams[0][14], null)
+  assert.equal(insertedMovieParams[0][15], null)
 })
 
 test('importPopularMovies returns fetched, inserted, and updated counts', async () => {

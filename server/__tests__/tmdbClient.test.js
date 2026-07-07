@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 import {
   fetchMovieCredits,
   fetchMovieReviews,
+  fetchPersonCombinedCredits,
+  fetchPersonDetails,
   fetchPopularMoviesPage,
   fetchUpcomingMoviesPage,
   getTmdbRateLimitConfig,
@@ -99,4 +101,48 @@ test('fetchMovieReviews requests the TMDB reviews endpoint', async () => {
   })
 
   assert.match(requestedUrl, /\/movie\/42\/reviews$/)
+})
+
+test('fetchPersonDetails requests the TMDB person endpoint', async () => {
+  let requestedUrl = ''
+
+  const fetchImpl = async (url) => {
+    requestedUrl = String(url)
+    return {
+      ok: true,
+      async json() {
+        return { id: 99 }
+      },
+    }
+  }
+
+  await fetchPersonDetails(fetchImpl, {
+    token: 'token',
+    baseUrl: 'https://api.themoviedb.org/3',
+    personId: 99,
+  })
+
+  assert.match(requestedUrl, /\/person\/99$/)
+})
+
+test('fetchPersonCombinedCredits requests the TMDB combined credits endpoint', async () => {
+  let requestedUrl = ''
+
+  const fetchImpl = async (url) => {
+    requestedUrl = String(url)
+    return {
+      ok: true,
+      async json() {
+        return { cast: [], crew: [] }
+      },
+    }
+  }
+
+  await fetchPersonCombinedCredits(fetchImpl, {
+    token: 'token',
+    baseUrl: 'https://api.themoviedb.org/3',
+    personId: 99,
+  })
+
+  assert.match(requestedUrl, /\/person\/99\/combined_credits$/)
 })

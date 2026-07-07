@@ -10,6 +10,9 @@ import {
   findUserByUsername,
   getMovieStatsForUser,
   getMovieByTmdbId,
+  listCoStarsForPerson,
+  listGenres,
+  listMovieSummariesByTmdbIds,
   listWatchlistMoviesForUser,
   listWatchedMoviesForUser,
   listMovies,
@@ -18,15 +21,18 @@ import {
   removeMovieFromWatchlistForUser,
   listSimilarMovies,
   listTopRatedMovies,
+  syncPersonProfile,
   updateUserPassword,
   listUpcomingMovies,
 } from './database.js'
 import { adminJobs, findAdminJob, listAdminJobs } from './adminJobs.js'
-import { fetchMovieReviews } from './tmdbClient.js'
+import { fetchMovieReviews, fetchPersonCombinedCredits, fetchPersonDetails } from './tmdbClient.js'
+import { hydrateMovieByTmdbId } from './movieImportService.js'
 
 export async function createApp(pool, options = {}) {
   const {
     jobs = adminJobs,
+    hydrateMovie = hydrateMovieByTmdbId,
     loadRuntimeConfig = () =>
       loadConfig({
         requireDatabase: false,
@@ -41,6 +47,23 @@ export async function createApp(pool, options = {}) {
 
   app.get('/api/health', async (_request, response) => {
     response.json({ ok: true })
+  })
+
+  app.get('/api/genres', async (_request, response, next) => {
+    try {
+      const genres = await listGenres(pool)
+
+      response.json({
+        count: genres.length,
+        genres: genres.map((genre) => ({
+          id: genre.tmdb_genre_id,
+          name: genre.name,
+          movieCount: genre.movie_count,
+        })),
+      })
+    } catch (error) {
+      next(error)
+    }
   })
 
   app.post('/api/auth/login', async (request, response) => {
@@ -432,7 +455,9 @@ export async function createApp(pool, options = {}) {
   app.get('/api/movies', async (request, response, next) => {
     try {
       const pagination = readPaginationQuery(request, { defaultLimit: 30 })
+      const genre = typeof request.query.genre === 'string' ? request.query.genre.trim() : ''
       const movies = await listMovies(pool, {
+        genre,
         limit: pagination.limit + 1,
         page: pagination.page,
       })
@@ -514,11 +539,24 @@ export async function createApp(pool, options = {}) {
     }
 
     try {
-      const movie = await getMovieByTmdbId(pool, movieId)
+      let movie = await getMovieByTmdbId(pool, movieId)
+
+      if (shouldHydrateMovieDetail(movie)) {
+        const config = loadRuntimeConfig()
+
+        await hydrateMovie(pool, {
+          token: config.tmdbBearerToken,
+          baseUrl: config.tmdbBaseUrl,
+          movieId,
+          importRank: Number.isInteger(movie?.import_rank) ? movie.import_rank : 1,
+        })
+
+        movie = await getMovieByTmdbId(pool, movieId)
+      }
 
       if (!movie) {
         response.status(404).json({
-          error: `Movie ${movieId} was not found in the local database`,
+          error: `Movie ${movieId} could not be loaded from TMDB or the local database`,
         })
         return
       }
@@ -564,6 +602,52 @@ export async function createApp(pool, options = {}) {
     }
   })
 
+  app.get('/api/people/:personId', async (request, response, next) => {
+    const personId = Number.parseInt(request.params.personId, 10)
+
+    if (!Number.isInteger(personId)) {
+      response.status(400).json({
+        error: `Invalid person id: ${request.params.personId}`,
+      })
+      return
+    }
+
+    try {
+      const config = loadRuntimeConfig()
+      const [personPayload, creditsPayload] = await Promise.all([
+        fetchPersonDetails(fetch, {
+          token: config.tmdbBearerToken,
+          baseUrl: config.tmdbBaseUrl,
+          personId,
+        }),
+        fetchPersonCombinedCredits(fetch, {
+          token: config.tmdbBearerToken,
+          baseUrl: config.tmdbBaseUrl,
+          personId,
+        }),
+      ])
+
+      const normalizedProfile = normalizePersonProfile(personPayload, creditsPayload)
+      await syncPersonProfile(pool, normalizedProfile)
+
+      const [movieSummaries, coStars] = await Promise.all([
+        listMovieSummariesByTmdbIds(pool, collectCreditMovieIds(creditsPayload)),
+        listCoStarsForPerson(pool, personId),
+      ])
+
+      response.json(
+        mapPersonDetailPayload({
+          person: personPayload,
+          credits: creditsPayload,
+          movieSummaries,
+          coStars,
+        })
+      )
+    } catch (error) {
+      next(error)
+    }
+  })
+
   app.use((error, _request, response, _next) => {
     response.status(500).json({
       error: error.message || 'Unexpected server error',
@@ -591,6 +675,16 @@ function mapFeaturedMovie(movie) {
     posterPath: movie.poster_path,
     backdropPath: movie.backdrop_path,
   }
+}
+
+function shouldHydrateMovieDetail(movie) {
+  if (!movie) {
+    return true
+  }
+
+  const hasStoredCredits = Boolean(movie.director) || (Array.isArray(movie.cast) && movie.cast.length > 0)
+
+  return !movie.detail_payload || !movie.runtime_minutes || !movie.certification || !hasStoredCredits
 }
 
 async function loadMovieReviews(movieId, loadRuntimeConfig) {
@@ -648,6 +742,79 @@ function mapMovieStats(stats) {
     moviesWatched: stats?.moviesWatched ?? 0,
     timeWatchedMinutes: stats?.timeWatchedMinutes ?? 0,
     watchlistCount: stats?.watchlistCount ?? 0,
+  }
+}
+
+function normalizePersonProfile(person, credits) {
+  return {
+    tmdbPersonId: person.id,
+    name: person.name,
+    profilePath: person.profile_path || null,
+    biography: person.biography || null,
+    birthday: person.birthday || null,
+    deathday: person.deathday || null,
+    placeOfBirth: person.place_of_birth || null,
+    knownForDepartment: person.known_for_department || null,
+    popularity: typeof person.popularity === 'number' ? person.popularity : null,
+    homepage: person.homepage || null,
+    imdbId: person.imdb_id || null,
+    detailPayload: person,
+    creditsPayload: credits,
+    lastSyncedAt: new Date().toISOString(),
+  }
+}
+
+function collectCreditMovieIds(credits) {
+  return [
+    ...(Array.isArray(credits?.cast) ? credits.cast : []),
+    ...(Array.isArray(credits?.crew) ? credits.crew : []),
+  ]
+    .filter((entry) => entry?.media_type === 'movie' && Number.isInteger(entry?.id))
+    .map((entry) => entry.id)
+}
+
+function mapPersonDetailPayload({ person, credits, movieSummaries, coStars }) {
+  const movieSummaryById = new Map(movieSummaries.map((movie) => [Number(movie.tmdb_id), movie]))
+  const combinedCredits = [
+    ...(Array.isArray(credits?.cast) ? credits.cast : []),
+    ...(Array.isArray(credits?.crew) ? credits.crew : []),
+  ]
+  const movieCredits = combinedCredits.filter((entry) => entry?.media_type === 'movie' && Number.isInteger(entry?.id))
+  const roles = Array.from(
+    new Set(
+      movieCredits
+        .map((entry) => entry.character || entry.job || entry.known_for_department || entry.department)
+        .filter(Boolean)
+        .slice(0, 4)
+    )
+  )
+
+  return {
+    person: {
+      id: person.id,
+      name: person.name,
+      biography: person.biography || '',
+      profileUrl: resolveProfilePath(person.profile_path),
+      knownForDepartment: person.known_for_department || 'Performer',
+      birthday: person.birthday || null,
+      deathday: person.deathday || null,
+      ageLabel: formatPersonAge(person.birthday, person.deathday),
+      placeOfBirth: person.place_of_birth || 'Unknown',
+      popularity: formatPopularity(person.popularity),
+      roles,
+      heroBackdropUrl: resolveBackdropFromCredits(movieCredits, movieSummaryById),
+    },
+    knownFor: buildKnownForCredits(movieCredits, movieSummaryById),
+    filmography: buildFilmography(movieCredits, movieSummaryById),
+    coStars: Array.isArray(coStars)
+      ? coStars.map((entry) => ({
+          id: entry.tmdb_person_id,
+          name: entry.name,
+          profileUrl: resolveProfilePath(entry.profile_path),
+          sharedCredits: entry.shared_credits,
+        }))
+      : [],
+    facts: buildPersonFacts(person, movieCredits),
   }
 }
 
@@ -757,6 +924,121 @@ function formatReviewDate(value) {
     year: 'numeric',
     timeZone: 'UTC',
   })
+}
+
+function formatPersonAge(birthday, deathday) {
+  if (!birthday) {
+    return 'Unknown'
+  }
+
+  const birthDate = new Date(birthday)
+  const endDate = deathday ? new Date(deathday) : new Date()
+
+  if (Number.isNaN(birthDate.getTime()) || Number.isNaN(endDate.getTime())) {
+    return 'Unknown'
+  }
+
+  let age = endDate.getUTCFullYear() - birthDate.getUTCFullYear()
+  const hasHadBirthday =
+    endDate.getUTCMonth() > birthDate.getUTCMonth() ||
+    (endDate.getUTCMonth() === birthDate.getUTCMonth() && endDate.getUTCDate() >= birthDate.getUTCDate())
+
+  if (!hasHadBirthday) {
+    age -= 1
+  }
+
+  return age > 0 ? String(age) : 'Unknown'
+}
+
+function formatPopularity(value) {
+  if (typeof value !== 'number') {
+    return 'N/A'
+  }
+
+  return `${Math.round(value)}%`
+}
+
+function buildKnownForCredits(movieCredits, movieSummaryById) {
+  const seen = new Set()
+
+  return movieCredits
+    .filter((entry) => !seen.has(entry.id) && (seen.add(entry.id), true))
+    .sort((left, right) => {
+      const leftPopularity = typeof left.popularity === 'number' ? left.popularity : -1
+      const rightPopularity = typeof right.popularity === 'number' ? right.popularity : -1
+
+      return rightPopularity - leftPopularity
+    })
+    .slice(0, 5)
+    .map((entry) => mapCreditToMovieCard(entry, movieSummaryById))
+}
+
+function buildFilmography(movieCredits, movieSummaryById) {
+  const seen = new Set()
+
+  return movieCredits
+    .filter((entry) => !seen.has(entry.id) && (seen.add(entry.id), true))
+    .sort((left, right) => {
+      const leftDate = Date.parse(left.release_date || '') || 0
+      const rightDate = Date.parse(right.release_date || '') || 0
+
+      return rightDate - leftDate
+    })
+    .map((entry) => {
+      const summary = movieSummaryById.get(Number(entry.id))
+
+      return {
+        id: entry.id,
+        mediaType: 'movie',
+        title: summary?.title || entry.title || 'Untitled',
+        year: formatMovieYear(summary?.release_date || entry.release_date || null),
+        role: entry.character || entry.job || 'Credit',
+        rating: summary?.vote_average ? formatScore(summary.vote_average) : formatScore(entry.vote_average),
+        posterUrl: resolvePosterPath(summary?.poster_path || entry.poster_path || null),
+      }
+    })
+}
+
+function buildPersonFacts(person, movieCredits) {
+  const departments = new Set(movieCredits.map((entry) => entry.department || entry.known_for_department).filter(Boolean))
+
+  return [
+    { label: 'Birthdate', value: person.birthday || 'Unknown' },
+    { label: 'Birthplace', value: person.place_of_birth || 'Unknown' },
+    { label: 'Known For', value: person.known_for_department || 'Unknown' },
+    { label: 'Credits', value: String(movieCredits.length) },
+    { label: 'Departments', value: departments.size > 0 ? [...departments].slice(0, 2).join(', ') : 'Unknown' },
+    { label: 'Popularity', value: formatPopularity(person.popularity) },
+  ]
+}
+
+function resolveBackdropFromCredits(movieCredits, movieSummaryById) {
+  const creditWithBackdrop = movieCredits.find((entry) => {
+    const summary = movieSummaryById.get(Number(entry.id))
+    return Boolean(summary?.backdrop_path || entry.backdrop_path)
+  })
+
+  if (!creditWithBackdrop) {
+    return null
+  }
+
+  const summary = movieSummaryById.get(Number(creditWithBackdrop.id))
+  return resolveBackdropPath(summary?.backdrop_path || creditWithBackdrop.backdrop_path || null)
+}
+
+function mapCreditToMovieCard(entry, movieSummaryById) {
+  const summary = movieSummaryById.get(Number(entry.id))
+
+  return {
+    id: entry.id,
+    mediaType: 'movie',
+    title: summary?.title || entry.title || 'Untitled',
+    year: formatMovieYear(summary?.release_date || entry.release_date || null),
+    meta: entry.character || entry.job || 'Credit',
+    posterUrl: resolvePosterPath(summary?.poster_path || entry.poster_path || null),
+    backdropUrl: resolveBackdropPath(summary?.backdrop_path || entry.backdrop_path || null),
+    rating: summary?.vote_average ? formatScore(summary.vote_average) : formatScore(entry.vote_average),
+  }
 }
 
 function resolvePosterPath(posterPath) {

@@ -83,9 +83,35 @@ export async function ensureMoviesTable(pool) {
       tmdb_person_id INTEGER NOT NULL UNIQUE,
       name TEXT NOT NULL,
       profile_path TEXT,
+      biography TEXT,
+      birthday DATE,
+      deathday DATE,
+      place_of_birth TEXT,
+      known_for_department TEXT,
+      popularity DOUBLE PRECISION,
+      homepage TEXT,
+      imdb_id TEXT,
+      detail_payload JSONB,
+      credits_payload JSONB,
+      last_synced_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
+  `)
+
+  await pool.query(`
+    ALTER TABLE cast_members
+    ADD COLUMN IF NOT EXISTS biography TEXT,
+    ADD COLUMN IF NOT EXISTS birthday DATE,
+    ADD COLUMN IF NOT EXISTS deathday DATE,
+    ADD COLUMN IF NOT EXISTS place_of_birth TEXT,
+    ADD COLUMN IF NOT EXISTS known_for_department TEXT,
+    ADD COLUMN IF NOT EXISTS popularity DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS homepage TEXT,
+    ADD COLUMN IF NOT EXISTS imdb_id TEXT,
+    ADD COLUMN IF NOT EXISTS detail_payload JSONB,
+    ADD COLUMN IF NOT EXISTS credits_payload JSONB,
+    ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ
   `)
 
   await pool.query(`
@@ -192,24 +218,102 @@ async function upsertCastMember(client, castMember) {
         tmdb_person_id,
         name,
         profile_path,
+        biography,
+        birthday,
+        deathday,
+        place_of_birth,
+        known_for_department,
+        popularity,
+        homepage,
+        imdb_id,
+        detail_payload,
+        credits_payload,
+        last_synced_at,
         created_at,
         updated_at
       )
-      VALUES ($1, $2, $3, NOW(), NOW())
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW(), NOW())
       ON CONFLICT (tmdb_person_id)
       DO UPDATE SET
         name = EXCLUDED.name,
         profile_path = EXCLUDED.profile_path,
+        biography = COALESCE(EXCLUDED.biography, cast_members.biography),
+        birthday = COALESCE(EXCLUDED.birthday, cast_members.birthday),
+        deathday = COALESCE(EXCLUDED.deathday, cast_members.deathday),
+        place_of_birth = COALESCE(EXCLUDED.place_of_birth, cast_members.place_of_birth),
+        known_for_department = COALESCE(EXCLUDED.known_for_department, cast_members.known_for_department),
+        popularity = COALESCE(EXCLUDED.popularity, cast_members.popularity),
+        homepage = COALESCE(EXCLUDED.homepage, cast_members.homepage),
+        imdb_id = COALESCE(EXCLUDED.imdb_id, cast_members.imdb_id),
+        detail_payload = COALESCE(EXCLUDED.detail_payload, cast_members.detail_payload),
+        credits_payload = COALESCE(EXCLUDED.credits_payload, cast_members.credits_payload),
+        last_synced_at = COALESCE(EXCLUDED.last_synced_at, cast_members.last_synced_at),
         updated_at = NOW()
       RETURNING id, (xmax = 0) AS inserted
     `,
-    [castMember.tmdbPersonId, castMember.name, castMember.profilePath]
+    [
+      castMember.tmdbPersonId,
+      castMember.name,
+      castMember.profilePath ?? null,
+      castMember.biography ?? null,
+      castMember.birthday ?? null,
+      castMember.deathday ?? null,
+      castMember.placeOfBirth ?? null,
+      castMember.knownForDepartment ?? null,
+      castMember.popularity ?? null,
+      castMember.homepage ?? null,
+      castMember.imdbId ?? null,
+      castMember.detailPayload ?? null,
+      castMember.creditsPayload ?? null,
+      castMember.lastSyncedAt ?? null,
+    ]
   )
 
   return {
     id: result.rows[0].id,
     inserted: Boolean(result.rows[0].inserted),
   }
+}
+
+export async function syncPersonProfile(pool, personProfile) {
+  const client = await pool.connect()
+
+  try {
+    await client.query('BEGIN')
+    await upsertCastMember(client, personProfile)
+    await client.query('COMMIT')
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally {
+    client.release()
+  }
+}
+
+export async function listMovieSummariesByTmdbIds(pool, tmdbIds = []) {
+  const normalizedIds = [...new Set(tmdbIds.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value > 0))]
+
+  if (normalizedIds.length === 0) {
+    return []
+  }
+
+  const result = await pool.query(
+    `
+      SELECT
+        tmdb_id,
+        title,
+        release_date,
+        poster_path,
+        backdrop_path,
+        vote_average,
+        certification
+      FROM movies
+      WHERE tmdb_id = ANY($1::int[])
+    `,
+    [normalizedIds]
+  )
+
+  return result.rows
 }
 
 async function replaceMovieCreditsForMovieId(client, movieId, credits = {}) {
@@ -474,10 +578,27 @@ export async function replaceMovieCredits(pool, tmdbId, credits) {
 }
 
 export async function listMovies(pool, options = {}) {
-  const { limit = 30, page = 1 } = options
+  const { limit = 30, page = 1, genre = '' } = options
   const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 30
   const normalizedPage = Number.isInteger(page) ? Math.max(1, page) : 1
+  const normalizedGenre = typeof genre === 'string' ? genre.trim() : ''
   const offset = (normalizedPage - 1) * normalizedLimit
+
+  const params = [normalizedLimit, offset]
+  const genreFilterSql = normalizedGenre
+    ? `
+    WHERE EXISTS (
+      SELECT 1
+      FROM UNNEST(movies.genre_ids) AS selected_genre(tmdb_genre_id)
+      JOIN genres AS selected_genres ON selected_genres.tmdb_genre_id = selected_genre.tmdb_genre_id
+      WHERE LOWER(selected_genres.name) = LOWER($3)
+    )
+  `
+    : ''
+
+  if (normalizedGenre) {
+    params.push(normalizedGenre)
+  }
 
   const result = await pool.query(`
     SELECT
@@ -508,11 +629,28 @@ export async function listMovies(pool, options = {}) {
     FROM movies
     LEFT JOIN LATERAL UNNEST(movies.genre_ids) WITH ORDINALITY AS genre_ids(tmdb_genre_id, ordinality) ON TRUE
     LEFT JOIN genres ON genres.tmdb_genre_id = genre_ids.tmdb_genre_id
+    ${genreFilterSql}
     GROUP BY movies.id
     ORDER BY popularity DESC NULLS LAST, tmdb_id ASC
     LIMIT $1
     OFFSET $2
-  `, [normalizedLimit, offset])
+  `, params)
+
+  return result.rows
+}
+
+export async function listGenres(pool) {
+  const result = await pool.query(`
+    SELECT
+      genres.tmdb_genre_id,
+      genres.name,
+      COUNT(DISTINCT movies.id)::INTEGER AS movie_count
+    FROM genres
+    JOIN movies ON genres.tmdb_genre_id = ANY(movies.genre_ids)
+    GROUP BY genres.id
+    HAVING COUNT(DISTINCT movies.id) > 0
+    ORDER BY LOWER(genres.name) ASC, genres.tmdb_genre_id ASC
+  `)
 
   return result.rows
 }
@@ -934,6 +1072,35 @@ export async function listSimilarMovies(pool, tmdbId, options = {}) {
     LIMIT $2
   `,
     [tmdbId, normalizedLimit]
+  )
+
+  return result.rows
+}
+
+export async function listCoStarsForPerson(pool, tmdbPersonId, options = {}) {
+  const limit = Number.isInteger(options.limit) ? Math.max(1, options.limit) : 6
+  const result = await pool.query(
+    `
+      SELECT
+        peer_cast.tmdb_person_id,
+        peer_cast.name,
+        peer_cast.profile_path,
+        COUNT(*)::INTEGER AS shared_credits
+      FROM cast_members target_cast
+      JOIN movie_cast target_movie_cast
+        ON target_movie_cast.cast_member_id = target_cast.id
+      JOIN movie_cast peer_movie_cast
+        ON peer_movie_cast.movie_id = target_movie_cast.movie_id
+       AND peer_movie_cast.credit_type = 'actor'
+      JOIN cast_members peer_cast
+        ON peer_cast.id = peer_movie_cast.cast_member_id
+      WHERE target_cast.tmdb_person_id = $1
+        AND peer_cast.tmdb_person_id <> $1
+      GROUP BY peer_cast.tmdb_person_id, peer_cast.name, peer_cast.profile_path
+      ORDER BY shared_credits DESC, peer_cast.name ASC
+      LIMIT $2
+    `,
+    [tmdbPersonId, limit]
   )
 
   return result.rows
