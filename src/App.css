@@ -2130,10 +2130,12 @@
 }
 
 .person-detail-filmography-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1.7fr) minmax(140px, 0.9fr) auto auto;
+  -webkit-appearance: none;
+  appearance: none;
+  display: flex;
   align-items: center;
   gap: 16px;
+  width: 100%;
   min-height: 82px;
   padding: 12px 14px;
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -2156,14 +2158,18 @@
   grid-template-columns: 46px minmax(0, 1fr);
   gap: 12px;
   align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .person-detail-filmography-poster {
-  aspect-ratio: 0.72;
+  width: 46px;
+  height: 64px;
   overflow: hidden;
   border-radius: 10px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background-color: #20253a;
+  justify-self: start;
 }
 
 .person-detail-filmography-copy {
@@ -2189,6 +2195,22 @@
 .person-detail-filmography-role {
   color: var(--text-secondary);
   font-size: 0.88rem;
+}
+
+.person-detail-filmography-role {
+  flex: 0 1 160px;
+  min-width: 0;
+}
+
+.person-detail-filmography-rating {
+  flex: 0 0 auto;
+}
+
+.person-detail-filmography-chevron {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  color: var(--text-secondary);
 }
 
 .person-detail-costars {
@@ -3175,11 +3197,12 @@
   }
 
   .person-detail-filmography-row {
-    grid-template-columns: minmax(0, 1fr) auto;
+    flex-wrap: wrap;
+    align-items: flex-start;
   }
 
   .person-detail-filmography-role {
-    grid-column: 1 / 2;
+    flex-basis: calc(100% - 34px);
   }
 
   .person-detail-costars {

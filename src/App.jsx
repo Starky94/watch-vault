@@ -3027,11 +3027,11 @@ function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOp
                         </div>
                       </div>
                       <span className="person-detail-filmography-role">{item.role}</span>
-                      <span className="star-rating">
+                      <span className="star-rating person-detail-filmography-rating">
                         <StarIcon />
                         {item.rating}
                       </span>
-                      <ChevronRight />
+                      <ChevronRight className="person-detail-filmography-chevron" />
                     </button>
                   ))}
                 </div>
@@ -4548,9 +4548,9 @@ function MoreIcon() {
   )
 }
 
-function ChevronRight() {
+function ChevronRight(props) {
   return (
-    <IconBase>
+    <IconBase {...props}>
       <path d="m9 6 6 6-6 6" />
     </IconBase>
   )
