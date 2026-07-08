@@ -10,6 +10,7 @@ readonly REMOTE_ENV_FILE=".env.production"
 readonly COMPOSE_PROJECT="watchvault-8181"
 readonly EXPECTED_PORT="8181"
 readonly HEALTHCHECK_URL="http://127.0.0.1:${EXPECTED_PORT}/api/health"
+readonly API_HEALTHCHECK_URL="http://127.0.0.1:3001/api/health"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARCHIVE_PATH="$(mktemp /tmp/watchvault-8181.XXXXXX.tar.gz)"
@@ -101,8 +102,29 @@ ssh "$REMOTE_HOST" "
   fi
 
   tar -xzf '$REMOTE_TMP_ARCHIVE' -C '$REMOTE_DIR'
-  docker compose --env-file '$REMOTE_ENV_FILE' -p '$COMPOSE_PROJECT' up -d --build
+  docker compose --env-file '$REMOTE_ENV_FILE' -p '$COMPOSE_PROJECT' up -d --build db api importer importer-tv-popular importer-now-playing importer-tv-airing-today importer-upcoming importer-tv-on-the-air
   rm -f '$REMOTE_TMP_ARCHIVE'
+"
+
+echo "Waiting for API health at ${API_HEALTHCHECK_URL}..."
+for attempt in {1..20}; do
+  if ssh "$REMOTE_HOST" "curl -fsS '$API_HEALTHCHECK_URL'" >/dev/null 2>&1; then
+    break
+  fi
+
+  if [[ "$attempt" -eq 20 ]]; then
+    echo "Deployment finished, but the API health check did not succeed." >&2
+    exit 1
+  fi
+
+  sleep 3
+done
+
+echo "Starting web container..."
+ssh "$REMOTE_HOST" "
+  set -euo pipefail
+  cd '$REMOTE_DIR'
+  docker compose --env-file '$REMOTE_ENV_FILE' -p '$COMPOSE_PROJECT' up -d web
 "
 
 echo "Waiting for ${HEALTHCHECK_URL}..."
@@ -112,7 +134,7 @@ for attempt in {1..20}; do
   fi
 
   if [[ "$attempt" -eq 20 ]]; then
-    echo "Deployment finished, but the health check did not succeed." >&2
+    echo "Deployment finished, but the web health check did not succeed." >&2
     exit 1
   fi
 
