@@ -10,7 +10,7 @@ readonly REMOTE_ENV_FILE=".env.production"
 readonly COMPOSE_PROJECT="watchvault-8181"
 readonly EXPECTED_PORT="8181"
 readonly HEALTHCHECK_URL="http://127.0.0.1:${EXPECTED_PORT}/api/health"
-readonly API_HEALTHCHECK_URL="http://127.0.0.1:3001/api/health"
+readonly API_CONTAINER_NAME="${COMPOSE_PROJECT}-api-1"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARCHIVE_PATH="$(mktemp /tmp/watchvault-8181.XXXXXX.tar.gz)"
@@ -106,9 +106,9 @@ ssh "$REMOTE_HOST" "
   rm -f '$REMOTE_TMP_ARCHIVE'
 "
 
-echo "Waiting for API health at ${API_HEALTHCHECK_URL}..."
+echo "Waiting for API container health..."
 for attempt in {1..20}; do
-  if ssh "$REMOTE_HOST" "curl -fsS '$API_HEALTHCHECK_URL'" >/dev/null 2>&1; then
+  if ssh "$REMOTE_HOST" "docker inspect --format='{{.State.Health.Status}}' '$API_CONTAINER_NAME' 2>/dev/null | grep -qx healthy" >/dev/null 2>&1; then
     break
   fi
 
@@ -124,7 +124,7 @@ echo "Starting web container..."
 ssh "$REMOTE_HOST" "
   set -euo pipefail
   cd '$REMOTE_DIR'
-  docker compose --env-file '$REMOTE_ENV_FILE' -p '$COMPOSE_PROJECT' up -d web
+  docker compose --env-file '$REMOTE_ENV_FILE' -p '$COMPOSE_PROJECT' up -d --build --force-recreate web
 "
 
 echo "Waiting for ${HEALTHCHECK_URL}..."
