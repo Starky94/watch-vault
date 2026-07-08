@@ -98,6 +98,45 @@ export async function fetchPopularMoviesPage(fetchImpl, options) {
   })
 }
 
+export async function fetchPopularTvShowsPage(fetchImpl, options) {
+  const { token, page, baseUrl } = options
+
+  return tmdbRequest(fetchImpl, {
+    token,
+    baseUrl,
+    path: 'tv/popular',
+    searchParams: {
+      page,
+    },
+  })
+}
+
+export async function fetchAiringTodayTvShowsPage(fetchImpl, options) {
+  const { token, page, baseUrl } = options
+
+  return tmdbRequest(fetchImpl, {
+    token,
+    baseUrl,
+    path: 'tv/airing_today',
+    searchParams: {
+      page,
+    },
+  })
+}
+
+export async function fetchOnTheAirTvShowsPage(fetchImpl, options) {
+  const { token, page, baseUrl } = options
+
+  return tmdbRequest(fetchImpl, {
+    token,
+    baseUrl,
+    path: 'tv/on_the_air',
+    searchParams: {
+      page,
+    },
+  })
+}
+
 export async function fetchMovieGenres(fetchImpl, options) {
   const { token, baseUrl } = options
 
@@ -105,6 +144,16 @@ export async function fetchMovieGenres(fetchImpl, options) {
     token,
     baseUrl,
     path: 'genre/movie/list',
+  })
+}
+
+export async function fetchTvGenres(fetchImpl, options) {
+  const { token, baseUrl } = options
+
+  return tmdbRequest(fetchImpl, {
+    token,
+    baseUrl,
+    path: 'genre/tv/list',
   })
 }
 
@@ -118,6 +167,16 @@ export async function fetchMovieDetails(fetchImpl, options) {
     searchParams: {
       append_to_response: 'release_dates',
     },
+  })
+}
+
+export async function fetchTvDetails(fetchImpl, options) {
+  const { token, baseUrl, tvShowId } = options
+
+  return tmdbRequest(fetchImpl, {
+    token,
+    baseUrl,
+    path: `tv/${tvShowId}`,
   })
 }
 

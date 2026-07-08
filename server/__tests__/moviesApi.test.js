@@ -1,12 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createApp } from '../app.js'
-import { countMovies, countStoredDataBytes, ensureMoviesTable, listGenres, listMovies, listRecentlyReleasedMovies, listSimilarMovies, listTopRatedMovies, listUpcomingMovies } from '../database.js'
+import { countMovies, countStoredDataBytes, ensureMoviesTable, listGenres, listMovies, listRecentlyReleasedMovies, listSimilarMovies, listTopRatedMovies, listTvShows, listUpcomingMovies } from '../database.js'
 
 function isSchemaSetupQuery(sql) {
   return (
     sql.includes('CREATE TABLE IF NOT EXISTS movies') ||
     sql.includes('CREATE TABLE IF NOT EXISTS genres') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS tv_genres') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS tv_shows') ||
     sql.includes('ALTER TABLE movies') ||
     sql.includes('UPDATE movies') ||
     sql.includes('CREATE TABLE IF NOT EXISTS cast_members') ||
@@ -2631,7 +2633,7 @@ test('GET /api/movies/:movieId/similar returns an empty list when no related mov
   }
 })
 
-test('GET /api/admin/overview returns the configured jobs, total movie count, and stored data size', async () => {
+test('GET /api/admin/overview returns the configured jobs and database totals', async () => {
   const pool = {
     async query(sql) {
       if (isSchemaSetupQuery(sql)) {
@@ -2640,6 +2642,14 @@ test('GET /api/admin/overview returns the configured jobs, total movie count, an
 
       if (sql.includes('SELECT COUNT(*)::INTEGER AS movie_count')) {
         return { rows: [{ movie_count: 125 }] }
+      }
+
+      if (sql.includes('SELECT COUNT(*)::INTEGER AS tv_show_count')) {
+        return { rows: [{ tv_show_count: 48 }] }
+      }
+
+      if (sql.includes('SELECT COUNT(*)::INTEGER AS actor_count')) {
+        return { rows: [{ actor_count: 913 }] }
       }
 
       if (sql.includes('pg_total_relation_size')) {
@@ -2659,8 +2669,10 @@ test('GET /api/admin/overview returns the configured jobs, total movie count, an
     const payload = await response.json()
 
     assert.equal(response.status, 200)
+    assert.equal(payload.totals.actors, 913)
     assert.equal(payload.totals.movies, 125)
     assert.equal(payload.totals.storedDataBytes, 5242880)
+    assert.equal(payload.totals.tvShows, 48)
     assert.deepEqual(payload.crons, [
       {
         key: 'popular',
@@ -2680,6 +2692,24 @@ test('GET /api/admin/overview returns the configured jobs, total movie count, an
         execution: 'Interval-based loop',
         frequency: 'Every 24 hours',
       },
+      {
+        key: 'tv-popular',
+        name: 'Popular TV Shows Import',
+        execution: 'Interval-based loop',
+        frequency: 'Every 10 minutes',
+      },
+      {
+        key: 'tv-airing-today',
+        name: 'TV Airing Today Import',
+        execution: 'Interval-based loop',
+        frequency: 'Every 24 hours',
+      },
+      {
+        key: 'tv-on-the-air',
+        name: 'TV On The Air Import',
+        execution: 'Interval-based loop',
+        frequency: 'Every 24 hours',
+      },
     ])
   } finally {
     await new Promise((resolve, reject) => {
@@ -2692,6 +2722,71 @@ test('GET /api/admin/overview returns the configured jobs, total movie count, an
         resolve()
       })
     })
+  }
+})
+
+test('POST /api/admin/jobs/:jobKey/run can dispatch a TV import job', async () => {
+  const pool = {
+    async query(sql) {
+      if (isSchemaSetupQuery(sql)) {
+        return { rowCount: null }
+      }
+
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+
+  const invocations = []
+  const app = await createApp(pool, {
+    jobs: [
+      {
+        key: 'tv-popular',
+        name: 'Popular TV Shows Import',
+        execution: 'Interval-based loop',
+        frequency: 'Every 10 minutes',
+        async run(receivedPool, options) {
+          invocations.push({ receivedPool, options })
+          return {
+            fetchedCount: 30,
+            insertedCount: 5,
+            updatedCount: 25,
+          }
+        },
+      },
+    ],
+    loadRuntimeConfig: () => ({
+      tmdbBearerToken: 'token',
+      tmdbBaseUrl: 'https://example.test',
+    }),
+  })
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/admin/jobs/tv-popular/run`, {
+      method: 'POST',
+    })
+    const payload = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.deepEqual(payload, {
+      job: 'tv-popular',
+      fetchedCount: 30,
+      insertedCount: 5,
+      updatedCount: 25,
+    })
+    assert.deepEqual(invocations, [
+      {
+        receivedPool: pool,
+        options: {
+          token: 'token',
+          baseUrl: 'https://example.test',
+          count: 30,
+        },
+      },
+    ])
+  } finally {
+    await closeServer(server)
   }
 })
 
@@ -3305,5 +3400,404 @@ test('GET /api/movies/upcoming forwards a requested limit', async () => {
         resolve()
       })
     })
+  }
+})
+
+test('listTvShows requests the top 30 TV titles ordered by popularity descending', async () => {
+  let executedSql = ''
+  let executedParams = []
+  const pool = {
+    async query(sql, params) {
+      executedSql = sql
+      executedParams = params
+      return { rows: [] }
+    },
+  }
+
+  const shows = await listTvShows(pool)
+
+  assert.deepEqual(shows, [])
+  assert.match(executedSql, /ORDER BY tv_shows\.popularity DESC NULLS LAST, tv_shows\.tmdb_id ASC/i)
+  assert.deepEqual(executedParams, [30, 0])
+})
+
+test('GET /api/tv returns the popular TV shows payload from the local DB', async () => {
+  const rows = Array.from({ length: 10 }, (_, index) => ({
+    tmdb_id: index + 1,
+    name: `Popular Show ${index + 1}`,
+    original_name: `Popular Show ${index + 1}`,
+    overview: `Overview ${index + 1}`,
+    first_air_date: `2026-06-${String(20 - index).padStart(2, '0')}`,
+    original_language: 'en',
+    poster_path: `/poster-${index + 1}.jpg`,
+    backdrop_path: `/backdrop-${index + 1}.jpg`,
+    popularity: 100 - index,
+    vote_average: 8.8 - index * 0.1,
+    vote_count: 2000 - index * 10,
+    genre_ids: [18, 10765],
+    genre_names: ['Drama', 'Sci-Fi & Fantasy'],
+    detail_payload: {
+      number_of_episodes: 8,
+      number_of_seasons: 1,
+      episode_run_time: [55],
+    },
+    raw_payload: {},
+    import_rank: index + 1,
+    imported_at: '2026-07-02T00:00:00.000Z',
+  }))
+
+  let tvQueryCount = 0
+  const pool = {
+    async query(sql) {
+      if (isSchemaSetupQuery(sql)) {
+        return { rowCount: null }
+      }
+
+      if (sql.includes('ORDER BY tv_shows.popularity DESC')) {
+        tvQueryCount += 1
+        return { rows }
+      }
+
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+
+  const app = await createApp(pool)
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/tv`)
+    const payload = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.equal(tvQueryCount, 1)
+    assert.equal(payload.count, 10)
+    assert.equal(payload.shows.length, 10)
+    assert.equal(payload.shows[0].name, 'Popular Show 1')
+    assert.equal(payload.featuredShow.title, 'Popular Show 1')
+    assert.equal(payload.featuredShow.episodesLabel, '8 Episodes')
+  } finally {
+    await closeServer(server)
+  }
+})
+
+test('GET /api/tv returns a safe empty featured payload when no TV shows exist', async () => {
+  const pool = {
+    async query(sql) {
+      if (isSchemaSetupQuery(sql)) {
+        return { rowCount: null }
+      }
+
+      if (sql.includes('FROM tv_shows')) {
+        return { rows: [] }
+      }
+
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+
+  const app = await createApp(pool)
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/tv`)
+    const payload = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.equal(payload.count, 0)
+    assert.deepEqual(payload.shows, [])
+    assert.equal(payload.featuredShow, null)
+  } finally {
+    await closeServer(server)
+  }
+})
+
+test('GET /api/tv/recently-released returns the latest released TV shows payload from the local DB', async () => {
+  const rows = Array.from({ length: 10 }, (_, index) => ({
+    tmdb_id: index + 1,
+    name: `Recent Show ${index + 1}`,
+    original_name: `Recent Show ${index + 1}`,
+    overview: null,
+    first_air_date: `2026-07-${String(10 - index).padStart(2, '0')}`,
+    original_language: 'en',
+    poster_path: null,
+    backdrop_path: null,
+    popularity: 100 - index,
+    vote_average: 8.5 - index * 0.1,
+    vote_count: 1000 + index,
+    genre_ids: [],
+    genre_names: ['Drama'],
+    detail_payload: {},
+    raw_payload: {},
+    import_rank: index + 1,
+    imported_at: '2026-07-02T00:00:00.000Z',
+  }))
+
+  let recentQueryCount = 0
+  const pool = {
+    async query(sql) {
+      if (isSchemaSetupQuery(sql)) {
+        return { rowCount: null }
+      }
+
+      if (sql.includes('ORDER BY tv_shows.first_air_date DESC')) {
+        recentQueryCount += 1
+        return { rows }
+      }
+
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+
+  const app = await createApp(pool)
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/tv/recently-released`)
+    const payload = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.equal(recentQueryCount, 1)
+    assert.equal(payload.count, 10)
+    assert.equal(payload.shows.length, 10)
+    assert.equal(payload.shows[0].name, 'Recent Show 1')
+    assert.equal(payload.shows[9].name, 'Recent Show 10')
+  } finally {
+    await closeServer(server)
+  }
+})
+
+test('GET /api/tv/recently-released forwards a requested limit', async () => {
+  const capturedParams = []
+  const pool = {
+    async query(sql, params) {
+      if (isSchemaSetupQuery(sql)) {
+        return { rowCount: null }
+      }
+
+      if (sql.includes('ORDER BY tv_shows.first_air_date DESC')) {
+        capturedParams.push(params)
+        return { rows: [] }
+      }
+
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+
+  const app = await createApp(pool)
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/tv/recently-released?limit=30&page=2`)
+    const payload = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.deepEqual(capturedParams, [[31, 31]])
+    assert.equal(payload.count, 0)
+    assert.deepEqual(payload.shows, [])
+    assert.deepEqual(payload.pagination, {
+      page: 2,
+      pageSize: 30,
+      hasNextPage: false,
+      hasPreviousPage: true,
+    })
+  } finally {
+    await closeServer(server)
+  }
+})
+
+test('GET /api/tv/upcoming returns the upcoming TV shows payload from the local DB', async () => {
+  const rows = Array.from({ length: 10 }, (_, index) => ({
+    tmdb_id: index + 1,
+    name: `Upcoming Show ${index + 1}`,
+    original_name: `Upcoming Show ${index + 1}`,
+    overview: null,
+    first_air_date: `2026-07-${String(index + 3).padStart(2, '0')}`,
+    original_language: 'en',
+    poster_path: null,
+    backdrop_path: null,
+    popularity: 100 - index,
+    vote_average: 8.5 - index * 0.1,
+    vote_count: 1000 + index,
+    genre_ids: [],
+    genre_names: ['Drama'],
+    detail_payload: {},
+    raw_payload: {},
+    import_rank: index + 1,
+    imported_at: '2026-07-02T00:00:00.000Z',
+  }))
+
+  let upcomingQueryCount = 0
+  const pool = {
+    async query(sql) {
+      if (isSchemaSetupQuery(sql)) {
+        return { rowCount: null }
+      }
+
+      if (sql.includes('ORDER BY tv_shows.first_air_date ASC')) {
+        upcomingQueryCount += 1
+        return { rows }
+      }
+
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+
+  const app = await createApp(pool)
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/tv/upcoming`)
+    const payload = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.equal(upcomingQueryCount, 1)
+    assert.equal(payload.count, 10)
+    assert.equal(payload.shows.length, 10)
+    assert.equal(payload.shows[0].name, 'Upcoming Show 1')
+    assert.equal(payload.shows[9].name, 'Upcoming Show 10')
+  } finally {
+    await closeServer(server)
+  }
+})
+
+test('GET /api/tv/upcoming forwards a requested limit', async () => {
+  const capturedParams = []
+  const pool = {
+    async query(sql, params) {
+      if (isSchemaSetupQuery(sql)) {
+        return { rowCount: null }
+      }
+
+      if (sql.includes('ORDER BY tv_shows.first_air_date ASC')) {
+        capturedParams.push(params)
+        return { rows: [] }
+      }
+
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+
+  const app = await createApp(pool)
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/tv/upcoming?limit=30&page=2`)
+    const payload = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.deepEqual(capturedParams, [[31, 31]])
+    assert.equal(payload.count, 0)
+    assert.deepEqual(payload.shows, [])
+    assert.deepEqual(payload.pagination, {
+      page: 2,
+      pageSize: 30,
+      hasNextPage: false,
+      hasPreviousPage: true,
+    })
+  } finally {
+    await closeServer(server)
+  }
+})
+
+test('GET /api/tv/top-rated returns the top-rated released TV shows payload from the local DB', async () => {
+  const rows = Array.from({ length: 10 }, (_, index) => ({
+    tmdb_id: index + 1,
+    name: `Top Rated Show ${index + 1}`,
+    original_name: `Top Rated Show ${index + 1}`,
+    overview: null,
+    first_air_date: `2026-06-${String(30 - index).padStart(2, '0')}`,
+    original_language: 'en',
+    poster_path: null,
+    backdrop_path: null,
+    popularity: 100 - index,
+    vote_average: 9.5 - index * 0.1,
+    vote_count: 2000 - index * 10,
+    genre_ids: [],
+    genre_names: ['Drama'],
+    detail_payload: {},
+    raw_payload: {},
+    import_rank: index + 1,
+    imported_at: '2026-07-02T00:00:00.000Z',
+  }))
+
+  let topRatedQueryCount = 0
+  const pool = {
+    async query(sql) {
+      if (isSchemaSetupQuery(sql)) {
+        return { rowCount: null }
+      }
+
+      if (sql.includes('ORDER BY tv_shows.vote_average DESC')) {
+        topRatedQueryCount += 1
+        return { rows }
+      }
+
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+
+  const app = await createApp(pool)
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/tv/top-rated`)
+    const payload = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.equal(topRatedQueryCount, 1)
+    assert.equal(payload.count, 10)
+    assert.equal(payload.shows.length, 10)
+    assert.equal(payload.shows[0].name, 'Top Rated Show 1')
+    assert.equal(payload.shows[9].name, 'Top Rated Show 10')
+  } finally {
+    await closeServer(server)
+  }
+})
+
+test('GET /api/tv/top-rated forwards a requested limit', async () => {
+  const capturedParams = []
+  const pool = {
+    async query(sql, params) {
+      if (isSchemaSetupQuery(sql)) {
+        return { rowCount: null }
+      }
+
+      if (sql.includes('ORDER BY tv_shows.vote_average DESC')) {
+        capturedParams.push(params)
+        return { rows: [] }
+      }
+
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+
+  const app = await createApp(pool)
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/tv/top-rated?limit=30&page=2`)
+    const payload = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.deepEqual(capturedParams, [[31, 31]])
+    assert.equal(payload.count, 0)
+    assert.deepEqual(payload.shows, [])
+    assert.deepEqual(payload.pagination, {
+      page: 2,
+      pageSize: 30,
+      hasNextPage: false,
+      hasPreviousPage: true,
+    })
+  } finally {
+    await closeServer(server)
   }
 })

@@ -1,11 +1,15 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  fetchAiringTodayTvShowsPage,
   fetchMovieCredits,
   fetchMovieReviews,
+  fetchOnTheAirTvShowsPage,
   fetchPersonCombinedCredits,
   fetchPersonDetails,
   fetchPopularMoviesPage,
+  fetchPopularTvShowsPage,
+  fetchTvDetails,
   fetchUpcomingMoviesPage,
   getTmdbRateLimitConfig,
   resetTmdbRateLimiterForTests,
@@ -59,6 +63,72 @@ test('fetchUpcomingMoviesPage requests the TMDB upcoming endpoint', async () => 
   assert.match(requestedUrl, /\/movie\/upcoming\?page=2$/)
 })
 
+test('fetchPopularTvShowsPage requests the TMDB popular TV endpoint', async () => {
+  let requestedUrl = ''
+
+  const fetchImpl = async (url) => {
+    requestedUrl = String(url)
+    return {
+      ok: true,
+      async json() {
+        return { results: [] }
+      },
+    }
+  }
+
+  await fetchPopularTvShowsPage(fetchImpl, {
+    token: 'token',
+    baseUrl: 'https://api.themoviedb.org/3',
+    page: 2,
+  })
+
+  assert.match(requestedUrl, /\/tv\/popular\?page=2$/)
+})
+
+test('fetchAiringTodayTvShowsPage requests the TMDB airing today TV endpoint', async () => {
+  let requestedUrl = ''
+
+  const fetchImpl = async (url) => {
+    requestedUrl = String(url)
+    return {
+      ok: true,
+      async json() {
+        return { results: [] }
+      },
+    }
+  }
+
+  await fetchAiringTodayTvShowsPage(fetchImpl, {
+    token: 'token',
+    baseUrl: 'https://api.themoviedb.org/3',
+    page: 3,
+  })
+
+  assert.match(requestedUrl, /\/tv\/airing_today\?page=3$/)
+})
+
+test('fetchOnTheAirTvShowsPage requests the TMDB on the air TV endpoint', async () => {
+  let requestedUrl = ''
+
+  const fetchImpl = async (url) => {
+    requestedUrl = String(url)
+    return {
+      ok: true,
+      async json() {
+        return { results: [] }
+      },
+    }
+  }
+
+  await fetchOnTheAirTvShowsPage(fetchImpl, {
+    token: 'token',
+    baseUrl: 'https://api.themoviedb.org/3',
+    page: 4,
+  })
+
+  assert.match(requestedUrl, /\/tv\/on_the_air\?page=4$/)
+})
+
 test('fetchMovieCredits requests the TMDB credits endpoint', async () => {
   let requestedUrl = ''
 
@@ -101,6 +171,28 @@ test('fetchMovieReviews requests the TMDB reviews endpoint', async () => {
   })
 
   assert.match(requestedUrl, /\/movie\/42\/reviews$/)
+})
+
+test('fetchTvDetails requests the TMDB TV detail endpoint', async () => {
+  let requestedUrl = ''
+
+  const fetchImpl = async (url) => {
+    requestedUrl = String(url)
+    return {
+      ok: true,
+      async json() {
+        return { id: 77 }
+      },
+    }
+  }
+
+  await fetchTvDetails(fetchImpl, {
+    token: 'token',
+    baseUrl: 'https://api.themoviedb.org/3',
+    tvShowId: 77,
+  })
+
+  assert.match(requestedUrl, /\/tv\/77$/)
 })
 
 test('fetchPersonDetails requests the TMDB person endpoint', async () => {

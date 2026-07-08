@@ -25,8 +25,10 @@
 .mobile-nav,
 .mobile-header,
 .movies-page,
+.tv-shows-page,
 .person-detail-page,
 .featured-movie-card,
+.tv-feature-card,
 .movie-watchlist-panel {
   position: relative;
   z-index: 1;
@@ -818,7 +820,9 @@
 .content-section.compact-section,
 .episode-card,
 .featured-movie-card,
-.movies-page {
+.movies-page,
+.tv-shows-page,
+.tv-feature-card {
   background: rgba(18, 21, 34, 0.8);
   border: 1px solid var(--border-soft);
 }
@@ -1178,6 +1182,16 @@
     linear-gradient(180deg, rgba(10, 13, 24, 0.96), rgba(8, 11, 20, 0.98));
 }
 
+.tv-shows-page {
+  margin-top: 18px;
+  padding: 22px;
+  border-radius: 28px;
+  box-shadow: var(--shadow-panel);
+  background:
+    radial-gradient(circle at top center, rgba(96, 74, 190, 0.14), transparent 24%),
+    linear-gradient(180deg, rgba(7, 10, 21, 0.98), rgba(7, 10, 18, 0.99));
+}
+
 .movies-heading {
   margin-bottom: 10px;
 }
@@ -1203,7 +1217,18 @@
   align-items: start;
 }
 
+.tv-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 286px;
+  gap: 14px;
+  align-items: start;
+}
+
 .movies-main {
+  min-width: 0;
+}
+
+.tv-main {
   min-width: 0;
 }
 
@@ -1216,6 +1241,15 @@
   margin: 0;
 }
 
+.tv-rail {
+  display: grid;
+  gap: 14px;
+}
+
+.tv-rail .stats-panel {
+  margin: 0;
+}
+
 .featured-movie-card {
   display: grid;
   grid-template-columns: minmax(0, 1.18fr) minmax(320px, 1fr);
@@ -1225,6 +1259,21 @@
 }
 
 .featured-movie-copy {
+  padding: 22px 24px 22px 24px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.tv-feature-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1.18fr) minmax(320px, 1fr);
+  min-height: 360px;
+  border-radius: 24px;
+  overflow: hidden;
+}
+
+.tv-feature-copy {
   padding: 22px 24px 22px 24px;
   display: flex;
   flex-direction: column;
@@ -1252,10 +1301,22 @@
   letter-spacing: -0.05em;
 }
 
+.tv-feature-card h2 {
+  margin-top: 14px;
+  font-family: var(--font-display);
+  font-size: clamp(2rem, 3vw, 3rem);
+  line-height: 0.98;
+  letter-spacing: -0.05em;
+}
+
 .featured-movie-meta {
   flex-wrap: wrap;
   margin: 10px 0 14px;
   font-size: 0.95rem;
+}
+
+.tv-feature-meta {
+  margin-bottom: 12px;
 }
 
 .featured-movie-meta span:not(:last-child)::after {
@@ -1266,6 +1327,10 @@
 
 .featured-movie-scores {
   margin-bottom: 16px;
+}
+
+.tv-feature-scores {
+  margin-bottom: 14px;
 }
 
 .movie-score {
@@ -1282,6 +1347,179 @@
 
 .featured-movie-art {
   min-height: 100%;
+}
+
+.tv-feature-art {
+  position: relative;
+  min-height: 100%;
+}
+
+.tv-feature-art.has-image {
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: auto 100%;
+}
+
+.tv-feature-art::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 78% 16%, rgba(255, 243, 213, 0.88) 0, rgba(255, 243, 213, 0.88) 7%, rgba(255, 243, 213, 0.24) 10%, transparent 18%),
+    radial-gradient(circle at 76% 16%, rgba(7, 10, 18, 0.98) 0, rgba(7, 10, 18, 0.98) 6%, transparent 7%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), transparent 24%, rgba(7, 10, 18, 0.12) 48%, rgba(7, 10, 18, 0.86) 100%);
+}
+
+.tv-feature-art::after {
+  content: '';
+  position: absolute;
+  inset: auto 0 0;
+  height: 56%;
+  background:
+    linear-gradient(180deg, transparent, rgba(8, 11, 19, 0.94)),
+    linear-gradient(90deg, rgba(7, 10, 18, 0.06), transparent 36%, transparent 64%, rgba(7, 10, 18, 0.14)),
+    linear-gradient(180deg, transparent 0%, rgba(6, 10, 18, 0.44) 100%);
+}
+
+.tv-feature-art .feature-arrow,
+.tv-feature-art .feature-dots {
+  z-index: 2;
+}
+
+.tv-feature-actions {
+  margin-top: 20px;
+}
+
+.tv-stats-panel,
+.tv-watchlist-panel {
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(17, 21, 35, 0.94), rgba(13, 16, 27, 0.94));
+}
+
+.tv-stats-panel .stats-header span,
+.tv-watchlist-panel .section-header h2 {
+  font-size: 1.15rem;
+}
+
+.tv-stats-panel .stat-card {
+  padding: 12px 14px;
+  border-radius: 14px;
+}
+
+.tv-stats-panel .stat-row strong {
+  font-size: 1.45rem;
+}
+
+.tv-show-card-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.tv-show-card {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 180ms ease;
+}
+
+.tv-show-card:hover {
+  transform: translateY(-2px);
+}
+
+.tv-show-card.active .tv-show-poster {
+  border-color: rgba(198, 157, 255, 0.42);
+  box-shadow:
+    0 14px 28px rgba(0, 0, 0, 0.24),
+    0 0 0 1px rgba(188, 129, 255, 0.16);
+}
+
+.tv-show-poster {
+  position: relative;
+  aspect-ratio: 0.74;
+  overflow: hidden;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background-color: #22293e;
+}
+
+.tv-show-poster::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 50% 12%, rgba(255, 255, 255, 0.16), transparent 24%),
+    linear-gradient(180deg, transparent 24%, rgba(8, 11, 19, 0.14) 54%, rgba(8, 11, 19, 0.86) 100%);
+}
+
+.tv-show-poster::after {
+  content: '';
+  position: absolute;
+  inset: auto 0 0;
+  height: 54%;
+  background: linear-gradient(180deg, transparent, rgba(8, 11, 19, 0.94));
+}
+
+.tv-show-card-copy h3 {
+  margin: 10px 0 4px;
+  color: var(--text-primary);
+  font-size: 1rem;
+}
+
+.tv-show-card-copy p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.92rem;
+}
+
+.tv-show-card-copy .rating-row {
+  margin-top: 4px;
+  font-size: 0.86rem;
+}
+
+.tv-watchlist-panel {
+  padding: 16px;
+}
+
+.tv-watchlist-list {
+  gap: 12px;
+}
+
+.tv-watchlist-item {
+  align-items: center;
+  padding: 8px 0;
+}
+
+.tv-watchlist-poster {
+  width: 64px;
+  border-radius: 14px;
+}
+
+.tv-watchlist-copy p {
+  font-size: 0.86rem;
+}
+
+.tv-watchlist-copy .star-rating {
+  margin-top: 6px;
+  font-size: 0.88rem;
+}
+
+.tv-watchlist-bookmark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-left: auto;
+}
+
+.tv-watchlist-bookmark svg {
+  width: 18px;
+  height: 18px;
 }
 
 .featured-movie-art.has-image {
@@ -1344,12 +1582,21 @@
   scroll-snap-align: start;
 }
 
+.popular-movies-slider .tv-show-card {
+  flex: 0 0 188px;
+  scroll-snap-align: start;
+}
+
 .popular-movies-catalog {
   grid-template-columns: repeat(6, minmax(0, 1fr));
   padding-top: 4px;
 }
 
 .popular-movies-catalog .movie-card {
+  min-width: 0;
+}
+
+.popular-movies-catalog .tv-show-card {
   min-width: 0;
 }
 
@@ -2936,7 +3183,15 @@
     grid-template-columns: 1fr;
   }
 
+  .tv-layout {
+    grid-template-columns: 1fr;
+  }
+
   .movies-rail {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .tv-rail {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -3104,11 +3359,17 @@
 
   .split-row,
   .episode-grid,
-  .movies-rail {
+  .movies-rail,
+  .tv-rail {
     grid-template-columns: 1fr;
   }
 
   .movies-page {
+    padding: 20px 18px;
+    border-radius: 24px;
+  }
+
+  .tv-shows-page {
     padding: 20px 18px;
     border-radius: 24px;
   }
@@ -3135,13 +3396,37 @@
     grid-template-columns: 1fr;
   }
 
+  .tv-feature-card {
+    grid-template-columns: 1fr;
+  }
+
   .featured-movie-copy {
     padding: 20px 18px;
+  }
+
+  .tv-feature-copy {
+    padding: 20px 18px 0;
   }
 
   .featured-movie-art {
     min-height: 240px;
     margin: 0 18px 18px;
+  }
+
+  .tv-feature-art {
+    min-height: 240px;
+    margin: 0 18px 18px;
+    border-radius: 18px;
+  }
+
+  .tv-show-card-grid {
+    display: flex;
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+
+  .tv-show-card {
+    flex: 0 0 148px;
   }
 
   .movie-detail-page {
@@ -3394,6 +3679,10 @@
     padding: 18px 14px;
   }
 
+  .tv-shows-page {
+    padding: 18px 14px;
+  }
+
   .movie-detail-page {
     padding: 16px 14px;
   }
@@ -3432,6 +3721,10 @@
 
   .movies-heading h1 {
     font-size: 2.3rem;
+  }
+
+  .tv-feature-card h2 {
+    font-size: 2.25rem;
   }
 
   .movie-detail-main h1 {
@@ -3484,6 +3777,18 @@
 
   .movie-watchlist-panel {
     padding: 16px;
+  }
+
+  .tv-watchlist-panel {
+    padding: 14px;
+  }
+
+  .tv-show-card {
+    flex-basis: 132px;
+  }
+
+  .tv-watchlist-poster {
+    width: 56px;
   }
 
 .movie-watchlist-poster {

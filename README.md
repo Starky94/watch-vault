@@ -101,6 +101,9 @@ docker compose down
 - `npm run import:movies` runs a one-off TMDB import.
 - `npm run import:now-playing` runs a one-off TMDB Now Playing import for movies released in the last 30 days.
 - `npm run import:upcoming` runs a one-off TMDB Upcoming import for movies releasing in the next 30 days.
+- `npm run import:tv-popular` runs a one-off TMDB Popular TV import.
+- `npm run import:tv-airing-today` runs a one-off TMDB Airing Today TV import for shows first aired in the last 30 days.
+- `npm run import:tv-on-the-air` runs a one-off TMDB On The Air TV import for shows first airing in the next 30 days.
 - `npm run dev:stack` starts frontend and backend together outside Docker.
 - `npm test` runs the backend unit tests.
 

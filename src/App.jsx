@@ -4,13 +4,14 @@ import './App.css'
 const primaryViews = {
   home: 'Home',
   movies: 'Movies',
+  tvShows: 'TV Shows',
   watchlist: 'Watchlist',
 }
 
 const navItems = [
   { label: 'Home', icon: HomeIcon, view: primaryViews.home },
   { label: 'Movies', icon: ClapperIcon, view: primaryViews.movies },
-  { label: 'TV Shows', icon: TvIcon },
+  { label: 'TV Shows', icon: TvIcon, view: primaryViews.tvShows },
   { label: 'Watchlist', icon: BookmarkIcon, view: primaryViews.watchlist },
   { label: 'Calendar', icon: CalendarIcon },
   { label: 'Stats', icon: BarsIcon },
@@ -60,6 +61,10 @@ const newEpisodes = [
   { title: 'Astra Division', meta: 'Tomorrow', copy: 'The crew finally reaches the signal source beyond Titan.' },
 ]
 
+const tvShowTabs = ['All Shows', 'Popular', 'Airing Now', 'Upcoming', 'Top Rated']
+const initialTvWatchlistIds = []
+const initialTvWatchedIds = []
+
 const mobileNavItems = [
   { label: 'Home', icon: HomeIcon, view: primaryViews.home },
   { label: 'Search', icon: SearchIcon, view: primaryViews.movies },
@@ -86,6 +91,7 @@ function App() {
       : primaryViews.home
   )
   const [activeMovieTab, setActiveMovieTab] = useState(movieTabs[0])
+  const [activeTvTab, setActiveTvTab] = useState(tvShowTabs[0])
   const [activeWatchlistTab, setActiveWatchlistTab] = useState(watchlistTabs[0])
   const [moviesScreenMode, setMoviesScreenMode] = useState(movieScreenModes.overview)
   const [currentScreen, setCurrentScreen] = useState(appScreens.dashboard)
@@ -101,10 +107,18 @@ function App() {
   const [recentMoviesPage, setRecentMoviesPage] = useState(1)
   const [upcomingMoviesPage, setUpcomingMoviesPage] = useState(1)
   const [topRatedMoviesPage, setTopRatedMoviesPage] = useState(1)
+  const [popularTvPage, setPopularTvPage] = useState(1)
+  const [recentTvPage, setRecentTvPage] = useState(1)
+  const [upcomingTvPage, setUpcomingTvPage] = useState(1)
+  const [topRatedTvPage, setTopRatedTvPage] = useState(1)
   const [popularMoviesState, setPopularMoviesState] = useState(() => createMovieCollectionState({ includeFeaturedMovie: true }))
   const [recentMoviesState, setRecentMoviesState] = useState(() => createMovieCollectionState())
   const [upcomingMoviesState, setUpcomingMoviesState] = useState(() => createMovieCollectionState())
   const [topRatedMoviesState, setTopRatedMoviesState] = useState(() => createMovieCollectionState())
+  const [popularTvState, setPopularTvState] = useState(() => createTvCollectionState({ includeFeaturedShow: true }))
+  const [recentTvState, setRecentTvState] = useState(() => createTvCollectionState())
+  const [upcomingTvState, setUpcomingTvState] = useState(() => createTvCollectionState())
+  const [topRatedTvState, setTopRatedTvState] = useState(() => createTvCollectionState())
   const [genreMoviesPage, setGenreMoviesPage] = useState(1)
   const [genreMoviesState, setGenreMoviesState] = useState(() => createMovieCollectionState())
   const [genresState, setGenresState] = useState({
@@ -135,8 +149,10 @@ function App() {
   const [adminOverviewState, setAdminOverviewState] = useState({
     status: 'idle',
     crons: [],
+    totalActors: 0,
     totalMovies: 0,
     storedDataBytes: 0,
+    totalTvShows: 0,
     error: '',
   })
   const [adminRunState, setAdminRunState] = useState({})
@@ -166,6 +182,9 @@ function App() {
     stats: emptyMovieStats,
     error: '',
   })
+  const [selectedTvShowId, setSelectedTvShowId] = useState(null)
+  const [tvWatchlistIds, setTvWatchlistIds] = useState(() => new Set(initialTvWatchlistIds))
+  const [tvWatchedIds, setTvWatchedIds] = useState(() => new Set(initialTvWatchedIds))
 
   useEffect(() => {
     function handlePopState() {
@@ -464,6 +483,38 @@ function App() {
     setActiveWatchlistTab(tab)
   }
 
+  function handleTvTabChange(tab) {
+    setActiveTvTab(tab)
+    setSelectedTvShowId(null)
+
+    if (tab === 'All Shows') {
+      setPopularTvPage(1)
+      setRecentTvPage(1)
+      setTopRatedTvPage(1)
+      setUpcomingTvPage(1)
+      return
+    }
+
+    if (tab === 'Popular' && activeTvTab !== tab) {
+      setPopularTvPage(1)
+      return
+    }
+
+    if (tab === 'Airing Now' && activeTvTab !== tab) {
+      setRecentTvPage(1)
+      return
+    }
+
+    if (tab === 'Top Rated' && activeTvTab !== tab) {
+      setTopRatedTvPage(1)
+      return
+    }
+
+    if (tab === 'Upcoming' && activeTvTab !== tab) {
+      setUpcomingTvPage(1)
+    }
+  }
+
   function handleMovieTabChange(tab) {
     setActiveMovieTab(tab)
     setSelectedGenre(null)
@@ -541,6 +592,78 @@ function App() {
     setSelectedGenre(null)
     setTopRatedMoviesPage(1)
     setMoviesScreenMode(movieScreenModes.topRatedList)
+  }
+
+  function handleSelectTvShow(show) {
+    if (!show?.id) {
+      return
+    }
+
+    setSelectedTvShowId(show.id)
+  }
+
+  function handleOpenPopularTvShows() {
+    setActiveView(primaryViews.tvShows)
+    setActiveTvTab('Popular')
+    setSelectedTvShowId(null)
+    setPopularTvPage(1)
+  }
+
+  function handleOpenRecentlyAiredTvShows() {
+    setActiveView(primaryViews.tvShows)
+    setActiveTvTab('Airing Now')
+    setSelectedTvShowId(null)
+    setRecentTvPage(1)
+  }
+
+  function handleOpenUpcomingTvShows() {
+    setActiveView(primaryViews.tvShows)
+    setActiveTvTab('Upcoming')
+    setSelectedTvShowId(null)
+    setUpcomingTvPage(1)
+  }
+
+  function handleOpenTopRatedTvShows() {
+    setActiveView(primaryViews.tvShows)
+    setActiveTvTab('Top Rated')
+    setSelectedTvShowId(null)
+    setTopRatedTvPage(1)
+  }
+
+  function handleToggleTvWatchlist(show) {
+    if (!show?.id) {
+      return
+    }
+
+    setTvWatchlistIds((previousIds) => {
+      const nextIds = new Set(previousIds)
+
+      if (nextIds.has(show.id)) {
+        nextIds.delete(show.id)
+      } else {
+        nextIds.add(show.id)
+      }
+
+      return nextIds
+    })
+  }
+
+  function handleToggleTvWatched(show) {
+    if (!show?.id) {
+      return
+    }
+
+    setTvWatchedIds((previousIds) => {
+      const nextIds = new Set(previousIds)
+
+      if (nextIds.has(show.id)) {
+        nextIds.delete(show.id)
+      } else {
+        nextIds.add(show.id)
+      }
+
+      return nextIds
+    })
   }
 
   function handleOpenGenre(genre) {
@@ -961,8 +1084,10 @@ function App() {
           setAdminOverviewState({
             status: 'success',
             crons: Array.isArray(payload.crons) ? payload.crons : [],
+            totalActors: typeof payload?.totals?.actors === 'number' ? payload.totals.actors : 0,
             totalMovies: typeof payload?.totals?.movies === 'number' ? payload.totals.movies : 0,
             storedDataBytes: typeof payload?.totals?.storedDataBytes === 'number' ? payload.totals.storedDataBytes : 0,
+            totalTvShows: typeof payload?.totals?.tvShows === 'number' ? payload.totals.tvShows : 0,
             error: '',
           })
         }
@@ -1480,6 +1605,201 @@ function App() {
   }, [activeView, topRatedMoviesPage])
 
   useEffect(() => {
+    if (activeView !== primaryViews.tvShows) {
+      return
+    }
+
+    let cancelled = false
+
+    async function loadPopularTvShows() {
+      setPopularTvState(createTvCollectionLoadingState({ page: popularTvPage, includeFeaturedShow: true }))
+
+      try {
+        const response = await fetch(buildTvApiPath('/api/tv', popularTvPage))
+
+        if (!response.ok) {
+          throw new Error(`Request failed with status ${response.status}`)
+        }
+
+        const payload = await response.json()
+        const shows = Array.isArray(payload.shows) ? payload.shows.map(mapTvRowToCard) : []
+        const featuredShow = payload.featuredShow ? mapFeaturedTvPayload(payload.featuredShow) : null
+        const pagination = mapPaginationPayload(payload.pagination, popularTvPage)
+
+        if (!cancelled) {
+          setPopularTvState({
+            status: 'success',
+            shows,
+            featuredShow,
+            pagination,
+            error: '',
+          })
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setPopularTvState({
+            status: 'error',
+            shows: [],
+            featuredShow: null,
+            pagination: createPaginationState(popularTvPage),
+            error: error instanceof Error ? error.message : 'Unable to load TV shows right now.',
+          })
+        }
+      }
+    }
+
+    loadPopularTvShows()
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeView, popularTvPage])
+
+  useEffect(() => {
+    if (activeView !== primaryViews.tvShows) {
+      return
+    }
+
+    let cancelled = false
+
+    async function loadRecentTvShows() {
+      setRecentTvState(createTvCollectionLoadingState({ page: recentTvPage }))
+
+      try {
+        const response = await fetch(buildTvApiPath('/api/tv/recently-released', recentTvPage))
+
+        if (!response.ok) {
+          throw new Error(`Request failed with status ${response.status}`)
+        }
+
+        const payload = await response.json()
+        const shows = Array.isArray(payload.shows) ? payload.shows.map(mapTvRowToCard) : []
+        const pagination = mapPaginationPayload(payload.pagination, recentTvPage)
+
+        if (!cancelled) {
+          setRecentTvState({
+            status: 'success',
+            shows,
+            pagination,
+            error: '',
+          })
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setRecentTvState({
+            status: 'error',
+            shows: [],
+            pagination: createPaginationState(recentTvPage),
+            error: error instanceof Error ? error.message : 'Unable to load recently aired TV shows right now.',
+          })
+        }
+      }
+    }
+
+    loadRecentTvShows()
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeView, recentTvPage])
+
+  useEffect(() => {
+    if (activeView !== primaryViews.tvShows) {
+      return
+    }
+
+    let cancelled = false
+
+    async function loadUpcomingTvShows() {
+      setUpcomingTvState(createTvCollectionLoadingState({ page: upcomingTvPage }))
+
+      try {
+        const response = await fetch(buildTvApiPath('/api/tv/upcoming', upcomingTvPage))
+
+        if (!response.ok) {
+          throw new Error(`Request failed with status ${response.status}`)
+        }
+
+        const payload = await response.json()
+        const shows = Array.isArray(payload.shows) ? payload.shows.map(mapTvRowToCard) : []
+        const pagination = mapPaginationPayload(payload.pagination, upcomingTvPage)
+
+        if (!cancelled) {
+          setUpcomingTvState({
+            status: 'success',
+            shows,
+            pagination,
+            error: '',
+          })
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setUpcomingTvState({
+            status: 'error',
+            shows: [],
+            pagination: createPaginationState(upcomingTvPage),
+            error: error instanceof Error ? error.message : 'Unable to load upcoming TV shows right now.',
+          })
+        }
+      }
+    }
+
+    loadUpcomingTvShows()
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeView, upcomingTvPage])
+
+  useEffect(() => {
+    if (activeView !== primaryViews.tvShows) {
+      return
+    }
+
+    let cancelled = false
+
+    async function loadTopRatedTvShows() {
+      setTopRatedTvState(createTvCollectionLoadingState({ page: topRatedTvPage }))
+
+      try {
+        const response = await fetch(buildTvApiPath('/api/tv/top-rated', topRatedTvPage))
+
+        if (!response.ok) {
+          throw new Error(`Request failed with status ${response.status}`)
+        }
+
+        const payload = await response.json()
+        const shows = Array.isArray(payload.shows) ? payload.shows.map(mapTvRowToCard) : []
+        const pagination = mapPaginationPayload(payload.pagination, topRatedTvPage)
+
+        if (!cancelled) {
+          setTopRatedTvState({
+            status: 'success',
+            shows,
+            pagination,
+            error: '',
+          })
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setTopRatedTvState({
+            status: 'error',
+            shows: [],
+            pagination: createPaginationState(topRatedTvPage),
+            error: error instanceof Error ? error.message : 'Unable to load top rated TV shows right now.',
+          })
+        }
+      }
+    }
+
+    loadTopRatedTvShows()
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeView, topRatedTvPage])
+
+  useEffect(() => {
     if (activeView !== primaryViews.movies || moviesScreenMode !== movieScreenModes.genreList || !selectedGenre?.name) {
       return
     }
@@ -1637,6 +1957,30 @@ function App() {
                 onOpenMovie={handleOpenMovieDetail}
                 watchlistState={watchlistState}
               />
+            ) : activeView === primaryViews.tvShows ? (
+              <TvShowsScreen
+                activeTab={activeTvTab}
+                popularTvState={popularTvState}
+                recentTvState={recentTvState}
+                upcomingTvState={upcomingTvState}
+                topRatedTvState={topRatedTvState}
+                onSelectShow={handleSelectTvShow}
+                onTabChange={handleTvTabChange}
+                onToggleWatched={handleToggleTvWatched}
+                onToggleWatchlist={handleToggleTvWatchlist}
+                onOpenPopularTvShows={handleOpenPopularTvShows}
+                onOpenRecentlyAiredTvShows={handleOpenRecentlyAiredTvShows}
+                onOpenUpcomingTvShows={handleOpenUpcomingTvShows}
+                onOpenTopRatedTvShows={handleOpenTopRatedTvShows}
+                onChangePopularPage={setPopularTvPage}
+                onChangeRecentPage={setRecentTvPage}
+                onChangeUpcomingPage={setUpcomingTvPage}
+                onChangeTopRatedPage={setTopRatedTvPage}
+                onOpenWatchlist={handleOpenWatchlistCta}
+                selectedShowId={selectedTvShowId}
+                watchedIds={tvWatchedIds}
+                watchlistIds={tvWatchlistIds}
+              />
             ) : currentRoute.kind === routeKinds.personDetail ? (
               <PersonDetailPage
                 personDetailState={personDetailState}
@@ -1762,6 +2106,8 @@ function DesktopTopbar({ activeView, currentScreen, onOpenAdmin, onOpenAccount, 
               ? 'Search admin tools, jobs, diagnostics...'
               : activeView === primaryViews.movies || activeView === primaryViews.watchlist
               ? 'Search movies, actors, directors...'
+              : activeView === primaryViews.tvShows
+              ? 'Search shows, genres, people...'
               : 'Search movies, shows, people...'
           }
         />
@@ -2031,7 +2377,7 @@ function AdminScreen({ adminOverviewState, adminRunState, onBack, onRunJob }) {
         <div>
           <p className="admin-kicker">Admin Panel</p>
           <h1>Import Control Center</h1>
-          <p>Inspect the current importer loops, manually run a job, and monitor the total number of stored movies.</p>
+          <p>Inspect the current importer loops, manually run a job, and monitor the totals stored in the database.</p>
         </div>
         <button type="button" className="secondary-button admin-back-button" onClick={onBack}>
           <ChevronLeftIcon />
@@ -2044,6 +2390,16 @@ function AdminScreen({ adminOverviewState, adminRunState, onBack, onRunJob }) {
           <span>Total Movies Stored</span>
           <strong>{adminOverviewState.status === 'success' ? formatAdminTotal(adminOverviewState.totalMovies) : '--'}</strong>
           <p>Imported movies currently available in the local database.</p>
+        </article>
+        <article className="admin-summary-card">
+          <span>Total TV Shows Stored</span>
+          <strong>{adminOverviewState.status === 'success' ? formatAdminTotal(adminOverviewState.totalTvShows) : '--'}</strong>
+          <p>Imported TV shows currently available in the local database.</p>
+        </article>
+        <article className="admin-summary-card">
+          <span>Total Actors Stored</span>
+          <strong>{adminOverviewState.status === 'success' ? formatAdminTotal(adminOverviewState.totalActors) : '--'}</strong>
+          <p>Cast members currently stored in the local database.</p>
         </article>
         <article className="admin-summary-card">
           <span>Stored Data Size</span>
@@ -2413,6 +2769,198 @@ function MoviesScreen({
   )
 }
 
+function TvShowsScreen({
+  activeTab,
+  popularTvState,
+  recentTvState,
+  upcomingTvState,
+  topRatedTvState,
+  onSelectShow,
+  onTabChange,
+  onToggleWatched,
+  onToggleWatchlist,
+  onOpenPopularTvShows,
+  onOpenRecentlyAiredTvShows,
+  onOpenUpcomingTvShows,
+  onOpenTopRatedTvShows,
+  onChangePopularPage,
+  onChangeRecentPage,
+  onChangeUpcomingPage,
+  onChangeTopRatedPage,
+  onOpenWatchlist,
+  selectedShowId,
+  watchedIds,
+  watchlistIds,
+}) {
+  const tvCatalog = collectTvCatalog([popularTvState, recentTvState, upcomingTvState, topRatedTvState])
+  const favoriteShows = tvCatalog.filter((show) => watchlistIds.has(Number(show.id)))
+  const selectedShow =
+    tvCatalog.find((show) => Number(show.id) === Number(selectedShowId))
+    ?? null
+  const featuredShow = selectedShow ?? popularTvState.featuredShow ?? tvCatalog[0] ?? null
+  const watchlistShows = favoriteShows.slice(0, 4)
+  const tvStats = createTvStats({
+    tvCatalog,
+    watchedIds,
+    watchlistIds,
+  })
+  const isPopularListMode = activeTab === 'Popular'
+  const isAiringNowListMode = activeTab === 'Airing Now'
+  const isUpcomingListMode = activeTab === 'Upcoming'
+  const isTopRatedListMode = activeTab === 'Top Rated'
+
+  return (
+    <section className="tv-shows-page">
+      <div className="movies-heading tv-shows-heading">
+        <h1>TV Shows</h1>
+        <p>
+          {isPopularListMode
+            ? 'Browse popular TV shows imported from your local database, 30 titles at a time.'
+            : isAiringNowListMode
+              ? 'Browse recently aired TV shows from your local database, 30 titles at a time.'
+              : isUpcomingListMode
+                ? 'Browse upcoming TV premieres from the next 30 days, 30 titles at a time.'
+                : isTopRatedListMode
+                  ? 'Browse top rated TV shows ordered by score, 30 titles at a time.'
+                    : 'Discover, track, and organize your favorite series.'}
+        </p>
+      </div>
+
+      <section className="tab-row movies-tab-row" aria-label="TV show filters">
+        {tvShowTabs.map((tab) => (
+          <button
+            key={tab}
+            type="button"
+            className={`filter-pill${tab === activeTab ? ' active' : ''}`}
+            onClick={() => onTabChange(tab)}
+          >
+            {tab}
+          </button>
+        ))}
+      </section>
+
+      {isPopularListMode ? (
+        <ContentSection title="Popular Right Now">
+          <TvShowsGrid
+            tvState={popularTvState}
+            layout="catalog"
+            onSelectShow={onSelectShow}
+            watchedIds={watchedIds}
+            watchlistIds={watchlistIds}
+            activeShowId={selectedShowId}
+          />
+          <PaginationControls pagination={popularTvState.pagination} onPageChange={onChangePopularPage} />
+        </ContentSection>
+      ) : isAiringNowListMode ? (
+        <ContentSection title="Airing Now">
+          <TvShowsGrid
+            tvState={recentTvState}
+            layout="catalog"
+            onSelectShow={onSelectShow}
+            watchedIds={watchedIds}
+            watchlistIds={watchlistIds}
+            activeShowId={selectedShowId}
+          />
+          <PaginationControls pagination={recentTvState.pagination} onPageChange={onChangeRecentPage} />
+        </ContentSection>
+      ) : isUpcomingListMode ? (
+        <ContentSection title="Upcoming Soon">
+          <TvShowsGrid
+            tvState={upcomingTvState}
+            layout="catalog"
+            onSelectShow={onSelectShow}
+            watchedIds={watchedIds}
+            watchlistIds={watchlistIds}
+            activeShowId={selectedShowId}
+          />
+          <PaginationControls pagination={upcomingTvState.pagination} onPageChange={onChangeUpcomingPage} />
+        </ContentSection>
+      ) : isTopRatedListMode ? (
+        <ContentSection title="Top Rated">
+          <TvShowsGrid
+            tvState={topRatedTvState}
+            layout="catalog"
+            onSelectShow={onSelectShow}
+            watchedIds={watchedIds}
+            watchlistIds={watchlistIds}
+            activeShowId={selectedShowId}
+          />
+          <PaginationControls pagination={topRatedTvState.pagination} onPageChange={onChangeTopRatedPage} />
+        </ContentSection>
+      ) : (
+        <div className="tv-layout">
+          <div className="tv-main">
+            <TvFeaturedCard
+              show={featuredShow}
+              isWatched={watchedIds.has(Number(featuredShow?.id))}
+              isInWatchlist={watchlistIds.has(Number(featuredShow?.id))}
+              onToggleWatched={onToggleWatched}
+              onToggleWatchlist={onToggleWatchlist}
+            />
+
+            <ContentSection title="Popular Right Now" action="View all" onAction={onOpenPopularTvShows}>
+              <TvShowsGrid
+                tvState={popularTvState}
+                onSelectShow={onSelectShow}
+                watchedIds={watchedIds}
+                watchlistIds={watchlistIds}
+                activeShowId={selectedShowId}
+              />
+            </ContentSection>
+
+            <ContentSection title="Recently Aired" action="View all" onAction={onOpenRecentlyAiredTvShows}>
+              <TvShowsGrid
+                tvState={recentTvState}
+                onSelectShow={onSelectShow}
+                watchedIds={watchedIds}
+                watchlistIds={watchlistIds}
+                activeShowId={selectedShowId}
+              />
+            </ContentSection>
+
+            <ContentSection title="Upcoming Soon" action="View all" onAction={onOpenUpcomingTvShows}>
+              <TvShowsGrid
+                tvState={upcomingTvState}
+                onSelectShow={onSelectShow}
+                watchedIds={watchedIds}
+                watchlistIds={watchlistIds}
+                activeShowId={selectedShowId}
+              />
+            </ContentSection>
+
+            <ContentSection title="Top Rated" action="View all" onAction={onOpenTopRatedTvShows}>
+              <TvShowsGrid
+                tvState={topRatedTvState}
+                onSelectShow={onSelectShow}
+                watchedIds={watchedIds}
+                watchlistIds={watchlistIds}
+                activeShowId={selectedShowId}
+              />
+            </ContentSection>
+          </div>
+
+          <aside className="tv-rail">
+            <StatsPanel className="tv-stats-panel" title="Your TV Stats" items={tvStats} monthLabel="This Month" />
+            <TvWatchlistPanel items={watchlistShows} onOpenWatchlist={onOpenWatchlist} onSelectShow={onSelectShow} />
+          </aside>
+        </div>
+      )}
+
+      <section className="movie-mobile-stats tv-mobile-stats mobile-only">
+        {tvStats.map(({ label, value, tone, icon: Icon }) => (
+          <article key={label} className="mini-stat">
+            <div className={`stat-icon ${tone}`}>
+              <Icon />
+            </div>
+            <strong>{value}</strong>
+            <span>{label.replace('Shows Watched', 'Shows').replace('Episodes Watched', 'Episodes').replace('Hours Watched', 'Hours').replace('In Watchlist', 'Watchlist')}</span>
+          </article>
+        ))}
+      </section>
+    </section>
+  )
+}
+
 function WatchlistScreen({
   activeTab,
   isSignedIn,
@@ -2493,6 +3041,205 @@ function WatchlistScreen({
       {watchlistState.status !== 'loading' && watchlistState.status !== 'error' && filteredItems.length === 0
         ? <SectionMessage message="No watchlist titles match this section yet." />
         : null}
+    </section>
+  )
+}
+
+function TvFeaturedCard({ show, isWatched, isInWatchlist, onToggleWatched, onToggleWatchlist }) {
+  if (!show) {
+    return <SectionMessage message="No TV show is available for this filter yet." />
+  }
+
+  const showBackdropImage = Boolean(show.backdropUrl)
+  const artStyle = showBackdropImage
+    ? {
+        backgroundImage: `linear-gradient(180deg, rgba(10, 13, 24, 0.12), rgba(8, 11, 19, 0.24)), url(${show.backdropUrl})`,
+      }
+    : undefined
+
+  return (
+    <section className="tv-feature-card">
+      <div className="tv-feature-copy">
+        <span className="feature-label">Featured</span>
+        <h2>{show.title}</h2>
+        <div className="featured-movie-meta tv-feature-meta">
+          <span>{show.year}</span>
+          <span>{show.genreLabel}</span>
+          <span>{show.maturityRating}</span>
+          <span>{show.meta}</span>
+        </div>
+        <div className="featured-movie-scores tv-feature-scores">
+          <span className="movie-score">
+            <StarIcon />
+            {show.rating}
+          </span>
+          <span className="movie-score tomato-score">
+            <TomatoIcon />
+            {show.audience}
+          </span>
+        </div>
+        <p>{show.description}</p>
+
+        <div className="hero-actions movie-actions tv-feature-actions">
+          <button type="button" className="primary-button" onClick={() => onToggleWatchlist(show)} disabled={isWatched}>
+            <PlusIcon />
+            <span>{isWatched ? 'Watched' : isInWatchlist ? 'In Watchlist' : 'Add to Watchlist'}</span>
+          </button>
+          <button
+            type="button"
+            className={`secondary-button${isWatched ? ' is-active' : ''}`}
+            onClick={() => onToggleWatched(show)}
+          >
+            <CheckIcon />
+            <span>{isWatched ? 'Watched' : 'Mark as Watched'}</span>
+          </button>
+        </div>
+      </div>
+
+      <div
+        className={`tv-feature-art${showBackdropImage ? ' has-image' : ` ${show.theme}`}`}
+        style={artStyle}
+        aria-hidden="true"
+      >
+        <span className="feature-arrow">
+          <ChevronRight />
+        </span>
+        <div className="feature-dots">
+          <span className="active" />
+          <span />
+          <span />
+          <span />
+          <span />
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function TvShowPosterCard({ show, onSelectShow, isActive = false, isInWatchlist = false, isWatched = false }) {
+  const [posterUnavailable, setPosterUnavailable] = useState(false)
+  const showPosterImage = Boolean(show.posterUrl) && !posterUnavailable
+
+  return (
+    <button
+      type="button"
+      className={`tv-show-card${isActive ? ' active' : ''}`}
+      onClick={() => onSelectShow(show)}
+      aria-label={`Show details for ${show.title}`}
+    >
+      <div className={`tv-show-poster ${show.theme}${showPosterImage ? ' has-image' : ''}`}>
+        {isWatched ? (
+          <span className="movie-card-watched-badge" aria-hidden="true">
+            <CheckCircleIcon />
+          </span>
+        ) : null}
+        {isInWatchlist ? (
+          <span className="movie-card-watchlist-badge" aria-hidden="true">
+            <BookmarkStatusIcon />
+          </span>
+        ) : null}
+        {showPosterImage ? (
+          <img
+            src={show.posterUrl}
+            alt={`${show.title} poster`}
+            className="movie-card-poster-image"
+            loading="lazy"
+            onError={() => setPosterUnavailable(true)}
+          />
+        ) : null}
+      </div>
+      <div className="tv-show-card-copy">
+        <h3>{show.title}</h3>
+        <p>{show.year}</p>
+        <div className="rating-row">
+          <span className="star-rating">
+            <StarIcon />
+            {show.rating}
+          </span>
+          <span>{show.seasonMeta}</span>
+        </div>
+      </div>
+    </button>
+  )
+}
+
+function TvShowsGrid({
+  tvState,
+  layout = 'slider',
+  onSelectShow,
+  watchedIds = new Set(),
+  watchlistIds = new Set(),
+  activeShowId = null,
+}) {
+  if (tvState.status === 'loading' || tvState.status === 'idle') {
+    return <SectionMessage message="Loading TV shows from your local database..." />
+  }
+
+  if (tvState.status === 'error') {
+    return <SectionMessage message={`Could not load TV shows. ${tvState.error}`} tone="error" />
+  }
+
+  if (tvState.shows.length === 0) {
+    return <SectionMessage message="No TV shows are available in the local database yet." />
+  }
+
+  const shows = layout === 'catalog' ? tvState.shows : tvState.shows.slice(0, 10)
+
+  return (
+    <div className={`tv-show-card-grid${layout === 'catalog' ? ' popular-movies-catalog' : ' popular-movies-slider'}`}>
+      {shows.map((show) => (
+        <TvShowPosterCard
+          key={show.id}
+          isActive={Number(show.id) === Number(activeShowId)}
+          isInWatchlist={watchlistIds.has(Number(show.id))}
+          isWatched={watchedIds.has(Number(show.id))}
+          onSelectShow={onSelectShow}
+          show={show}
+        />
+      ))}
+    </div>
+  )
+}
+
+function TvWatchlistPanel({ items, onOpenWatchlist, onSelectShow }) {
+  return (
+    <section className="movie-watchlist-panel tv-watchlist-panel">
+      <div className="section-header">
+        <h2>Your Watchlist</h2>
+        <button type="button" className="section-link" onClick={onOpenWatchlist}>
+          View all
+        </button>
+      </div>
+
+      {items.length === 0 ? <SectionMessage message="Save a few shows to fill your TV watchlist." /> : null}
+
+      <div className="movie-watchlist-list tv-watchlist-list">
+        {items.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            className="movie-watchlist-item movie-watchlist-item-button tv-watchlist-item"
+            onClick={() => onSelectShow(item)}
+            aria-label={`Feature ${item.title}`}
+          >
+            <div
+              className={`movie-watchlist-poster tv-watchlist-poster ${item.theme}${item.posterUrl ? ' has-image' : ''}`}
+              style={item.posterUrl ? { backgroundImage: `url(${item.posterUrl})` } : undefined}
+            />
+            <div className="movie-watchlist-copy tv-watchlist-copy">
+              <h3>{item.title}</h3>
+              <p>{item.railMeta}</p>
+              <span className="star-rating">
+                <StarIcon />
+                {item.rating}
+              </span>
+            </div>
+            <span className="tv-watchlist-bookmark" aria-hidden="true">
+              <BookmarkStatusIcon />
+            </span>
+          </button>
+        ))}
+      </div>
     </section>
   )
 }
@@ -3132,9 +3879,9 @@ function MobileNav({ activeView, setActiveView }) {
   )
 }
 
-function StatsPanel({ title, items, monthLabel = 'This Month' }) {
+function StatsPanel({ className = '', title, items, monthLabel = 'This Month' }) {
   return (
-    <div className="stats-panel">
+    <div className={`stats-panel${className ? ` ${className}` : ''}`}>
       <div className="stats-header">
         <span>{title}</span>
         <button type="button" className="month-button">
@@ -3150,7 +3897,7 @@ function StatsPanel({ title, items, monthLabel = 'This Month' }) {
               <p className="stat-label">{label}</p>
               <div className="stat-row">
                 <strong>{value}</strong>
-                <span className="trend">{trend}</span>
+                {trend ? <span className="trend">{trend}</span> : null}
               </div>
             </div>
             <div className={`stat-icon ${tone}`}>
@@ -3684,6 +4431,77 @@ function getFilteredWatchlistItems({ items, activeTab }) {
   })
 }
 
+function collectTvCatalog(collectionStates = []) {
+  const catalog = new Map()
+
+  collectionStates.forEach((state) => {
+    if (!state || !Array.isArray(state.shows)) {
+      return
+    }
+
+    state.shows.forEach((show) => {
+      if (!catalog.has(Number(show.id))) {
+        catalog.set(Number(show.id), show)
+      }
+    })
+  })
+
+  return Array.from(catalog.values())
+}
+
+function createTvStats({ tvCatalog, watchedIds, watchlistIds }) {
+  const watchedShows = Array.isArray(tvCatalog)
+    ? tvCatalog.filter((show) => watchedIds.has(Number(show.id)))
+    : []
+  const watchedEpisodes = watchedShows.reduce((total, show) => total + readTvEpisodeCount(show), 0)
+  const watchedMinutes = watchedShows.reduce((total, show) => total + estimateTvWatchMinutes(show), 0)
+
+  return [
+    {
+      label: 'Shows Watched',
+      value: String(watchedIds.size),
+      tone: 'violet',
+      icon: TvIcon,
+    },
+    {
+      label: 'Episodes Watched',
+      value: String(watchedEpisodes),
+      tone: 'gold',
+      icon: PlayIcon,
+    },
+    {
+      label: 'Hours Watched',
+      value: formatMinutesAsHoursAndMinutes(watchedMinutes),
+      tone: 'blue',
+      icon: ClockIcon,
+    },
+    {
+      label: 'In Watchlist',
+      value: String(watchlistIds.size),
+      tone: 'orange',
+      icon: BookmarkStackIcon,
+    },
+  ]
+}
+
+function readTvEpisodeCount(show) {
+  const details = show?.detail_payload ?? {}
+  return typeof details.number_of_episodes === 'number' && details.number_of_episodes > 0 ? details.number_of_episodes : 0
+}
+
+function readTvEpisodeRuntimeMinutes(show) {
+  const details = show?.detail_payload ?? {}
+  const runtimeMinutes = Array.isArray(details.episode_run_time)
+    ? details.episode_run_time.find((value) => typeof value === 'number' && value > 0)
+    : null
+
+  return typeof runtimeMinutes === 'number' ? runtimeMinutes : 0
+}
+
+function estimateTvWatchMinutes(show) {
+  return readTvEpisodeCount(show) * readTvEpisodeRuntimeMinutes(show)
+}
+
 function buildAuthHeaders(user) {
   if (!user?.username) {
     return {}
@@ -3748,6 +4566,46 @@ function mapMovieRowToCard(movie) {
     meta: formatMovieMeta(movie),
     releaseDate: movie.release_date || null,
     posterUrl: resolveMoviePosterUrl(movie.poster_path),
+    theme: 'theme-catalog',
+  }
+}
+
+function mapTvRowToCard(show) {
+  const details = show.detail_payload ?? {}
+
+  return {
+    id: show.tmdb_id,
+    title: show.name,
+    year: formatMovieYear(show.first_air_date),
+    rating: formatMovieRating(show.vote_average),
+    meta: formatTvMeta(show),
+    seasonMeta: formatEpisodeCount(details),
+    genreLabel: Array.isArray(show.genre_names) && show.genre_names.length > 0 ? show.genre_names.join(', ') : 'Genre TBA',
+    maturityRating: readTvMaturityRating(details),
+    audience: formatTvAudience(show.vote_average),
+    description: show.overview || 'Overview not available yet.',
+    posterUrl: resolveMoviePosterUrl(show.poster_path),
+    backdropUrl: resolveMovieBackdropUrl(show.backdrop_path),
+    railMeta: formatTvRailMeta(show),
+    theme: 'theme-catalog',
+  }
+}
+
+function mapFeaturedTvPayload(show) {
+  return {
+    id: show.id,
+    title: show.title,
+    year: show.year || 'Release TBA',
+    genreLabel: Array.isArray(show.genres) && show.genres.length > 0 ? show.genres.join(', ') : 'Genre TBA',
+    maturityRating: show.rating || 'TV Series',
+    meta: show.episodesLabel || show.runtime || 'Episodes TBA',
+    seasonMeta: show.episodesLabel || 'Episodes TBA',
+    rating: show.score || 'N/A',
+    audience: show.audience || '0 votes',
+    description: show.summary || 'Overview not available yet.',
+    posterUrl: resolveMoviePosterUrl(show.posterPath),
+    backdropUrl: resolveMovieBackdropUrl(show.backdropPath),
+    railMeta: formatFeaturedTvRailMeta(show),
     theme: 'theme-catalog',
   }
 }
@@ -3855,12 +4713,32 @@ function createMovieCollectionState({ includeFeaturedMovie = false } = {}) {
   }
 }
 
+function createTvCollectionState({ includeFeaturedShow = false } = {}) {
+  return {
+    status: 'idle',
+    shows: [],
+    pagination: createPaginationState(),
+    ...(includeFeaturedShow ? { featuredShow: null } : {}),
+    error: '',
+  }
+}
+
 function createMovieCollectionLoadingState({ page = 1, includeFeaturedMovie = false } = {}) {
   return {
     status: 'loading',
     movies: [],
     pagination: createPaginationState(page),
     ...(includeFeaturedMovie ? { featuredMovie: null } : {}),
+    error: '',
+  }
+}
+
+function createTvCollectionLoadingState({ page = 1, includeFeaturedShow = false } = {}) {
+  return {
+    status: 'loading',
+    shows: [],
+    pagination: createPaginationState(page),
+    ...(includeFeaturedShow ? { featuredShow: null } : {}),
     error: '',
   }
 }
@@ -3900,6 +4778,10 @@ function buildMoviesApiPath(basePath, page, pageSize = moviesPageSize, extraPara
   })
 
   return `${basePath}?${params.toString()}`
+}
+
+function buildTvApiPath(basePath, page, pageSize = moviesPageSize) {
+  return buildMoviesApiPath(basePath, page, pageSize)
 }
 
 function pickGenreAccentColor(name, index = 0) {
@@ -4201,6 +5083,66 @@ function formatMovieMeta(movie) {
   }
 
   return details.join(' • ')
+}
+
+function formatTvMeta(show) {
+  const details = show.detail_payload ?? {}
+  const pieces = [formatEpisodeCount(details)]
+
+  if (typeof show.vote_count === 'number') {
+    pieces.push(formatVoteCount(show.vote_count))
+  }
+
+  return pieces.filter(Boolean).join(' • ') || 'From local DB'
+}
+
+function formatTvRailMeta(show) {
+  const year = formatMovieYear(show.first_air_date)
+  const genreLabel = Array.isArray(show.genre_names) && show.genre_names.length > 0 ? show.genre_names.join(', ') : 'Genre TBA'
+
+  return `${year} • ${genreLabel}`
+}
+
+function formatFeaturedTvRailMeta(show) {
+  const year = show.year || 'Release TBA'
+  const genreLabel = Array.isArray(show.genres) && show.genres.length > 0 ? show.genres.join(', ') : 'Genre TBA'
+
+  return `${year} • ${genreLabel}`
+}
+
+function formatEpisodeCount(details) {
+  const episodeCount = typeof details?.number_of_episodes === 'number' ? details.number_of_episodes : null
+  const seasonCount = typeof details?.number_of_seasons === 'number' ? details.number_of_seasons : null
+
+  if (seasonCount && episodeCount) {
+    return `S${seasonCount} • ${episodeCount} Episodes`
+  }
+
+  if (episodeCount) {
+    return `${episodeCount} Episodes`
+  }
+
+  if (seasonCount) {
+    return `${seasonCount} Seasons`
+  }
+
+  return 'Episodes TBA'
+}
+
+function readTvMaturityRating(details) {
+  const contentRatings = Array.isArray(details?.content_ratings?.results) ? details.content_ratings.results : []
+  const usRating = contentRatings.find((entry) => entry?.iso_3166_1 === 'US' && typeof entry?.rating === 'string' && entry.rating.trim())
+
+  return usRating?.rating?.trim() || 'TV Series'
+}
+
+function formatTvAudience(voteAverage) {
+  const score = formatMovieRating(voteAverage)
+  if (score === 'N/A') {
+    return 'N/A'
+  }
+
+  return formatTomatoScore(`${score}/10`)
 }
 
 function formatVoteCount(voteCount) {

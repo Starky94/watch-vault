@@ -71,6 +71,21 @@ services:
       db:
         condition: service_healthy
 
+  importer-tv-popular:
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    restart: unless-stopped
+    command: ["./docker/api/importer-loop.sh"]
+    env_file:
+      - ${APP_ENV_FILE:-.env}
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@db:5432/watchvault}
+      IMPORT_COMMAND: ${IMPORT_TV_POPULAR_COMMAND:-npm run import:tv-popular}
+    depends_on:
+      db:
+        condition: service_healthy
+
   importer-now-playing:
     build:
       context: .
@@ -87,6 +102,22 @@ services:
       db:
         condition: service_healthy
 
+  importer-tv-airing-today:
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    restart: unless-stopped
+    command: ["./docker/api/importer-loop.sh"]
+    env_file:
+      - ${APP_ENV_FILE:-.env}
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@db:5432/watchvault}
+      IMPORT_COMMAND: ${IMPORT_TV_AIRING_TODAY_COMMAND:-npm run import:tv-airing-today}
+      IMPORT_INTERVAL_SECONDS: ${IMPORT_TV_AIRING_TODAY_INTERVAL_SECONDS:-86400}
+    depends_on:
+      db:
+        condition: service_healthy
+
   importer-upcoming:
     build:
       context: .
@@ -99,6 +130,22 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@db:5432/watchvault}
       IMPORT_COMMAND: ${IMPORT_UPCOMING_COMMAND:-npm run import:upcoming}
       IMPORT_INTERVAL_SECONDS: ${IMPORT_UPCOMING_INTERVAL_SECONDS:-86400}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  importer-tv-on-the-air:
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    restart: unless-stopped
+    command: ["./docker/api/importer-loop.sh"]
+    env_file:
+      - ${APP_ENV_FILE:-.env}
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@db:5432/watchvault}
+      IMPORT_COMMAND: ${IMPORT_TV_ON_THE_AIR_COMMAND:-npm run import:tv-on-the-air}
+      IMPORT_INTERVAL_SECONDS: ${IMPORT_TV_ON_THE_AIR_INTERVAL_SECONDS:-86400}
     depends_on:
       db:
         condition: service_healthy

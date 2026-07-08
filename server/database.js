@@ -46,6 +46,38 @@ export async function ensureMoviesTable(pool) {
   `)
 
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS tv_genres (
+      id BIGSERIAL PRIMARY KEY,
+      tmdb_genre_id INTEGER NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `)
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS tv_shows (
+      id BIGSERIAL PRIMARY KEY,
+      tmdb_id INTEGER NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      original_name TEXT,
+      overview TEXT,
+      first_air_date DATE,
+      original_language TEXT,
+      poster_path TEXT,
+      backdrop_path TEXT,
+      popularity DOUBLE PRECISION,
+      vote_average DOUBLE PRECISION,
+      vote_count INTEGER,
+      genre_ids INTEGER[] NOT NULL DEFAULT '{}',
+      detail_payload JSONB,
+      raw_payload JSONB NOT NULL,
+      import_rank INTEGER NOT NULL,
+      imported_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `)
+
+  await pool.query(`
     ALTER TABLE movies
     ADD COLUMN IF NOT EXISTS runtime_minutes INTEGER,
     ADD COLUMN IF NOT EXISTS certification TEXT,
@@ -430,6 +462,48 @@ export async function upsertGenres(pool, genres) {
   }
 }
 
+export async function listKnownTvGenreIds(pool, genreIds) {
+  if (genreIds.length === 0) {
+    return new Set()
+  }
+
+  const result = await pool.query(
+    `
+      SELECT tmdb_genre_id
+      FROM tv_genres
+      WHERE tmdb_genre_id = ANY($1::INTEGER[])
+    `,
+    [genreIds]
+  )
+
+  return new Set(result.rows.map((row) => row.tmdb_genre_id))
+}
+
+export async function upsertTvGenres(pool, genres) {
+  if (genres.length === 0) {
+    return
+  }
+
+  for (const genre of genres) {
+    await pool.query(
+      `
+        INSERT INTO tv_genres (
+          tmdb_genre_id,
+          name,
+          created_at,
+          updated_at
+        )
+        VALUES ($1, $2, NOW(), NOW())
+        ON CONFLICT (tmdb_genre_id)
+        DO UPDATE SET
+          name = EXCLUDED.name,
+          updated_at = NOW()
+      `,
+      [genre.tmdbGenreId, genre.name]
+    )
+  }
+}
+
 export async function upsertMovies(pool, movies) {
   if (movies.length === 0) {
     return {
@@ -520,6 +594,104 @@ export async function upsertMovies(pool, movies) {
       )
 
       await replaceMovieCreditsForMovieId(client, result.rows[0].id, movie.credits)
+
+      if (result.rows[0]?.inserted) {
+        insertedCount += 1
+      } else {
+        updatedCount += 1
+      }
+    }
+
+    await client.query('COMMIT')
+
+    return {
+      insertedCount,
+      updatedCount,
+    }
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally {
+    client.release()
+  }
+}
+
+export async function upsertTvShows(pool, tvShows) {
+  if (tvShows.length === 0) {
+    return {
+      insertedCount: 0,
+      updatedCount: 0,
+    }
+  }
+
+  const client = await pool.connect()
+
+  try {
+    await client.query('BEGIN')
+    let insertedCount = 0
+    let updatedCount = 0
+
+    for (const tvShow of tvShows) {
+      const result = await client.query(
+        `
+          INSERT INTO tv_shows (
+            tmdb_id,
+            name,
+            original_name,
+            overview,
+            first_air_date,
+            original_language,
+            poster_path,
+            backdrop_path,
+            popularity,
+            vote_average,
+            vote_count,
+            genre_ids,
+            detail_payload,
+            raw_payload,
+            import_rank,
+            imported_at
+          )
+          VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14::jsonb, $15, NOW()
+          )
+          ON CONFLICT (tmdb_id)
+          DO UPDATE SET
+            name = EXCLUDED.name,
+            original_name = EXCLUDED.original_name,
+            overview = EXCLUDED.overview,
+            first_air_date = EXCLUDED.first_air_date,
+            original_language = EXCLUDED.original_language,
+            poster_path = EXCLUDED.poster_path,
+            backdrop_path = EXCLUDED.backdrop_path,
+            popularity = EXCLUDED.popularity,
+            vote_average = EXCLUDED.vote_average,
+            vote_count = EXCLUDED.vote_count,
+            genre_ids = EXCLUDED.genre_ids,
+            detail_payload = EXCLUDED.detail_payload,
+            raw_payload = EXCLUDED.raw_payload,
+            import_rank = EXCLUDED.import_rank,
+            imported_at = NOW()
+          RETURNING id, (xmax = 0) AS inserted
+        `,
+        [
+          tvShow.tmdbId,
+          tvShow.name,
+          tvShow.originalName,
+          tvShow.overview,
+          tvShow.firstAirDate,
+          tvShow.originalLanguage,
+          tvShow.posterPath,
+          tvShow.backdropPath,
+          tvShow.popularity,
+          tvShow.voteAverage,
+          tvShow.voteCount,
+          tvShow.genreIds,
+          JSON.stringify(tvShow.detailPayload),
+          JSON.stringify(tvShow.rawPayload),
+          tvShow.importRank,
+        ]
+      )
 
       if (result.rows[0]?.inserted) {
         insertedCount += 1
@@ -954,6 +1126,184 @@ export async function listUpcomingMovies(pool, options = {}) {
       AND movies.release_date <= CURRENT_DATE + INTERVAL '30 days'
     GROUP BY movies.id
     ORDER BY movies.release_date ASC, movies.tmdb_id ASC
+    LIMIT $1
+    OFFSET $2
+  `,
+    [normalizedLimit, offset]
+  )
+
+  return result.rows
+}
+
+export async function listTvShows(pool, options = {}) {
+  const { limit = 30, page = 1 } = options
+  const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 30
+  const normalizedPage = Number.isInteger(page) ? Math.max(1, page) : 1
+  const offset = (normalizedPage - 1) * normalizedLimit
+
+  const result = await pool.query(
+    `
+    SELECT
+      tv_shows.tmdb_id,
+      tv_shows.name,
+      tv_shows.original_name,
+      tv_shows.overview,
+      tv_shows.first_air_date,
+      tv_shows.original_language,
+      tv_shows.poster_path,
+      tv_shows.backdrop_path,
+      tv_shows.popularity,
+      tv_shows.vote_average,
+      tv_shows.vote_count,
+      tv_shows.genre_ids,
+      COALESCE(
+        ARRAY_REMOVE(ARRAY_AGG(tv_genres.name ORDER BY genre_ids.ordinality), NULL),
+        '{}'
+      ) AS genre_names,
+      tv_shows.detail_payload,
+      tv_shows.raw_payload,
+      tv_shows.import_rank,
+      tv_shows.imported_at
+    FROM tv_shows
+    LEFT JOIN LATERAL UNNEST(tv_shows.genre_ids) WITH ORDINALITY AS genre_ids(tmdb_genre_id, ordinality) ON TRUE
+    LEFT JOIN tv_genres ON tv_genres.tmdb_genre_id = genre_ids.tmdb_genre_id
+    GROUP BY tv_shows.id
+    ORDER BY tv_shows.popularity DESC NULLS LAST, tv_shows.tmdb_id ASC
+    LIMIT $1
+    OFFSET $2
+  `,
+    [normalizedLimit, offset]
+  )
+
+  return result.rows
+}
+
+export async function listRecentlyAiredTvShows(pool, options = {}) {
+  const { limit = 30, page = 1 } = options
+  const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 30
+  const normalizedPage = Number.isInteger(page) ? Math.max(1, page) : 1
+  const offset = (normalizedPage - 1) * normalizedLimit
+
+  const result = await pool.query(
+    `
+    SELECT
+      tv_shows.tmdb_id,
+      tv_shows.name,
+      tv_shows.original_name,
+      tv_shows.overview,
+      tv_shows.first_air_date,
+      tv_shows.original_language,
+      tv_shows.poster_path,
+      tv_shows.backdrop_path,
+      tv_shows.popularity,
+      tv_shows.vote_average,
+      tv_shows.vote_count,
+      tv_shows.genre_ids,
+      COALESCE(
+        ARRAY_REMOVE(ARRAY_AGG(tv_genres.name ORDER BY genre_ids.ordinality), NULL),
+        '{}'
+      ) AS genre_names,
+      tv_shows.detail_payload,
+      tv_shows.raw_payload,
+      tv_shows.import_rank,
+      tv_shows.imported_at
+    FROM tv_shows
+    LEFT JOIN LATERAL UNNEST(tv_shows.genre_ids) WITH ORDINALITY AS genre_ids(tmdb_genre_id, ordinality) ON TRUE
+    LEFT JOIN tv_genres ON tv_genres.tmdb_genre_id = genre_ids.tmdb_genre_id
+    WHERE tv_shows.first_air_date IS NOT NULL
+      AND tv_shows.first_air_date <= CURRENT_DATE
+    GROUP BY tv_shows.id
+    ORDER BY tv_shows.first_air_date DESC, tv_shows.tmdb_id ASC
+    LIMIT $1
+    OFFSET $2
+  `,
+    [normalizedLimit, offset]
+  )
+
+  return result.rows
+}
+
+export async function listTopRatedTvShows(pool, options = {}) {
+  const { limit = 30, page = 1 } = options
+  const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 30
+  const normalizedPage = Number.isInteger(page) ? Math.max(1, page) : 1
+  const offset = (normalizedPage - 1) * normalizedLimit
+
+  const result = await pool.query(
+    `
+    SELECT
+      tv_shows.tmdb_id,
+      tv_shows.name,
+      tv_shows.original_name,
+      tv_shows.overview,
+      tv_shows.first_air_date,
+      tv_shows.original_language,
+      tv_shows.poster_path,
+      tv_shows.backdrop_path,
+      tv_shows.popularity,
+      tv_shows.vote_average,
+      tv_shows.vote_count,
+      tv_shows.genre_ids,
+      COALESCE(
+        ARRAY_REMOVE(ARRAY_AGG(tv_genres.name ORDER BY genre_ids.ordinality), NULL),
+        '{}'
+      ) AS genre_names,
+      tv_shows.detail_payload,
+      tv_shows.raw_payload,
+      tv_shows.import_rank,
+      tv_shows.imported_at
+    FROM tv_shows
+    LEFT JOIN LATERAL UNNEST(tv_shows.genre_ids) WITH ORDINALITY AS genre_ids(tmdb_genre_id, ordinality) ON TRUE
+    LEFT JOIN tv_genres ON tv_genres.tmdb_genre_id = genre_ids.tmdb_genre_id
+    WHERE tv_shows.first_air_date IS NOT NULL
+      AND tv_shows.first_air_date <= CURRENT_DATE
+    GROUP BY tv_shows.id
+    ORDER BY tv_shows.vote_average DESC NULLS LAST, tv_shows.vote_count DESC NULLS LAST, tv_shows.tmdb_id ASC
+    LIMIT $1
+    OFFSET $2
+  `,
+    [normalizedLimit, offset]
+  )
+
+  return result.rows
+}
+
+export async function listUpcomingTvShows(pool, options = {}) {
+  const { limit = 30, page = 1 } = options
+  const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 30
+  const normalizedPage = Number.isInteger(page) ? Math.max(1, page) : 1
+  const offset = (normalizedPage - 1) * normalizedLimit
+
+  const result = await pool.query(
+    `
+    SELECT
+      tv_shows.tmdb_id,
+      tv_shows.name,
+      tv_shows.original_name,
+      tv_shows.overview,
+      tv_shows.first_air_date,
+      tv_shows.original_language,
+      tv_shows.poster_path,
+      tv_shows.backdrop_path,
+      tv_shows.popularity,
+      tv_shows.vote_average,
+      tv_shows.vote_count,
+      tv_shows.genre_ids,
+      COALESCE(
+        ARRAY_REMOVE(ARRAY_AGG(tv_genres.name ORDER BY genre_ids.ordinality), NULL),
+        '{}'
+      ) AS genre_names,
+      tv_shows.detail_payload,
+      tv_shows.raw_payload,
+      tv_shows.import_rank,
+      tv_shows.imported_at
+    FROM tv_shows
+    LEFT JOIN LATERAL UNNEST(tv_shows.genre_ids) WITH ORDINALITY AS genre_ids(tmdb_genre_id, ordinality) ON TRUE
+    LEFT JOIN tv_genres ON tv_genres.tmdb_genre_id = genre_ids.tmdb_genre_id
+    WHERE tv_shows.first_air_date IS NOT NULL
+      AND tv_shows.first_air_date > CURRENT_DATE
+    GROUP BY tv_shows.id
+    ORDER BY tv_shows.first_air_date ASC, tv_shows.tmdb_id ASC
     LIMIT $1
     OFFSET $2
   `,
@@ -1514,6 +1864,24 @@ export async function countMovies(pool) {
   `)
 
   return result.rows[0]?.movie_count ?? 0
+}
+
+export async function countTvShows(pool) {
+  const result = await pool.query(`
+    SELECT COUNT(*)::INTEGER AS tv_show_count
+    FROM tv_shows
+  `)
+
+  return result.rows[0]?.tv_show_count ?? 0
+}
+
+export async function countActors(pool) {
+  const result = await pool.query(`
+    SELECT COUNT(*)::INTEGER AS actor_count
+    FROM cast_members
+  `)
+
+  return result.rows[0]?.actor_count ?? 0
 }
 
 export async function countStoredDataBytes(pool) {

@@ -3,8 +3,10 @@ import { loadConfig } from './config.js'
 import {
   addMovieToWatchlistForUser,
   addMovieToWatchedForUser,
+  countActors,
   countMovies,
   countStoredDataBytes,
+  countTvShows,
   ensureMoviesTable,
   findUserByCredentials,
   findUserByUsername,
@@ -17,12 +19,16 @@ import {
   listWatchedMoviesForUser,
   listMovies,
   listRecentlyReleasedMovies,
+  listRecentlyAiredTvShows,
   removeMovieFromWatchedForUser,
   removeMovieFromWatchlistForUser,
   listSimilarMovies,
+  listTopRatedTvShows,
   listTopRatedMovies,
+  listTvShows,
   syncPersonProfile,
   updateUserPassword,
+  listUpcomingTvShows,
   listUpcomingMovies,
 } from './database.js'
 import { adminJobs, findAdminJob, listAdminJobs } from './adminJobs.js'
@@ -414,8 +420,10 @@ export async function createApp(pool, options = {}) {
       response.json({
         crons: listAdminJobs(jobs),
         totals: {
+          actors: await countActors(pool),
           movies: await countMovies(pool),
           storedDataBytes: await countStoredDataBytes(pool),
+          tvShows: await countTvShows(pool),
         },
       })
     } catch (error) {
@@ -522,6 +530,83 @@ export async function createApp(pool, options = {}) {
         count: pagedMovies.length,
         movies: pagedMovies,
         pagination: buildPaginationPayload(pagination, movies.length > pagination.limit),
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/tv', async (request, response, next) => {
+    try {
+      const pagination = readPaginationQuery(request, { defaultLimit: 30 })
+      const shows = await listTvShows(pool, {
+        limit: pagination.limit + 1,
+        page: pagination.page,
+      })
+      const pagedShows = shows.slice(0, pagination.limit)
+
+      response.json({
+        count: pagedShows.length,
+        shows: pagedShows,
+        featuredShow: mapFeaturedTvShow(pagedShows[0] ?? null),
+        pagination: buildPaginationPayload(pagination, shows.length > pagination.limit),
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/tv/recently-released', async (request, response, next) => {
+    try {
+      const pagination = readPaginationQuery(request, { defaultLimit: 30 })
+      const shows = await listRecentlyAiredTvShows(pool, {
+        limit: pagination.limit + 1,
+        page: pagination.page,
+      })
+      const pagedShows = shows.slice(0, pagination.limit)
+
+      response.json({
+        count: pagedShows.length,
+        shows: pagedShows,
+        pagination: buildPaginationPayload(pagination, shows.length > pagination.limit),
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/tv/top-rated', async (request, response, next) => {
+    try {
+      const pagination = readPaginationQuery(request, { defaultLimit: 30 })
+      const shows = await listTopRatedTvShows(pool, {
+        limit: pagination.limit + 1,
+        page: pagination.page,
+      })
+      const pagedShows = shows.slice(0, pagination.limit)
+
+      response.json({
+        count: pagedShows.length,
+        shows: pagedShows,
+        pagination: buildPaginationPayload(pagination, shows.length > pagination.limit),
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/tv/upcoming', async (request, response, next) => {
+    try {
+      const pagination = readPaginationQuery(request, { defaultLimit: 30 })
+      const shows = await listUpcomingTvShows(pool, {
+        limit: pagination.limit + 1,
+        page: pagination.page,
+      })
+      const pagedShows = shows.slice(0, pagination.limit)
+
+      response.json({
+        count: pagedShows.length,
+        shows: pagedShows,
+        pagination: buildPaginationPayload(pagination, shows.length > pagination.limit),
       })
     } catch (error) {
       next(error)
@@ -674,6 +759,30 @@ function mapFeaturedMovie(movie) {
     summary: movie.overview || 'Overview not available yet.',
     posterPath: movie.poster_path,
     backdropPath: movie.backdrop_path,
+  }
+}
+
+function mapFeaturedTvShow(show) {
+  if (!show) {
+    return null
+  }
+
+  const details = show.detail_payload ?? {}
+  const episodeRuntime = Array.isArray(details.episode_run_time) ? details.episode_run_time.find((value) => typeof value === 'number' && value > 0) : null
+
+  return {
+    id: show.tmdb_id,
+    title: show.name,
+    year: formatMovieYear(show.first_air_date),
+    genres: Array.isArray(show.genre_names) ? show.genre_names : [],
+    rating: readTvMaturityRating(details),
+    runtime: formatTvRuntime(episodeRuntime),
+    score: formatScore(show.vote_average),
+    audience: formatVoteCount(show.vote_count),
+    summary: show.overview || 'Overview not available yet.',
+    posterPath: show.poster_path,
+    backdropPath: show.backdrop_path,
+    episodesLabel: formatEpisodeCountLabel(details),
   }
 }
 
@@ -877,6 +986,36 @@ function formatRuntime(runtimeMinutes) {
   }
 
   return `${hours}h ${minutes}m`
+}
+
+function formatTvRuntime(runtimeMinutes) {
+  if (typeof runtimeMinutes !== 'number' || Number.isNaN(runtimeMinutes) || runtimeMinutes <= 0) {
+    return 'Runtime TBA'
+  }
+
+  return `${runtimeMinutes}m episodes`
+}
+
+function formatEpisodeCountLabel(details) {
+  const episodeCount = typeof details?.number_of_episodes === 'number' ? details.number_of_episodes : null
+  const seasonCount = typeof details?.number_of_seasons === 'number' ? details.number_of_seasons : null
+
+  if (episodeCount && episodeCount > 0) {
+    return `${episodeCount} Episode${episodeCount === 1 ? '' : 's'}`
+  }
+
+  if (seasonCount && seasonCount > 0) {
+    return `${seasonCount} Season${seasonCount === 1 ? '' : 's'}`
+  }
+
+  return 'Episodes TBA'
+}
+
+function readTvMaturityRating(details) {
+  const contentRatings = Array.isArray(details?.content_ratings?.results) ? details.content_ratings.results : []
+  const usRating = contentRatings.find((entry) => entry?.iso_3166_1 === 'US' && typeof entry?.rating === 'string' && entry.rating.trim())
+
+  return usRating?.rating?.trim() || 'TV Series'
 }
 
 function formatScore(voteAverage) {

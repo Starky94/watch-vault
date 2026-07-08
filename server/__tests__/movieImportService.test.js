@@ -20,6 +20,8 @@ function isSchemaSetupQuery(sql) {
   return (
     sql.includes('CREATE TABLE IF NOT EXISTS movies') ||
     sql.includes('CREATE TABLE IF NOT EXISTS genres') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS tv_genres') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS tv_shows') ||
     sql.includes('ALTER TABLE movies') ||
     sql.includes('UPDATE movies') ||
     sql.includes('CREATE TABLE IF NOT EXISTS cast_members') ||
