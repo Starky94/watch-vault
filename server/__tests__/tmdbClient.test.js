@@ -4,6 +4,7 @@ import {
   fetchAiringTodayTvShowsPage,
   fetchMovieCredits,
   fetchMovieReviews,
+  fetchMovieVideos,
   fetchOnTheAirTvShowsPage,
   fetchPersonCombinedCredits,
   fetchPersonDetails,
@@ -171,6 +172,22 @@ test('fetchMovieReviews requests the TMDB reviews endpoint', async () => {
   })
 
   assert.match(requestedUrl, /\/movie\/42\/reviews$/)
+})
+
+test('fetchMovieVideos requests the movie videos endpoint with bearer authorization', async () => {
+  let requestedUrl = ''
+  let requestedHeaders = null
+
+  const fetchImpl = async (url, options) => {
+    requestedUrl = String(url)
+    requestedHeaders = options.headers
+    return { ok: true, async json() { return { results: [] } } }
+  }
+
+  await fetchMovieVideos(fetchImpl, { token: 'token', baseUrl: 'https://api.themoviedb.org/3', movieId: 42 })
+
+  assert.match(requestedUrl, /\/movie\/42\/videos$/)
+  assert.equal(requestedHeaders.Authorization, 'Bearer token')
 })
 
 test('fetchTvDetails requests the TMDB TV detail endpoint', async () => {

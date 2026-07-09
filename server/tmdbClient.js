@@ -200,6 +200,16 @@ export async function fetchMovieReviews(fetchImpl, options) {
   })
 }
 
+export async function fetchMovieVideos(fetchImpl, options) {
+  const { token, baseUrl, movieId } = options
+
+  return tmdbRequest(fetchImpl, {
+    token,
+    baseUrl,
+    path: `movie/${movieId}/videos`,
+  })
+}
+
 export async function fetchPersonDetails(fetchImpl, options) {
   const { token, baseUrl, personId } = options
 

@@ -223,6 +223,38 @@ export async function ensureMoviesTable(pool) {
       UNIQUE (user_id, movie_id)
     )
   `)
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS movie_ratings (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      movie_id BIGINT NOT NULL REFERENCES movies(id) ON DELETE CASCADE,
+      score NUMERIC(2, 1) NOT NULL CHECK (score >= 1.0 AND score <= 5.0 AND MOD(score * 2, 1) = 0),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (user_id, movie_id)
+    )
+  `)
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS tv_watchlist_items (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      tv_show_id BIGINT NOT NULL REFERENCES tv_shows(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (user_id, tv_show_id)
+    )
+  `)
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS watched_tv_shows (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      tv_show_id BIGINT NOT NULL REFERENCES tv_shows(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (user_id, tv_show_id)
+    )
+  `)
 }
 
 const demoUsers = [
@@ -882,6 +914,94 @@ export async function updateUserPassword(pool, { username, currentPassword, newP
   return result.rows[0] ?? null
 }
 
+export async function getMovieCommunityRating(pool, { movieId, username = null }) {
+  const result = await pool.query(
+    `
+      WITH selected_movie AS (
+        SELECT id
+        FROM movies
+        WHERE tmdb_id = $1 OR id = $1
+        ORDER BY CASE WHEN tmdb_id = $1 THEN 0 ELSE 1 END
+        LIMIT 1
+      ),
+      selected_user AS (
+        SELECT id
+        FROM users
+        WHERE username = $2
+        LIMIT 1
+      )
+      SELECT
+        EXISTS(SELECT 1 FROM selected_movie) AS has_movie,
+        AVG(movie_ratings.score)::DOUBLE PRECISION AS average,
+        COUNT(movie_ratings.id)::INTEGER AS vote_count,
+        (
+          SELECT movie_ratings.score::DOUBLE PRECISION
+          FROM movie_ratings
+          WHERE movie_ratings.movie_id IN (SELECT id FROM selected_movie)
+            AND movie_ratings.user_id IN (SELECT id FROM selected_user)
+          LIMIT 1
+        ) AS your_score
+      FROM selected_movie
+      LEFT JOIN movie_ratings ON movie_ratings.movie_id = selected_movie.id
+    `,
+    [movieId, username]
+  )
+
+  const row = result.rows[0] ?? null
+
+  if (!row?.has_movie) {
+    return { status: 'missing_movie' }
+  }
+
+  return {
+    status: 'ok',
+    average: row.average === null ? null : Number(row.average),
+    voteCount: Number(row.vote_count ?? 0),
+    yourScore: row.your_score === null || row.your_score === undefined ? null : Number(row.your_score),
+  }
+}
+
+export async function upsertMovieRatingForUser(pool, { username, movieId, score }) {
+  const result = await pool.query(
+    `
+      WITH selected_user AS (
+        SELECT id
+        FROM users
+        WHERE username = $1
+        LIMIT 1
+      ),
+      selected_movie AS (
+        SELECT id
+        FROM movies
+        WHERE tmdb_id = $2 OR id = $2
+        ORDER BY CASE WHEN tmdb_id = $2 THEN 0 ELSE 1 END
+        LIMIT 1
+      ),
+      saved_rating AS (
+        INSERT INTO movie_ratings (user_id, movie_id, score, created_at, updated_at)
+        SELECT selected_user.id, selected_movie.id, $3, NOW(), NOW()
+        FROM selected_user
+        CROSS JOIN selected_movie
+        ON CONFLICT (user_id, movie_id)
+        DO UPDATE SET score = EXCLUDED.score, updated_at = NOW()
+        RETURNING score
+      )
+      SELECT
+        EXISTS(SELECT 1 FROM selected_user) AS has_user,
+        EXISTS(SELECT 1 FROM selected_movie) AS has_movie,
+        (SELECT score::DOUBLE PRECISION FROM saved_rating) AS score
+    `,
+    [username, movieId, score]
+  )
+
+  const row = result.rows[0] ?? null
+
+  if (!row?.has_user) return { status: 'missing_user' }
+  if (!row.has_movie) return { status: 'missing_movie' }
+
+  return { status: 'ok', score: Number(row.score) }
+}
+
 export async function getMovieByTmdbId(pool, tmdbId) {
   const result = await pool.query(
     `
@@ -910,7 +1030,17 @@ export async function getMovieByTmdbId(pool, tmdbId) {
       movies.detail_payload,
       movies.raw_payload,
       movies.import_rank,
-      movies.imported_at
+      movies.imported_at,
+      (
+        SELECT AVG(movie_ratings.score)::DOUBLE PRECISION
+        FROM movie_ratings
+        WHERE movie_ratings.movie_id = movies.id
+      ) AS community_rating_average,
+      (
+        SELECT COUNT(*)::INTEGER
+        FROM movie_ratings
+        WHERE movie_ratings.movie_id = movies.id
+      ) AS community_rating_vote_count
     FROM movies
     LEFT JOIN LATERAL UNNEST(movies.genre_ids) WITH ORDINALITY AS genre_ids(tmdb_genre_id, ordinality) ON TRUE
     LEFT JOIN genres ON genres.tmdb_genre_id = genre_ids.tmdb_genre_id
@@ -1810,7 +1940,7 @@ export async function removeMovieFromWatchedForUser(pool, { username, movieId })
   }
 }
 
-export async function getMovieStatsForUser(pool, username) {
+export async function getMovieStatsForUser(pool, username, period = 'month') {
   const result = await pool.query(
     `
       WITH selected_user AS (
@@ -1826,11 +1956,13 @@ export async function getMovieStatsForUser(pool, username) {
         FROM watched_movies
         JOIN movies ON movies.id = watched_movies.movie_id
         WHERE watched_movies.user_id IN (SELECT id FROM selected_user)
+          AND watched_movies.created_at >= date_trunc($2, NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
       ),
       watchlist_totals AS (
         SELECT COUNT(*)::INTEGER AS watchlist_count
         FROM watchlist_items
         WHERE watchlist_items.user_id IN (SELECT id FROM selected_user)
+          AND watchlist_items.created_at >= date_trunc($2, NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
       )
       SELECT
         EXISTS(SELECT 1 FROM selected_user) AS has_user,
@@ -1838,7 +1970,7 @@ export async function getMovieStatsForUser(pool, username) {
         COALESCE((SELECT time_watched_minutes FROM watched_totals), 0) AS time_watched_minutes,
         COALESCE((SELECT watchlist_count FROM watchlist_totals), 0) AS watchlist_count
     `,
-    [username]
+    [username, period]
   )
 
   const row = result.rows[0] ?? null
@@ -1855,6 +1987,94 @@ export async function getMovieStatsForUser(pool, username) {
     timeWatchedMinutes: Number(row.time_watched_minutes ?? 0),
     watchlistCount: Number(row.watchlist_count ?? 0),
   }
+}
+
+export async function getTvLibraryForUser(pool, username) {
+  const result = await pool.query(
+    `
+      SELECT
+        COALESCE(ARRAY(SELECT tv_shows.tmdb_id FROM watched_tv_shows JOIN tv_shows ON tv_shows.id = watched_tv_shows.tv_show_id WHERE watched_tv_shows.user_id = users.id), '{}') AS watched_ids,
+        COALESCE(ARRAY(SELECT tv_shows.tmdb_id FROM tv_watchlist_items JOIN tv_shows ON tv_shows.id = tv_watchlist_items.tv_show_id WHERE tv_watchlist_items.user_id = users.id), '{}') AS watchlist_ids
+      FROM users
+      WHERE users.username = $1
+      LIMIT 1
+    `,
+    [username]
+  )
+  const row = result.rows[0] ?? null
+  return row ? { status: 'ok', watchedIds: row.watched_ids.map(Number), watchlistIds: row.watchlist_ids.map(Number) } : { status: 'missing_user' }
+}
+
+export async function getTvStatsForUser(pool, username, period = 'month') {
+  const result = await pool.query(
+    `
+      WITH selected_user AS (SELECT id FROM users WHERE username = $1 LIMIT 1),
+      watched_totals AS (
+        SELECT
+          COUNT(*)::INTEGER AS shows_watched,
+          COALESCE(SUM(COALESCE(NULLIF(tv_shows.detail_payload->>'number_of_episodes', '')::INTEGER, 0)), 0)::INTEGER AS episodes_watched,
+          COALESCE(SUM(
+            COALESCE(NULLIF(tv_shows.detail_payload->>'number_of_episodes', '')::INTEGER, 0) *
+            COALESCE(NULLIF(tv_shows.detail_payload->'episode_run_time'->>0, '')::INTEGER, 0)
+          ), 0)::INTEGER AS time_watched_minutes
+        FROM watched_tv_shows
+        JOIN tv_shows ON tv_shows.id = watched_tv_shows.tv_show_id
+        WHERE watched_tv_shows.user_id IN (SELECT id FROM selected_user)
+          AND watched_tv_shows.created_at >= date_trunc($2, NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+      ),
+      watchlist_totals AS (
+        SELECT COUNT(*)::INTEGER AS watchlist_count
+        FROM tv_watchlist_items
+        WHERE user_id IN (SELECT id FROM selected_user)
+          AND created_at >= date_trunc($2, NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+      )
+      SELECT EXISTS(SELECT 1 FROM selected_user) AS has_user,
+        COALESCE((SELECT shows_watched FROM watched_totals), 0) AS shows_watched,
+        COALESCE((SELECT episodes_watched FROM watched_totals), 0) AS episodes_watched,
+        COALESCE((SELECT time_watched_minutes FROM watched_totals), 0) AS time_watched_minutes,
+        COALESCE((SELECT watchlist_count FROM watchlist_totals), 0) AS watchlist_count
+    `,
+    [username, period]
+  )
+  const row = result.rows[0] ?? null
+  if (!row?.has_user) return { status: 'missing_user' }
+  return { status: 'ok', showsWatched: Number(row.shows_watched), episodesWatched: Number(row.episodes_watched), timeWatchedMinutes: Number(row.time_watched_minutes), watchlistCount: Number(row.watchlist_count) }
+}
+
+export async function toggleTvLibraryItemForUser(pool, { username, showId, kind }) {
+  const table = kind === 'watched' ? 'watched_tv_shows' : 'tv_watchlist_items'
+  const column = 'tv_show_id'
+  const result = await pool.query(
+    `
+      WITH selected_user AS (SELECT id FROM users WHERE username = $1 LIMIT 1),
+      selected_show AS (SELECT id FROM tv_shows WHERE tmdb_id = $2 OR id = $2 ORDER BY CASE WHEN tmdb_id = $2 THEN 0 ELSE 1 END LIMIT 1),
+      deleted AS (DELETE FROM ${table} WHERE user_id IN (SELECT id FROM selected_user) AND ${column} IN (SELECT id FROM selected_show) RETURNING id),
+      inserted AS (
+        INSERT INTO ${table} (user_id, ${column}, created_at)
+        SELECT selected_user.id, selected_show.id, NOW() FROM selected_user CROSS JOIN selected_show
+        WHERE NOT EXISTS (SELECT 1 FROM deleted)
+        ON CONFLICT (user_id, ${column}) DO NOTHING
+        RETURNING id
+      )
+      SELECT EXISTS(SELECT 1 FROM selected_user) AS has_user, EXISTS(SELECT 1 FROM selected_show) AS has_show,
+        EXISTS(SELECT 1 FROM inserted) AS added, EXISTS(SELECT 1 FROM deleted) AS removed
+    `,
+    [username, showId]
+  )
+  const row = result.rows[0] ?? null
+  if (!row?.has_user) return { status: 'missing_user' }
+  if (!row.has_show) return { status: 'missing_show' }
+  if (kind === 'watched' && row.added) {
+    await pool.query(
+      `
+        DELETE FROM tv_watchlist_items
+        WHERE user_id IN (SELECT id FROM users WHERE username = $1)
+          AND tv_show_id IN (SELECT id FROM tv_shows WHERE tmdb_id = $2 OR id = $2)
+      `,
+      [username, showId]
+    )
+  }
+  return { status: 'ok', added: Boolean(row.added), removed: Boolean(row.removed) }
 }
 
 export async function countMovies(pool) {

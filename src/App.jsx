@@ -82,6 +82,23 @@ const emptyMovieStats = {
   timeWatchedMinutes: 0,
   watchlistCount: 0,
 }
+const emptyTvStats = {
+  showsWatched: 0,
+  episodesWatched: 0,
+  timeWatchedMinutes: 0,
+  watchlistCount: 0,
+}
+const emptyCommunityRating = {
+  average: null,
+  voteCount: 0,
+  yourScore: null,
+}
+const movieRatingOptions = Array.from({ length: 9 }, (_value, index) => 1 + index * 0.5)
+const statsPeriods = [
+  { value: 'week', label: 'This Week' },
+  { value: 'month', label: 'This Month' },
+  { value: 'year', label: 'This Year' },
+]
 
 function App() {
   const [currentRoute, setCurrentRoute] = useState(() => readAppRoute())
@@ -177,11 +194,18 @@ function App() {
     movieId: null,
     error: '',
   })
+  const [movieRatingActionState, setMovieRatingActionState] = useState({
+    status: 'idle',
+    movieId: null,
+    error: '',
+  })
   const [movieStatsState, setMovieStatsState] = useState({
     status: 'idle',
     stats: emptyMovieStats,
     error: '',
   })
+  const [statsPeriod, setStatsPeriod] = useState('month')
+  const [tvStatsState, setTvStatsState] = useState({ status: 'idle', stats: emptyTvStats, error: '' })
   const [selectedTvShowId, setSelectedTvShowId] = useState(null)
   const [tvWatchlistIds, setTvWatchlistIds] = useState(() => new Set(initialTvWatchlistIds))
   const [tvWatchedIds, setTvWatchedIds] = useState(() => new Set(initialTvWatchedIds))
@@ -630,41 +654,28 @@ function App() {
     setTopRatedTvPage(1)
   }
 
-  function handleToggleTvWatchlist(show) {
-    if (!show?.id) {
-      return
+  async function handleToggleTvLibrary(show, kind) {
+    const showId = Number(show?.id)
+    if (!Number.isInteger(showId)) return
+    if (!user) return handleOpenLogin()
+    try {
+      const response = await fetch(`/api/tv/library/${kind}?period=${statsPeriod}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...buildAuthHeaders(user) },
+        body: JSON.stringify({ showId }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+      setTvWatchedIds(new Set(payload.watchedIds ?? []))
+      setTvWatchlistIds(new Set(payload.watchlistIds ?? []))
+      setTvStatsState({ status: 'success', stats: mapTvStatsPayload(payload.stats), error: '' })
+    } catch (error) {
+      setTvStatsState((state) => ({ ...state, status: 'error', error: error instanceof Error ? error.message : 'Unable to update TV library.' }))
     }
-
-    setTvWatchlistIds((previousIds) => {
-      const nextIds = new Set(previousIds)
-
-      if (nextIds.has(show.id)) {
-        nextIds.delete(show.id)
-      } else {
-        nextIds.add(show.id)
-      }
-
-      return nextIds
-    })
   }
 
-  function handleToggleTvWatched(show) {
-    if (!show?.id) {
-      return
-    }
-
-    setTvWatchedIds((previousIds) => {
-      const nextIds = new Set(previousIds)
-
-      if (nextIds.has(show.id)) {
-        nextIds.delete(show.id)
-      } else {
-        nextIds.add(show.id)
-      }
-
-      return nextIds
-    })
-  }
+  function handleToggleTvWatchlist(show) { return handleToggleTvLibrary(show, 'watchlist') }
+  function handleToggleTvWatched(show) { return handleToggleTvLibrary(show, 'watched') }
 
   function handleOpenGenre(genre) {
     if (!genre?.name) {
@@ -752,7 +763,7 @@ function App() {
     }))
 
     try {
-      const response = await fetch('/api/watched', {
+      const response = await fetch(`/api/watched?period=${statsPeriod}`, {
         headers: buildAuthHeaders(nextUser),
       })
       const payload = await response.json().catch(() => ({}))
@@ -782,6 +793,28 @@ function App() {
         stats: emptyMovieStats,
         error: error instanceof Error ? error.message : 'Unable to load your movie stats right now.',
       })
+    }
+  }
+
+  async function loadTvLibraryForUser(nextUser) {
+    if (!nextUser?.username) {
+      setTvWatchedIds(new Set())
+      setTvWatchlistIds(new Set())
+      setTvStatsState({ status: 'idle', stats: emptyTvStats, error: '' })
+      return
+    }
+    setTvStatsState((state) => ({ ...state, status: 'loading', error: '' }))
+    try {
+      const response = await fetch(`/api/tv/library?period=${statsPeriod}`, { headers: buildAuthHeaders(nextUser) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+      setTvWatchedIds(new Set(payload.watchedIds ?? []))
+      setTvWatchlistIds(new Set(payload.watchlistIds ?? []))
+      setTvStatsState({ status: 'success', stats: mapTvStatsPayload(payload.stats), error: '' })
+    } catch (error) {
+      setTvWatchedIds(new Set())
+      setTvWatchlistIds(new Set())
+      setTvStatsState({ status: 'error', stats: emptyTvStats, error: error instanceof Error ? error.message : 'Unable to load TV stats right now.' })
     }
   }
 
@@ -844,6 +877,7 @@ function App() {
         movieId: normalizedMovieId,
         error: '',
       })
+      void loadWatchedForUser(user)
     } catch (error) {
       setWatchlistActionState({
         status: 'error',
@@ -890,6 +924,7 @@ function App() {
         movieId: normalizedMovieId,
         error: '',
       })
+      void loadWatchedForUser(user)
     } catch (error) {
       setWatchlistActionState({
         status: 'error',
@@ -919,7 +954,8 @@ function App() {
   useEffect(() => {
     loadWatchlistForUser(user)
     loadWatchedForUser(user)
-  }, [user])
+    loadTvLibraryForUser(user)
+  }, [user, statsPeriod])
 
   async function handleAddMovieToWatched(movie) {
     const normalizedMovieId = Number(movie?.id)
@@ -940,7 +976,7 @@ function App() {
     })
 
     try {
-      const response = await fetch('/api/watched', {
+      const response = await fetch(`/api/watched?period=${statsPeriod}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1007,7 +1043,7 @@ function App() {
     })
 
     try {
-      const response = await fetch(`/api/watched/${normalizedMovieId}`, {
+      const response = await fetch(`/api/watched/${normalizedMovieId}?period=${statsPeriod}`, {
         method: 'DELETE',
         headers: buildAuthHeaders(user),
       })
@@ -1056,6 +1092,44 @@ function App() {
     }
 
     await handleAddMovieToWatched(movie)
+  }
+
+  async function handleSubmitMovieRating(movie, score) {
+    const movieId = Number(movie?.id)
+    if (!Number.isInteger(movieId)) return false
+
+    if (!user) {
+      handleOpenLogin()
+      return false
+    }
+
+    setMovieRatingActionState({ status: 'loading', movieId, error: '' })
+
+    try {
+      const response = await fetch(`/api/movies/${movieId}/rating`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...buildAuthHeaders(user) },
+        body: JSON.stringify({ score }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+
+      const communityRating = mapCommunityRatingPayload(payload.communityRating)
+      setMovieDetailState((previousState) => (
+        Number(previousState.movie?.id) === movieId
+          ? { ...previousState, movie: { ...previousState.movie, communityRating } }
+          : previousState
+      ))
+      setMovieRatingActionState({ status: 'success', movieId, error: '' })
+      return true
+    } catch (error) {
+      setMovieRatingActionState({
+        status: 'error',
+        movieId,
+        error: error instanceof Error ? error.message : 'Unable to save your rating right now.',
+      })
+      return false
+    }
   }
 
   useEffect(() => {
@@ -1178,7 +1252,7 @@ function App() {
       })
 
       try {
-        const response = await fetch(`/api/movies/${currentRoute.movieId}`)
+        const response = await fetch(`/api/movies/${currentRoute.movieId}`, { headers: buildAuthHeaders(user) })
         const payload = await response.json().catch(() => ({}))
 
         if (!response.ok) {
@@ -1221,7 +1295,7 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [currentRoute])
+  }, [currentRoute, user])
 
   useEffect(() => {
     if (currentRoute.kind !== routeKinds.movieDetail) {
@@ -1857,7 +1931,6 @@ function App() {
   })
   const moviesPageStats = buildMoviesPageStats({
     stats: movieStatsState.stats,
-    watchlistCount: watchlistState.movies.length,
   })
 
   return (
@@ -1980,6 +2053,9 @@ function App() {
                 selectedShowId={selectedTvShowId}
                 watchedIds={tvWatchedIds}
                 watchlistIds={tvWatchlistIds}
+                stats={tvStatsState.stats}
+                statsPeriod={statsPeriod}
+                onStatsPeriodChange={setStatsPeriod}
               />
             ) : currentRoute.kind === routeKinds.personDetail ? (
               <PersonDetailPage
@@ -1996,7 +2072,11 @@ function App() {
                 onOpenPerson={handleOpenPersonDetail}
                 onToggleWatched={handleToggleMovieWatched}
                 onToggleWatchlist={handleToggleMovieInWatchlist}
+                onSubmitMovieRating={handleSubmitMovieRating}
+                onOpenLogin={handleOpenLogin}
                 onOpenMovie={handleOpenMovieDetail}
+                isSignedIn={Boolean(user)}
+                movieRatingActionState={movieRatingActionState}
                 watchedActionState={watchedActionState}
                 watchedMovieIds={watchedMovieIds}
                 watchedMovies={watchedState.movies}
@@ -2020,6 +2100,8 @@ function App() {
                 upcomingMoviesState={upcomingMoviesState}
                 onChangeUpcomingPage={setUpcomingMoviesPage}
                 movieStats={moviesPageStats}
+                statsPeriod={statsPeriod}
+                onStatsPeriodChange={setStatsPeriod}
                 watchedActionState={watchedActionState}
                 watchedMovieIds={watchedMovieIds}
                 watchlistActionState={watchlistActionState}
@@ -2584,6 +2666,8 @@ function MoviesScreen({
   upcomingMoviesState,
   onChangeUpcomingPage,
   movieStats,
+  statsPeriod,
+  onStatsPeriodChange,
   watchedActionState,
   watchedMovieIds,
   watchlistActionState,
@@ -2743,7 +2827,7 @@ function MoviesScreen({
             </div>
 
             <aside className="movies-rail">
-              <StatsPanel title="Your Movie Stats" items={movieStats} monthLabel="This Month" />
+              <StatsPanel title="Your Movie Stats" items={movieStats} period={statsPeriod} onPeriodChange={onStatsPeriodChange} />
               <MovieWatchlistPanel
                 items={watchlistMovies.slice(0, 4)}
                 onOpenMovie={onOpenMovie}
@@ -2791,6 +2875,9 @@ function TvShowsScreen({
   selectedShowId,
   watchedIds,
   watchlistIds,
+  stats,
+  statsPeriod,
+  onStatsPeriodChange,
 }) {
   const tvCatalog = collectTvCatalog([popularTvState, recentTvState, upcomingTvState, topRatedTvState])
   const favoriteShows = tvCatalog.filter((show) => watchlistIds.has(Number(show.id)))
@@ -2799,11 +2886,7 @@ function TvShowsScreen({
     ?? null
   const featuredShow = selectedShow ?? popularTvState.featuredShow ?? tvCatalog[0] ?? null
   const watchlistShows = favoriteShows.slice(0, 4)
-  const tvStats = createTvStats({
-    tvCatalog,
-    watchedIds,
-    watchlistIds,
-  })
+  const tvStats = buildTvStats(stats)
   const isPopularListMode = activeTab === 'Popular'
   const isAiringNowListMode = activeTab === 'Airing Now'
   const isUpcomingListMode = activeTab === 'Upcoming'
@@ -2940,7 +3023,7 @@ function TvShowsScreen({
           </div>
 
           <aside className="tv-rail">
-            <StatsPanel className="tv-stats-panel" title="Your TV Stats" items={tvStats} monthLabel="This Month" />
+            <StatsPanel className="tv-stats-panel" title="Your TV Stats" items={tvStats} period={statsPeriod} onPeriodChange={onStatsPeriodChange} />
             <TvWatchlistPanel items={watchlistShows} onOpenWatchlist={onOpenWatchlist} onSelectShow={onSelectShow} />
           </aside>
         </div>
@@ -3310,7 +3393,19 @@ function MovieDetailPage({
   watchedMovies,
   watchlistActionState,
   watchlistMovieIds,
+  onSubmitMovieRating,
+  onOpenLogin,
+  isSignedIn,
+  movieRatingActionState,
 }) {
+  const [isRatingDialogOpen, setIsRatingDialogOpen] = useState(false)
+  const [selectedRating, setSelectedRating] = useState(5)
+  const [trailerState, setTrailerState] = useState({ status: 'idle', trailer: null, error: '' })
+
+  useEffect(() => {
+    setTrailerState({ status: 'idle', trailer: null, error: '' })
+  }, [movieDetailState.movie?.id])
+
   if (movieDetailState.status === 'loading' || movieDetailState.status === 'idle') {
     return (
       <section className="movie-detail-page">
@@ -3345,11 +3440,42 @@ function MovieDetailPage({
   const isWatchlistUpdating = watchlistActionState.status === 'loading' && Number(watchlistActionState.movieId) === Number(movie.id)
   const isWatchedUpdating = watchedActionState.status === 'loading' && Number(watchedActionState.movieId) === Number(movie.id)
   const watchedLabel = watchedMovie?.watchedAt ? formatLongDate(watchedMovie.watchedAt) : 'Not yet'
+  const communityRating = movie.communityRating ?? emptyCommunityRating
+  const communityRatingLabel = formatCommunityRating(communityRating.average)
+  const yourRatingLabel = formatCommunityRating(communityRating.yourScore)
+  const isRatingSaving = movieRatingActionState.status === 'loading' && Number(movieRatingActionState.movieId) === Number(movie.id)
   const backdropStyle = movie.backdropUrl
     ? {
         backgroundImage: `linear-gradient(90deg, rgba(7, 10, 18, 0.96) 0%, rgba(7, 10, 18, 0.74) 30%, rgba(7, 10, 18, 0.34) 62%, rgba(7, 10, 18, 0.68) 100%), url(${movie.backdropUrl})`,
       }
     : undefined
+
+  async function handleOpenTrailer() {
+    setTrailerState({ status: 'loading', trailer: null, error: '' })
+
+    try {
+      const response = await fetch(`/api/movies/${movie.id}/trailer`)
+      const payload = await response.json().catch(() => ({}))
+
+      if (!response.ok) {
+        throw new Error(payload.error || 'Unable to load a trailer right now.')
+      }
+
+      setTrailerState({ status: 'success', trailer: payload.trailer, error: '' })
+    } catch (error) {
+      setTrailerState({
+        status: 'error',
+        trailer: null,
+        error: error instanceof Error ? error.message : 'Unable to load a trailer right now.',
+      })
+    }
+  }
+
+  function closeTrailer() {
+    setTrailerState({ status: 'idle', trailer: null, error: '' })
+  }
+
+  const isTrailerLoading = trailerState.status === 'loading'
 
   return (
     <section className="movie-detail-page">
@@ -3362,7 +3488,7 @@ function MovieDetailPage({
 
         <div className="movie-detail-poster-wrap">
           <MoviePosterFrame movie={movie} />
-          <button type="button" className="movie-detail-trailer-badge" aria-label={`Play trailer for ${movie.title}`}>
+          <button type="button" className="movie-detail-trailer-badge" aria-label={isTrailerLoading ? 'Loading trailer...' : `Play trailer for ${movie.title}`} onClick={handleOpenTrailer} disabled={isTrailerLoading}>
             <PlayIcon />
           </button>
         </div>
@@ -3379,7 +3505,7 @@ function MovieDetailPage({
           <div className="movie-detail-score-row">
             <MetricBadge icon={StarIcon} value={movie.score} label="IMDb" tone="gold" />
             <MetricBadge icon={TomatoIcon} value={movie.tomatoScore} label="Rotten Tomatoes" tone="tomato" />
-            <MetricBadge icon={UserRatingIcon} value="4.5/5" label="Your Rating" tone="violet" />
+            <MetricBadge icon={UserRatingIcon} value={communityRatingLabel} label={`${communityRating.voteCount} ${communityRating.voteCount === 1 ? 'vote' : 'votes'}`} tone="violet" />
           </div>
 
           <p className="movie-detail-summary">{movie.overview}</p>
@@ -3417,50 +3543,63 @@ function MovieDetailPage({
                     : 'Mark as Watched'}
               </span>
             </button>
-            <button type="button" className="secondary-button movie-detail-secondary ghost">
+            <button
+              type="button"
+              className="secondary-button movie-detail-secondary ghost"
+              onClick={() => {
+                if (!isSignedIn) {
+                  onOpenLogin()
+                  return
+                }
+
+                setSelectedRating(communityRating.yourScore ?? 5)
+                setIsRatingDialogOpen(true)
+              }}
+            >
               <StarOutlineIcon />
-              <span>Rate</span>
+              <span>{communityRating.yourScore === null ? 'Rate' : 'Update Rating'}</span>
             </button>
-            <button type="button" className="secondary-button movie-detail-secondary ghost desktop-only">
+            <button type="button" className="secondary-button movie-detail-secondary ghost desktop-only" onClick={handleOpenTrailer} disabled={isTrailerLoading}>
               <PlayIcon />
-              <span>Trailer</span>
+              <span>{isTrailerLoading ? 'Loading...' : 'Trailer'}</span>
             </button>
           </div>
+          {trailerState.status === 'error' ? <p className="movie-trailer-error" role="alert">{trailerState.error}</p> : null}
         </div>
 
         <aside className="movie-detail-status desktop-only">
           <h2>Your Status</h2>
           <div className="movie-detail-status-list">
-            <div className="movie-detail-status-item">
-              <BookmarkStatusIcon />
+            <div className="movie-detail-status-item movie-detail-status-item-watchlist">
+              <span className="movie-detail-status-icon" aria-hidden="true"><BookmarkStatusIcon /></span>
               <div>
                 <span>In Watchlist</span>
                 <strong>{isInWatchlist ? 'Saved' : 'Not yet'}</strong>
               </div>
             </div>
-            <div className="movie-detail-status-item">
-              <WatchedStatusIcon />
+            <div className="movie-detail-status-item movie-detail-status-item-watched">
+              <span className="movie-detail-status-icon" aria-hidden="true"><WatchedStatusIcon /></span>
               <div>
                 <span>Watched</span>
                 <strong>{watchedLabel}</strong>
               </div>
             </div>
-            <div className="movie-detail-status-item">
-              <StarOutlineIcon />
+            <div className="movie-detail-status-item movie-detail-status-item-rating">
+              <span className="movie-detail-status-icon" aria-hidden="true"><StarOutlineIcon /></span>
               <div>
                 <span>Your Rating</span>
-                <strong>4.5 / 5</strong>
+                <strong>{yourRatingLabel}</strong>
               </div>
             </div>
-            <div className="movie-detail-status-item">
-              <ClockIcon />
+            <div className="movie-detail-status-item movie-detail-status-item-runtime">
+              <span className="movie-detail-status-icon" aria-hidden="true"><ClockIcon /></span>
               <div>
                 <span>Runtime</span>
                 <strong>{movie.runtime}</strong>
               </div>
             </div>
-            <div className="movie-detail-status-item">
-              <CalendarIcon />
+            <div className="movie-detail-status-item movie-detail-status-item-release">
+              <span className="movie-detail-status-icon" aria-hidden="true"><CalendarIcon /></span>
               <div>
                 <span>Release Date</span>
                 <strong>{movie.releaseDateLabel}</strong>
@@ -3469,6 +3608,25 @@ function MovieDetailPage({
           </div>
         </aside>
       </article>
+
+      {isRatingDialogOpen ? (
+        <MovieRatingDialog
+          movie={movie}
+          selectedRating={selectedRating}
+          onSelectRating={setSelectedRating}
+          onCancel={() => setIsRatingDialogOpen(false)}
+          onSubmit={async () => {
+            const saved = await onSubmitMovieRating(movie, selectedRating)
+            if (saved) setIsRatingDialogOpen(false)
+          }}
+          isSaving={isRatingSaving}
+          error={movieRatingActionState.status === 'error' && Number(movieRatingActionState.movieId) === Number(movie.id) ? movieRatingActionState.error : ''}
+        />
+      ) : null}
+
+      {trailerState.status === 'success' && trailerState.trailer ? (
+        <MovieTrailerDialog movie={movie} trailer={trailerState.trailer} onClose={closeTrailer} />
+      ) : null}
 
       <div className="movie-detail-grid">
         <section className="content-section movie-detail-panel">
@@ -3595,6 +3753,78 @@ function MovieDetailPage({
         </section>
       </div>
     </section>
+  )
+}
+
+function MovieTrailerDialog({ movie, trailer, onClose }) {
+  const embedUrl = `https://www.youtube-nocookie.com/embed/${encodeURIComponent(trailer.key)}?autoplay=1`
+
+  useEffect(() => {
+    function handleKeyDown(event) {
+      if (event.key === 'Escape') {
+        onClose()
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [onClose])
+
+  return (
+    <div className="movie-trailer-dialog-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="movie-trailer-dialog" role="dialog" aria-modal="true" aria-labelledby="movie-trailer-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="movie-trailer-dialog-header">
+          <div>
+            <p className="movie-rating-dialog-kicker">{trailer.provider}</p>
+            <h2 id="movie-trailer-dialog-title">{trailer.name} — {movie.title}</h2>
+          </div>
+          <button type="button" className="movie-trailer-close" onClick={onClose} aria-label="Close trailer">×</button>
+        </div>
+        <iframe
+          className="movie-trailer-player"
+          src={embedUrl}
+          title={`${movie.title} trailer`}
+          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+          allowFullScreen
+        />
+      </section>
+    </div>
+  )
+}
+
+function MovieRatingDialog({ movie, selectedRating, onSelectRating, onCancel, onSubmit, isSaving, error }) {
+  return (
+    <div className="movie-rating-dialog-backdrop" role="presentation" onMouseDown={isSaving ? undefined : onCancel}>
+      <section className="movie-rating-dialog" role="dialog" aria-modal="true" aria-labelledby="movie-rating-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
+        <p className="movie-rating-dialog-kicker">Your WatchVault Rating</p>
+        <h2 id="movie-rating-dialog-title">Rate {movie.title}</h2>
+        <p>Select a score from 1 to 5.</p>
+        <div className="movie-rating-options" role="radiogroup" aria-label="Rating score">
+          {movieRatingOptions.map((score) => (
+            <button
+              key={score}
+              type="button"
+              className={`movie-rating-option${selectedRating === score ? ' selected' : ''}`}
+              role="radio"
+              aria-checked={selectedRating === score}
+              onClick={() => onSelectRating(score)}
+              disabled={isSaving}
+            >
+              <StarIcon />
+              {score.toFixed(1)}
+            </button>
+          ))}
+        </div>
+        {error ? <p className="movie-rating-dialog-error" role="alert">{error}</p> : null}
+        <div className="movie-rating-dialog-actions">
+          <button type="button" className="secondary-button" onClick={onCancel} disabled={isSaving}>Cancel</button>
+          <button type="button" className="primary-button" onClick={onSubmit} disabled={isSaving}>
+            <StarIcon />
+            <span>{isSaving ? 'Saving...' : 'Save Rating'}</span>
+          </button>
+        </div>
+      </section>
+    </div>
   )
 }
 
@@ -3879,15 +4109,44 @@ function MobileNav({ activeView, setActiveView }) {
   )
 }
 
-function StatsPanel({ className = '', title, items, monthLabel = 'This Month' }) {
+function StatsPanel({ className = '', title, items, period = 'month', onPeriodChange }) {
+  const [isPeriodMenuOpen, setIsPeriodMenuOpen] = useState(false)
+  const activePeriod = statsPeriods.find((option) => option.value === period) ?? statsPeriods[1]
   return (
     <div className={`stats-panel${className ? ` ${className}` : ''}`}>
       <div className="stats-header">
         <span>{title}</span>
-        <button type="button" className="month-button">
-          {monthLabel}
-          <ChevronDown />
-        </button>
+        <div className="stats-period-control">
+          <button
+            type="button"
+            className="month-button"
+            aria-haspopup="menu"
+            aria-expanded={isPeriodMenuOpen}
+            onClick={onPeriodChange ? () => setIsPeriodMenuOpen((open) => !open) : undefined}
+          >
+            {activePeriod.label}
+            <ChevronDown />
+          </button>
+          {isPeriodMenuOpen && onPeriodChange ? (
+            <div className="stats-period-menu" role="menu" aria-label="Stats period">
+              {statsPeriods.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={option.value === period}
+                  className={option.value === period ? 'active' : ''}
+                  onClick={() => {
+                    onPeriodChange?.(option.value)
+                    setIsPeriodMenuOpen(false)
+                  }}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
       </div>
 
       <div className="stats-list">
@@ -4449,57 +4708,33 @@ function collectTvCatalog(collectionStates = []) {
   return Array.from(catalog.values())
 }
 
-function createTvStats({ tvCatalog, watchedIds, watchlistIds }) {
-  const watchedShows = Array.isArray(tvCatalog)
-    ? tvCatalog.filter((show) => watchedIds.has(Number(show.id)))
-    : []
-  const watchedEpisodes = watchedShows.reduce((total, show) => total + readTvEpisodeCount(show), 0)
-  const watchedMinutes = watchedShows.reduce((total, show) => total + estimateTvWatchMinutes(show), 0)
-
+function buildTvStats(stats) {
   return [
     {
       label: 'Shows Watched',
-      value: String(watchedIds.size),
+      value: String(stats.showsWatched),
       tone: 'violet',
       icon: TvIcon,
     },
     {
       label: 'Episodes Watched',
-      value: String(watchedEpisodes),
+      value: String(stats.episodesWatched),
       tone: 'gold',
       icon: PlayIcon,
     },
     {
       label: 'Hours Watched',
-      value: formatMinutesAsHoursAndMinutes(watchedMinutes),
+      value: formatMinutesAsHoursAndMinutes(stats.timeWatchedMinutes),
       tone: 'blue',
       icon: ClockIcon,
     },
     {
       label: 'In Watchlist',
-      value: String(watchlistIds.size),
+      value: String(stats.watchlistCount),
       tone: 'orange',
       icon: BookmarkStackIcon,
     },
   ]
-}
-
-function readTvEpisodeCount(show) {
-  const details = show?.detail_payload ?? {}
-  return typeof details.number_of_episodes === 'number' && details.number_of_episodes > 0 ? details.number_of_episodes : 0
-}
-
-function readTvEpisodeRuntimeMinutes(show) {
-  const details = show?.detail_payload ?? {}
-  const runtimeMinutes = Array.isArray(details.episode_run_time)
-    ? details.episode_run_time.find((value) => typeof value === 'number' && value > 0)
-    : null
-
-  return typeof runtimeMinutes === 'number' ? runtimeMinutes : 0
-}
-
-function estimateTvWatchMinutes(show) {
-  return readTvEpisodeCount(show) * readTvEpisodeRuntimeMinutes(show)
 }
 
 function buildAuthHeaders(user) {
@@ -4515,6 +4750,15 @@ function buildAuthHeaders(user) {
 function mapMovieStatsPayload(stats) {
   return {
     moviesWatched: typeof stats?.moviesWatched === 'number' ? stats.moviesWatched : 0,
+    timeWatchedMinutes: typeof stats?.timeWatchedMinutes === 'number' ? stats.timeWatchedMinutes : 0,
+    watchlistCount: typeof stats?.watchlistCount === 'number' ? stats.watchlistCount : 0,
+  }
+}
+
+function mapTvStatsPayload(stats) {
+  return {
+    showsWatched: typeof stats?.showsWatched === 'number' ? stats.showsWatched : 0,
+    episodesWatched: typeof stats?.episodesWatched === 'number' ? stats.episodesWatched : 0,
     timeWatchedMinutes: typeof stats?.timeWatchedMinutes === 'number' ? stats.timeWatchedMinutes : 0,
     watchlistCount: typeof stats?.watchlistCount === 'number' ? stats.watchlistCount : 0,
   }
@@ -4854,6 +5098,7 @@ function mapMovieDetailPayload(movie) {
     director: movie.director || null,
     cast: Array.isArray(movie.cast) ? movie.cast : [],
     reviews: Array.isArray(movie.reviews) ? movie.reviews : [],
+    communityRating: mapCommunityRatingPayload(movie.communityRating),
   }
 }
 
@@ -4948,7 +5193,20 @@ function mapMoviePreviewToDetail(movie) {
     director: null,
     cast: [],
     reviews: [],
+    communityRating: emptyCommunityRating,
   }
+}
+
+function mapCommunityRatingPayload(communityRating) {
+  return {
+    average: typeof communityRating?.average === 'number' ? communityRating.average : null,
+    voteCount: Number.isInteger(communityRating?.voteCount) ? communityRating.voteCount : 0,
+    yourScore: typeof communityRating?.yourScore === 'number' ? communityRating.yourScore : null,
+  }
+}
+
+function formatCommunityRating(score) {
+  return typeof score === 'number' ? `${score.toFixed(1)}/5` : 'Not rated'
 }
 
 function buildMovieCreditCards(movie) {
@@ -5218,10 +5476,10 @@ function buildHomeStats({ stats, watchlistCount }) {
   ]
 }
 
-function buildMoviesPageStats({ stats, watchlistCount }) {
+function buildMoviesPageStats({ stats }) {
   return [
     { label: 'Movies Watched', value: String(stats.moviesWatched), tone: 'violet', icon: ClapperIcon },
-    { label: 'In Watchlist', value: String(watchlistCount), tone: 'orange', icon: BookmarkStackIcon },
+    { label: 'In Watchlist', value: String(stats.watchlistCount), tone: 'orange', icon: BookmarkStackIcon },
     { label: 'Hours Watched', value: formatMinutesAsHoursAndMinutes(stats.timeWatchedMinutes), tone: 'blue', icon: ClockIcon },
   ]
 }

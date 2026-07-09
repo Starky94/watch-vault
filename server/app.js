@@ -11,6 +11,9 @@ import {
   findUserByCredentials,
   findUserByUsername,
   getMovieStatsForUser,
+  getMovieCommunityRating,
+  getTvLibraryForUser,
+  getTvStatsForUser,
   getMovieByTmdbId,
   listCoStarsForPerson,
   listGenres,
@@ -28,11 +31,13 @@ import {
   listTvShows,
   syncPersonProfile,
   updateUserPassword,
+  upsertMovieRatingForUser,
+  toggleTvLibraryItemForUser,
   listUpcomingTvShows,
   listUpcomingMovies,
 } from './database.js'
 import { adminJobs, findAdminJob, listAdminJobs } from './adminJobs.js'
-import { fetchMovieReviews, fetchPersonCombinedCredits, fetchPersonDetails } from './tmdbClient.js'
+import { fetchMovieReviews, fetchMovieVideos, fetchPersonCombinedCredits, fetchPersonDetails } from './tmdbClient.js'
 import { hydrateMovieByTmdbId } from './movieImportService.js'
 
 export async function createApp(pool, options = {}) {
@@ -295,9 +300,11 @@ export async function createApp(pool, options = {}) {
         return
       }
 
+      const period = readStatsPeriod(request, response)
+      if (!period) return
       const [movies, stats] = await Promise.all([
         listWatchedMoviesForUser(pool, user.username),
-        getMovieStatsForUser(pool, user.username),
+        getMovieStatsForUser(pool, user.username, period),
       ])
 
       response.json({
@@ -321,6 +328,8 @@ export async function createApp(pool, options = {}) {
     }
 
     try {
+      const period = readStatsPeriod(request, response)
+      if (!period) return
       const user = await getAuthenticatedUser(pool, request)
 
       if (!user) {
@@ -351,7 +360,7 @@ export async function createApp(pool, options = {}) {
 
       const [movies, stats] = await Promise.all([
         listWatchedMoviesForUser(pool, user.username),
-        getMovieStatsForUser(pool, user.username),
+        getMovieStatsForUser(pool, user.username, period),
       ])
       const watchedMovie = movies.find((movie) => Number(movie.tmdb_id) === movieId) ?? null
 
@@ -376,6 +385,8 @@ export async function createApp(pool, options = {}) {
     }
 
     try {
+      const period = readStatsPeriod(request, response)
+      if (!period) return
       const user = await getAuthenticatedUser(pool, request)
 
       if (!user) {
@@ -404,12 +415,43 @@ export async function createApp(pool, options = {}) {
         return
       }
 
-      const stats = await getMovieStatsForUser(pool, user.username)
+      const stats = await getMovieStatsForUser(pool, user.username, period)
 
       response.status(200).json({
         removed: result.removed,
         stats: mapMovieStats(stats),
       })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/tv/library', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const period = readStatsPeriod(request, response)
+      if (!period) return
+      const [library, stats] = await Promise.all([getTvLibraryForUser(pool, user.username), getTvStatsForUser(pool, user.username, period)])
+      response.json({ watchedIds: library.watchedIds, watchlistIds: library.watchlistIds, stats: mapTvStats(stats) })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/tv/library/:kind', async (request, response, next) => {
+    const kind = request.params.kind
+    const showId = Number.parseInt(request.body?.showId, 10)
+    if (!['watched', 'watchlist'].includes(kind) || !Number.isInteger(showId)) return response.status(400).json({ error: 'kind and showId must be valid' })
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const period = readStatsPeriod(request, response)
+      if (!period) return
+      const result = await toggleTvLibraryItemForUser(pool, { username: user.username, showId, kind })
+      if (result.status === 'missing_show') return response.status(404).json({ error: `TV show ${showId} was not found in the local database` })
+      const [library, stats] = await Promise.all([getTvLibraryForUser(pool, user.username), getTvStatsForUser(pool, user.username, period)])
+      response.json({ added: result.added, watchedIds: library.watchedIds, watchlistIds: library.watchlistIds, stats: mapTvStats(stats) })
     } catch (error) {
       next(error)
     }
@@ -647,10 +689,90 @@ export async function createApp(pool, options = {}) {
       }
 
       const reviews = await loadMovieReviews(movieId, loadRuntimeConfig)
+      const user = await getAuthenticatedUser(pool, request)
+      const communityRating = user
+        ? await getMovieCommunityRating(pool, { movieId, username: user.username })
+        : {
+            status: 'ok',
+            average: movie.community_rating_average === null || movie.community_rating_average === undefined
+              ? null
+              : Number(movie.community_rating_average),
+            voteCount: Number(movie.community_rating_vote_count ?? 0),
+            yourScore: null,
+          }
 
       response.json({
-        movie: mapMovieDetail(movie, reviews),
+        movie: mapMovieDetail(movie, reviews, communityRating),
       })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/movies/:movieId/trailer', async (request, response, next) => {
+    const movieId = Number.parseInt(request.params.movieId, 10)
+
+    if (!Number.isInteger(movieId)) {
+      response.status(400).json({ error: `Invalid movie id: ${request.params.movieId}` })
+      return
+    }
+
+    try {
+      const config = loadRuntimeConfig()
+      const payload = await fetchMovieVideos(fetch, {
+        token: config.tmdbBearerToken,
+        baseUrl: config.tmdbBaseUrl,
+        movieId,
+      })
+      const trailer = selectPlayableMovieTrailer(payload?.results)
+
+      if (!trailer) {
+        response.status(404).json({ error: 'No playable YouTube trailer is available for this movie.' })
+        return
+      }
+
+      response.json({ trailer })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.put('/api/movies/:movieId/rating', async (request, response, next) => {
+    const movieId = Number.parseInt(request.params.movieId, 10)
+    const score = typeof request.body?.score === 'number' ? request.body.score : Number.NaN
+
+    if (!Number.isInteger(movieId)) {
+      response.status(400).json({ error: `Invalid movie id: ${request.params.movieId}` })
+      return
+    }
+
+    if (!isValidMovieRating(score)) {
+      response.status(400).json({ error: 'score must be between 1 and 5 in 0.5 increments' })
+      return
+    }
+
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+
+      if (!user) {
+        response.status(401).json({ error: 'Authentication required' })
+        return
+      }
+
+      const savedRating = await upsertMovieRatingForUser(pool, { username: user.username, movieId, score })
+
+      if (savedRating.status === 'missing_movie') {
+        response.status(404).json({ error: `Movie ${movieId} was not found in the local database` })
+        return
+      }
+
+      if (savedRating.status === 'missing_user') {
+        response.status(401).json({ error: 'Authentication required' })
+        return
+      }
+
+      const communityRating = await getMovieCommunityRating(pool, { movieId, username: user.username })
+      response.json({ communityRating: mapCommunityRating(communityRating) })
     } catch (error) {
       next(error)
     }
@@ -811,7 +933,31 @@ async function loadMovieReviews(movieId, loadRuntimeConfig) {
   }
 }
 
-function mapMovieDetail(movie, reviews = []) {
+function selectPlayableMovieTrailer(videos) {
+  if (!Array.isArray(videos)) {
+    return null
+  }
+
+  const youtubeTrailers = videos.filter((video) => (
+    video?.site === 'YouTube' &&
+    video?.type === 'Trailer' &&
+    typeof video.key === 'string' &&
+    video.key.trim()
+  ))
+  const selected = youtubeTrailers.find((video) => video.official === true) ?? youtubeTrailers[0]
+
+  if (!selected) {
+    return null
+  }
+
+  return {
+    provider: 'YouTube',
+    key: selected.key,
+    name: typeof selected.name === 'string' && selected.name.trim() ? selected.name : 'Movie trailer',
+  }
+}
+
+function mapMovieDetail(movie, reviews = [], communityRating = null) {
   return {
     id: movie.tmdb_id,
     title: movie.title,
@@ -843,7 +989,20 @@ function mapMovieDetail(movie, reviews = []) {
         }))
       : [],
     reviews: Array.isArray(reviews) ? reviews : [],
+    communityRating: mapCommunityRating(communityRating),
   }
+}
+
+function mapCommunityRating(communityRating) {
+  return {
+    average: typeof communityRating?.average === 'number' ? communityRating.average : null,
+    voteCount: Number.isInteger(communityRating?.voteCount) ? communityRating.voteCount : 0,
+    yourScore: typeof communityRating?.yourScore === 'number' ? communityRating.yourScore : null,
+  }
+}
+
+function isValidMovieRating(score) {
+  return Number.isFinite(score) && score >= 1 && score <= 5 && Number.isInteger(score * 2)
 }
 
 function mapMovieStats(stats) {
@@ -852,6 +1011,22 @@ function mapMovieStats(stats) {
     timeWatchedMinutes: stats?.timeWatchedMinutes ?? 0,
     watchlistCount: stats?.watchlistCount ?? 0,
   }
+}
+
+function mapTvStats(stats) {
+  return {
+    showsWatched: stats?.showsWatched ?? 0,
+    episodesWatched: stats?.episodesWatched ?? 0,
+    timeWatchedMinutes: stats?.timeWatchedMinutes ?? 0,
+    watchlistCount: stats?.watchlistCount ?? 0,
+  }
+}
+
+function readStatsPeriod(request, response) {
+  const period = request.query?.period ?? 'month'
+  if (['week', 'month', 'year'].includes(period)) return period
+  response.status(400).json({ error: 'period must be one of: week, month, year' })
+  return null
 }
 
 function normalizePersonProfile(person, credits) {

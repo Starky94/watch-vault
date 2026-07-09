@@ -18,7 +18,10 @@ function isSchemaSetupQuery(sql) {
     sql.includes('CREATE TABLE IF NOT EXISTS users') ||
     sql.includes('INSERT INTO users') ||
     sql.includes('CREATE TABLE IF NOT EXISTS watchlist_items') ||
-    sql.includes('CREATE TABLE IF NOT EXISTS watched_movies')
+    sql.includes('CREATE TABLE IF NOT EXISTS watched_movies') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS movie_ratings') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS tv_watchlist_items') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS watched_tv_shows')
   )
 }
 
@@ -114,6 +117,11 @@ test('ensureMoviesTable creates normalized cast tables and watchlist tables', as
   assert.equal(executedSql.some((sql) => sql.includes('INSERT INTO users')), true)
   assert.equal(executedSql.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS watchlist_items')), true)
   assert.equal(executedSql.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS watched_movies')), true)
+  assert.equal(executedSql.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS movie_ratings')), true)
+  assert.equal(executedSql.some((sql) => sql.includes('UNIQUE (user_id, movie_id)')), true)
+  assert.equal(executedSql.some((sql) => sql.includes('score >= 1.0 AND score <= 5.0')), true)
+  assert.equal(executedSql.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS tv_watchlist_items')), true)
+  assert.equal(executedSql.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS watched_tv_shows')), true)
   assert.equal(executedSql.some((sql) => sql.includes('UPDATE movies')), true)
 })
 
@@ -1574,6 +1582,11 @@ test('GET /api/movies/:movieId returns a mapped movie detail payload from the lo
         },
       ],
       reviews: [],
+      communityRating: {
+        average: null,
+        voteCount: 0,
+        yourScore: null,
+      },
     })
   } finally {
     await new Promise((resolve, reject) => {
@@ -3798,6 +3811,189 @@ test('GET /api/tv/top-rated forwards a requested limit', async () => {
       hasPreviousPage: true,
     })
   } finally {
+    await closeServer(server)
+  }
+})
+
+test('movie ratings update one user vote and return the combined WatchVault average', async () => {
+  const users = new Map([
+    ['florind', { id: 1, username: 'florind', full_name: 'Florin Druta' }],
+    ['alex', { id: 2, username: 'alex', full_name: 'Alex Morgan' }],
+  ])
+  const ratings = new Map()
+
+  const pool = {
+    async query(sql, params) {
+      if (isSchemaSetupQuery(sql)) return { rowCount: null }
+
+      if (sql.includes('INSERT INTO movie_ratings')) {
+        const [username, movieId, score] = params
+        const user = users.get(username)
+        if (!user) return { rows: [{ has_user: false, has_movie: false, score: null }] }
+        if (movieId !== 42) return { rows: [{ has_user: true, has_movie: false, score: null }] }
+        ratings.set(`${user.id}:${movieId}`, score)
+        return { rows: [{ has_user: true, has_movie: true, score }] }
+      }
+
+      if (sql.includes('AVG(movie_ratings.score)')) {
+        const [movieId, username] = params
+        if (movieId !== 42) return { rows: [{ has_movie: false, average: null, vote_count: 0, your_score: null }] }
+        const scores = [...ratings.entries()]
+          .filter(([key]) => key.endsWith(`:${movieId}`))
+          .map(([, score]) => score)
+        const user = users.get(username)
+        return {
+          rows: [{
+            has_movie: true,
+            average: scores.length ? scores.reduce((total, score) => total + score, 0) / scores.length : null,
+            vote_count: scores.length,
+            your_score: user ? ratings.get(`${user.id}:${movieId}`) ?? null : null,
+          }],
+        }
+      }
+
+      if (sql.includes('FROM users')) {
+        const user = users.get(params[0])
+        return { rows: user ? [user] : [] }
+      }
+
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+
+  const app = await createApp(pool)
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const baseUrl = `http://127.0.0.1:${address.port}/api/movies/42/rating`
+    const rate = (username, score) => fetch(baseUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'x-watchvault-username': username },
+      body: JSON.stringify({ score }),
+    })
+
+    let response = await rate('florind', 5)
+    assert.equal(response.status, 200)
+    assert.deepEqual((await response.json()).communityRating, { average: 5, voteCount: 1, yourScore: 5 })
+
+    response = await rate('alex', 4)
+    assert.equal(response.status, 200)
+    assert.deepEqual((await response.json()).communityRating, { average: 4.5, voteCount: 2, yourScore: 4 })
+
+    response = await rate('florind', 4.5)
+    assert.equal(response.status, 200)
+    assert.deepEqual((await response.json()).communityRating, { average: 4.25, voteCount: 2, yourScore: 4.5 })
+  } finally {
+    await closeServer(server)
+  }
+})
+
+test('movie rating endpoint rejects unauthenticated, invalid, and unknown-movie requests', async () => {
+  const pool = {
+    async query(sql, params) {
+      if (isSchemaSetupQuery(sql)) return { rowCount: null }
+      if (sql.includes('INSERT INTO movie_ratings')) return { rows: [{ has_user: true, has_movie: false, score: null }] }
+      if (sql.includes('FROM users')) {
+        return { rows: params[0] === 'florind' ? [{ id: 1, username: 'florind', full_name: 'Florin Druta' }] : [] }
+      }
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+
+  const app = await createApp(pool)
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const baseUrl = `http://127.0.0.1:${address.port}/api/movies`
+    let response = await fetch(`${baseUrl}/42/rating`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ score: 5 }) })
+    assert.equal(response.status, 401)
+
+    response = await fetch(`${baseUrl}/42/rating`, { method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-watchvault-username': 'florind' }, body: JSON.stringify({ score: 3.2 }) })
+    assert.equal(response.status, 400)
+
+    response = await fetch(`${baseUrl}/404/rating`, { method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-watchvault-username': 'florind' }, body: JSON.stringify({ score: 4 }) })
+    assert.equal(response.status, 404)
+  } finally {
+    await closeServer(server)
+  }
+})
+
+test('GET /api/movies/:movieId/trailer selects a transient playable YouTube trailer', async () => {
+  const nonSchemaQueries = []
+  const pool = {
+    async query(sql) {
+      if (isSchemaSetupQuery(sql)) return { rowCount: null }
+      nonSchemaQueries.push(sql)
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+  const originalFetch = global.fetch
+  global.fetch = async (url, options) => {
+    if (!String(url).startsWith('https://example.test')) {
+      return originalFetch(url, options)
+    }
+
+    const movieId = String(url).match(/\/movie\/(\d+)\/videos$/)?.[1]
+    if (movieId === '42') {
+      return {
+        ok: true,
+        async json() {
+          return {
+            results: [
+              { site: 'YouTube', type: 'Trailer', key: 'unofficial', name: 'Trailer', official: false },
+              { site: 'YouTube', type: 'Trailer', key: 'official', name: 'Official Trailer', official: true },
+            ],
+          }
+        },
+      }
+    }
+    if (movieId === '43') {
+      return {
+        ok: true,
+        async json() {
+          return { results: [{ site: 'YouTube', type: 'Trailer', key: 'fallback', name: 'Trailer 2', official: false }] }
+        },
+      }
+    }
+    if (movieId === '44') {
+      return { ok: true, async json() { return { results: [{ site: 'Vimeo', type: 'Trailer', key: 'not-playable' }] } } }
+    }
+    return { ok: false, status: 503, async text() { return 'TMDB unavailable' } }
+  }
+
+  const app = await createApp(pool, {
+    loadRuntimeConfig: () => ({ tmdbBearerToken: 'token', tmdbBaseUrl: 'https://example.test' }),
+  })
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const baseUrl = `http://127.0.0.1:${address.port}/api/movies`
+
+    let response = await originalFetch(`${baseUrl}/42/trailer`)
+    assert.equal(response.status, 200)
+    assert.deepEqual((await response.json()).trailer, { provider: 'YouTube', key: 'official', name: 'Official Trailer' })
+
+    response = await originalFetch(`${baseUrl}/43/trailer`)
+    assert.equal(response.status, 200)
+    assert.deepEqual((await response.json()).trailer, { provider: 'YouTube', key: 'fallback', name: 'Trailer 2' })
+
+    response = await originalFetch(`${baseUrl}/44/trailer`)
+    assert.equal(response.status, 404)
+    assert.match((await response.json()).error, /No playable YouTube trailer/)
+
+    response = await originalFetch(`${baseUrl}/45/trailer`)
+    assert.equal(response.status, 500)
+    assert.match((await response.json()).error, /TMDB request failed with status 503/)
+
+    response = await originalFetch(`${baseUrl}/not-a-number/trailer`)
+    assert.equal(response.status, 400)
+    assert.match((await response.json()).error, /Invalid movie id/)
+    assert.deepEqual(nonSchemaQueries, [])
+  } finally {
+    global.fetch = originalFetch
     await closeServer(server)
   }
 })
