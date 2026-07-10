@@ -7,13 +7,16 @@ import {
   countMovies,
   countStoredDataBytes,
   countTvShows,
+  ensureTvDetailTables,
   ensureMoviesTable,
   findUserByCredentials,
   findUserByUsername,
   getMovieStatsForUser,
   getMovieCommunityRating,
   getTvLibraryForUser,
+  getTvDetailForUser,
   getTvStatsForUser,
+  getTvShowByTmdbId,
   getMovieByTmdbId,
   listCoStarsForPerson,
   listGenres,
@@ -29,21 +32,25 @@ import {
   listTopRatedTvShows,
   listTopRatedMovies,
   listTvShows,
+  listTvWatchlistShowsForUser,
   syncPersonProfile,
   updateUserPassword,
   upsertMovieRatingForUser,
   toggleTvLibraryItemForUser,
+  updateTvEpisodeWatchStateForUser,
   listUpcomingTvShows,
   listUpcomingMovies,
 } from './database.js'
 import { adminJobs, findAdminJob, listAdminJobs } from './adminJobs.js'
-import { fetchMovieReviews, fetchMovieVideos, fetchPersonCombinedCredits, fetchPersonDetails } from './tmdbClient.js'
+import { fetchMovieReviews, fetchMovieVideos, fetchPersonCombinedCredits, fetchPersonDetails, fetchTvReviews } from './tmdbClient.js'
 import { hydrateMovieByTmdbId } from './movieImportService.js'
+import { hydrateTvShowByTmdbId } from './tvImportService.js'
 
 export async function createApp(pool, options = {}) {
   const {
     jobs = adminJobs,
     hydrateMovie = hydrateMovieByTmdbId,
+    hydrateTvShow = hydrateTvShowByTmdbId,
     loadRuntimeConfig = () =>
       loadConfig({
         requireDatabase: false,
@@ -432,8 +439,12 @@ export async function createApp(pool, options = {}) {
       if (!user) return response.status(401).json({ error: 'Authentication required' })
       const period = readStatsPeriod(request, response)
       if (!period) return
-      const [library, stats] = await Promise.all([getTvLibraryForUser(pool, user.username), getTvStatsForUser(pool, user.username, period)])
-      response.json({ watchedIds: library.watchedIds, watchlistIds: library.watchlistIds, stats: mapTvStats(stats) })
+      const [library, stats, watchlistShows] = await Promise.all([
+        getTvLibraryForUser(pool, user.username),
+        getTvStatsForUser(pool, user.username, period),
+        listTvWatchlistShowsForUser(pool, user.username),
+      ])
+      response.json({ watchedIds: library.watchedIds, watchlistIds: library.watchlistIds, watchlistShows: watchlistShows.map(mapWatchlistTvShow), stats: mapTvStats(stats) })
     } catch (error) {
       next(error)
     }
@@ -442,7 +453,7 @@ export async function createApp(pool, options = {}) {
   app.post('/api/tv/library/:kind', async (request, response, next) => {
     const kind = request.params.kind
     const showId = Number.parseInt(request.body?.showId, 10)
-    if (!['watched', 'watchlist'].includes(kind) || !Number.isInteger(showId)) return response.status(400).json({ error: 'kind and showId must be valid' })
+    if (kind !== 'watchlist' || !Number.isInteger(showId)) return response.status(400).json({ error: 'Only TV watchlist updates are supported' })
     try {
       const user = await getAuthenticatedUser(pool, request)
       if (!user) return response.status(401).json({ error: 'Authentication required' })
@@ -450,8 +461,12 @@ export async function createApp(pool, options = {}) {
       if (!period) return
       const result = await toggleTvLibraryItemForUser(pool, { username: user.username, showId, kind })
       if (result.status === 'missing_show') return response.status(404).json({ error: `TV show ${showId} was not found in the local database` })
-      const [library, stats] = await Promise.all([getTvLibraryForUser(pool, user.username), getTvStatsForUser(pool, user.username, period)])
-      response.json({ added: result.added, watchedIds: library.watchedIds, watchlistIds: library.watchlistIds, stats: mapTvStats(stats) })
+      const [library, stats, watchlistShows] = await Promise.all([
+        getTvLibraryForUser(pool, user.username),
+        getTvStatsForUser(pool, user.username, period),
+        listTvWatchlistShowsForUser(pool, user.username),
+      ])
+      response.json({ added: result.added, watchedIds: library.watchedIds, watchlistIds: library.watchlistIds, watchlistShows: watchlistShows.map(mapWatchlistTvShow), stats: mapTvStats(stats) })
     } catch (error) {
       next(error)
     }
@@ -653,6 +668,53 @@ export async function createApp(pool, options = {}) {
     } catch (error) {
       next(error)
     }
+  })
+
+  app.get('/api/tv/:showId/reviews', async (request, response, next) => {
+    const showId = Number.parseInt(request.params.showId, 10)
+    if (!Number.isInteger(showId)) return response.status(400).json({ error: `Invalid TV show id: ${request.params.showId}` })
+    try {
+      const config = loadRuntimeConfig()
+      const payload = await fetchTvReviews(fetch, { token: config.tmdbBearerToken, baseUrl: config.tmdbBaseUrl, tvShowId: showId })
+      response.json({ reviews: (Array.isArray(payload?.results) ? payload.results : []).map(mapTvReview) })
+    } catch (error) { next(error) }
+  })
+
+  app.get('/api/tv/:showId', async (request, response, next) => {
+    const showId = Number.parseInt(request.params.showId, 10)
+    if (!Number.isInteger(showId)) return response.status(400).json({ error: `Invalid TV show id: ${request.params.showId}` })
+    try {
+      await ensureTvDetailTables(pool)
+      let show = await getTvShowByTmdbId(pool, showId)
+      if (!show?.detail_hydrated_at) {
+        const config = loadRuntimeConfig()
+        await hydrateTvShow(pool, { token: config.tmdbBearerToken, baseUrl: config.tmdbBaseUrl, tvShowId: showId, importRank: show?.import_rank ?? 1 })
+      }
+      const user = await getAuthenticatedUser(pool, request)
+      const detail = await getTvDetailForUser(pool, { showId, username: user?.username ?? null })
+      if (!detail) return response.status(404).json({ error: `TV show ${showId} was not found` })
+      response.json({ show: mapTvDetail(detail) })
+    } catch (error) { next(error) }
+  })
+
+  app.post('/api/tv/episodes/:kind', async (request, response, next) => {
+    if (request.params.kind !== 'watched') return response.status(400).json({ error: 'Only watched episode updates are supported' })
+    const showId = Number.parseInt(request.body?.showId, 10)
+    const episodeId = Number.parseInt(request.body?.episodeId, 10)
+    const seasonId = Number.parseInt(request.body?.seasonId, 10)
+    const action = request.body?.action
+    const episodeActions = new Set(['mark_episode', 'unmark_episode', 'mark_through_episode'])
+    if (!Number.isInteger(showId) || typeof action !== 'string' || (!episodeActions.has(action) && action !== 'mark_season')) return response.status(400).json({ error: 'showId and action must be valid' })
+    if (episodeActions.has(action) && !Number.isInteger(episodeId)) return response.status(400).json({ error: 'episodeId must be valid for this action' })
+    if (action === 'mark_season' && !Number.isInteger(seasonId)) return response.status(400).json({ error: 'seasonId must be valid when marking a season' })
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const result = await updateTvEpisodeWatchStateForUser(pool, { username: user.username, showId, action, episodeId, seasonId })
+      if (result.status !== 'ok') return response.status(404).json({ error: action === 'mark_season' ? 'Season was not found' : 'Episode was not found' })
+      const detail = await getTvDetailForUser(pool, { showId, username: user.username })
+      response.json({ updatedCount: result.updatedCount, show: mapTvDetail(detail) })
+    } catch (error) { next(error) }
   })
 
   app.get('/api/movies/:movieId', async (request, response, next) => {
@@ -905,6 +967,44 @@ function mapFeaturedTvShow(show) {
     posterPath: show.poster_path,
     backdropPath: show.backdrop_path,
     episodesLabel: formatEpisodeCountLabel(details),
+  }
+}
+
+function mapTvDetail(detail) {
+  const { show, seasons, credits, recommendations, trailers } = detail
+  const payload = show.detail_payload ?? {}
+  return {
+    id: show.tmdb_id,
+    title: show.name,
+    overview: show.overview || 'Overview not available yet.',
+    firstAirDate: show.first_air_date,
+    genres: show.genre_names ?? [],
+    maturityRating: readTvMaturityRating(payload),
+    voteAverage: formatScore(show.vote_average),
+    voteCount: formatVoteCount(show.vote_count),
+    posterPath: show.poster_path,
+    backdropPath: show.backdrop_path,
+    status: payload.status || 'Unknown',
+    network: Array.isArray(payload.networks) ? payload.networks[0]?.name ?? null : null,
+    creators: Array.isArray(payload.created_by) ? payload.created_by.map((person) => person.name).filter(Boolean) : [],
+    languages: Array.isArray(payload.spoken_languages) ? payload.spoken_languages.map((language) => language.english_name || language.name).filter(Boolean) : [],
+    trailers: trailers.map((trailer) => ({ provider: trailer.provider, key: trailer.video_key, name: trailer.name })),
+    seasons: seasons.map((season) => ({
+      id: season.id, seasonNumber: season.season_number, name: season.name, overview: season.overview, airDate: season.air_date, posterPath: season.poster_path,
+      episodes: (season.episodes ?? []).map((episode) => ({ id: episode.id, tmdbId: episode.tmdb_id, episodeNumber: episode.episode_number, name: episode.name, overview: episode.overview, airDate: episode.air_date, runtimeMinutes: episode.runtime_minutes, stillPath: episode.still_path, isAired: Boolean(episode.is_aired), watched: Boolean(episode.watched) })),
+    })),
+    credits: credits.map((credit) => ({ id: credit.tmdb_person_id, name: credit.name, profilePath: credit.profile_path, role: credit.character_name || credit.job || credit.credit_type })),
+    recommendations: recommendations.map((item) => ({ id: item.recommended_tmdb_id, title: item.name, firstAirDate: item.first_air_date, posterPath: item.poster_path, rating: formatScore(item.vote_average) })),
+  }
+}
+
+function mapTvReview(review) {
+  return {
+    id: review?.id,
+    author: review?.author || 'WatchVault member',
+    rating: typeof review?.author_details?.rating === 'number' ? review.author_details.rating : null,
+    copy: review?.content || '',
+    date: review?.created_at ? new Date(review.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'Recently',
   }
 }
 
@@ -1401,6 +1501,20 @@ function mapWatchlistMovie(movie) {
     posterUrl: resolvePosterPath(movie.poster_path),
     backdropUrl: resolveBackdropPath(movie.backdrop_path),
     watchlistedAt: movie.watchlisted_at ?? null,
+  }
+}
+
+function mapWatchlistTvShow(show) {
+  return {
+    id: show.tmdb_id,
+    title: show.name,
+    year: formatMovieYear(show.first_air_date),
+    meta: Array.isArray(show.genre_names) && show.genre_names.length > 0 ? show.genre_names.join(', ') : 'Genre TBA',
+    rating: typeof show.vote_average === 'number' ? show.vote_average : 0,
+    type: 'TV Shows',
+    posterUrl: resolvePosterPath(show.poster_path),
+    backdropUrl: resolveBackdropPath(show.backdrop_path),
+    watchlistedAt: show.watchlisted_at ?? null,
   }
 }
 

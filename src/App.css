@@ -1787,6 +1787,30 @@
     linear-gradient(180deg, rgba(9, 12, 22, 0.98), rgba(8, 11, 20, 0.98));
 }
 
+.tv-detail-page .movie-detail-back { display: inline-grid; }
+.tv-episodes-header { align-items: center; gap: 14px; }
+.tv-episodes-header > div { display: grid; gap: 3px; }
+.tv-episodes-header h2 { margin: 0; }
+.tv-episodes-header span { color: var(--text-secondary); font-size: .84rem; }
+.tv-season-watch-button { margin-left: auto; white-space: nowrap; }
+.tv-season-watch-button:disabled { opacity: .55; cursor: not-allowed; }
+.tv-season-tabs { display: flex; flex-wrap: wrap; gap: 9px; margin: 0 0 16px; }
+.tv-episode-list { display: grid; gap: 2px; border: 1px solid rgba(255,255,255,.07); border-radius: 14px; overflow: hidden; }
+.tv-episode-row { display: grid; grid-template-columns: 116px minmax(0,1fr) 42px; gap: 14px; align-items: center; padding: 10px; background: rgba(9,13,25,.48); border-bottom: 1px solid rgba(255,255,255,.06); }
+.tv-episode-row:last-child { border-bottom: 0; }
+.tv-episode-still { height: 64px; border-radius: 9px; background: #20263b; overflow: hidden; }
+.tv-episode-still img { width: 100%; height: 100%; object-fit: cover; }
+.tv-episode-copy { min-width: 0; }
+.tv-episode-copy span, .tv-episode-copy p { color: var(--text-secondary); font-size: .8rem; }
+.tv-episode-copy h3 { margin: 2px 0; font-size: .94rem; }
+.tv-episode-copy p { margin: 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; }
+.tv-episode-toggle { display:grid; place-items:center; width:34px; height:34px; border-radius:50%; border:1px solid rgba(255,255,255,.32); background:transparent; color:transparent; cursor:pointer; }
+.tv-episode-toggle svg { width:17px; }.tv-episode-toggle.watched { color:#071210; background:#50d98d; border-color:#50d98d; }
+.tv-episode-toggle:disabled { cursor: not-allowed; opacity: .4; }
+.tv-recommendations { display:flex; gap:10px; overflow-x:auto; }.tv-recommendation { width:100px; flex:0 0 100px; padding:0; border:0; background:transparent; color:var(--text-primary); text-align:left; cursor:pointer; }.tv-recommendation img { width:100%; aspect-ratio:.68; object-fit:cover; border-radius:10px; background:#20263b; }.tv-recommendation span,.tv-recommendation small { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.tv-recommendation span { margin-top:6px; font-size:.82rem; }.tv-recommendation small { color:#ffd05e; }
+@media (max-width: 720px) { .tv-episode-row { grid-template-columns: 82px minmax(0,1fr) 34px; gap:9px; }.tv-episode-still { height:54px; }.tv-episode-copy p { display:none; }.tv-detail-page .movie-detail-back { margin-bottom:12px; } }
+@media (max-width: 520px) { .tv-episodes-header { align-items: flex-start; flex-direction: column; }.tv-season-watch-button { margin-left: 0; }.tv-catch-up-dialog .movie-rating-dialog-actions { flex-wrap: wrap; }.tv-catch-up-dialog .movie-rating-dialog-actions .primary-button { width: 100%; } }
+
 .person-detail-page {
   margin-top: 18px;
   padding: 24px;

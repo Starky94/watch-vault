@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createApp } from '../app.js'
-import { countMovies, countStoredDataBytes, ensureMoviesTable, listGenres, listMovies, listRecentlyReleasedMovies, listSimilarMovies, listTopRatedMovies, listTvShows, listUpcomingMovies } from '../database.js'
+import { countMovies, countStoredDataBytes, ensureMoviesTable, listGenres, listMovies, listRecentlyReleasedMovies, listSimilarMovies, listTopRatedMovies, listTvShows, listTvWatchlistShowsForUser, listUpcomingMovies, updateTvEpisodeWatchStateForUser } from '../database.js'
 
 function isSchemaSetupQuery(sql) {
   return (
@@ -3434,6 +3434,83 @@ test('listTvShows requests the top 30 TV titles ordered by popularity descending
   assert.deepEqual(executedParams, [30, 0])
 })
 
+test('listTvWatchlistShowsForUser returns a user’s saved shows in most-recent order', async () => {
+  let executedSql = ''
+  let executedParams = []
+  const rows = [{ tmdb_id: 88, name: 'Saved Show', genre_names: ['Drama'], watchlisted_at: '2026-07-10T12:00:00.000Z' }]
+  const pool = {
+    async query(sql, params) {
+      executedSql = sql
+      executedParams = params
+      return { rows }
+    },
+  }
+
+  const shows = await listTvWatchlistShowsForUser(pool, 'florind')
+
+  assert.deepEqual(shows, rows)
+  assert.match(executedSql, /FROM tv_watchlist_items/i)
+  assert.match(executedSql, /JOIN users ON users\.id = tv_watchlist_items\.user_id/i)
+  assert.match(executedSql, /JOIN tv_shows ON tv_shows\.id = tv_watchlist_items\.tv_show_id/i)
+  assert.match(executedSql, /ORDER BY tv_watchlist_items\.created_at DESC, tv_shows\.tmdb_id ASC/i)
+  assert.deepEqual(executedParams, ['florind'])
+})
+
+test('GET /api/tv/library returns saved TV show cards only for the authenticated user', async () => {
+  const savedShow = {
+    tmdb_id: 88,
+    name: 'Saved Show',
+    first_air_date: '2025-01-10',
+    poster_path: '/saved.jpg',
+    backdrop_path: '/saved-backdrop.jpg',
+    vote_average: 8.2,
+    genre_names: ['Drama'],
+    watchlisted_at: '2026-07-10T12:00:00.000Z',
+  }
+  const pool = {
+    async query(sql, params) {
+      if (isSchemaSetupQuery(sql)) return { rowCount: null }
+      if (sql.includes('FROM users') && sql.includes('full_name') && sql.includes('WHERE username = $1')) {
+        return { rows: params[0] === 'florind' ? [{ id: 1, username: 'florind', full_name: 'Florind' }] : [] }
+      }
+      if (sql.includes('COALESCE(ARRAY(SELECT tv_shows.tmdb_id FROM watched_tv_shows')) {
+        return { rows: [{ watched_ids: [], watchlist_ids: [88] }] }
+      }
+      if (sql.includes('watched_totals AS')) {
+        return { rows: [{ has_user: true, shows_watched: 0, episodes_watched: 0, time_watched_minutes: 0, watchlist_count: 1 }] }
+      }
+      if (sql.includes('FROM tv_watchlist_items') && sql.includes('watchlisted_at')) {
+        return { rows: params[0] === 'florind' ? [savedShow] : [] }
+      }
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+  const app = await createApp(pool)
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/tv/library`, { headers: { 'x-watchvault-username': 'florind' } })
+    const payload = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.deepEqual(payload.watchlistIds, [88])
+    assert.deepEqual(payload.watchlistShows, [{
+      id: 88,
+      title: 'Saved Show',
+      year: '2025',
+      meta: 'Drama',
+      rating: 8.2,
+      type: 'TV Shows',
+      posterUrl: 'https://image.tmdb.org/t/p/w500/saved.jpg',
+      backdropUrl: 'https://image.tmdb.org/t/p/w1280/saved-backdrop.jpg',
+      watchlistedAt: '2026-07-10T12:00:00.000Z',
+    }])
+  } finally {
+    await closeServer(server)
+  }
+})
+
 test('GET /api/tv returns the popular TV shows payload from the local DB', async () => {
   const rows = Array.from({ length: 10 }, (_, index) => ({
     tmdb_id: index + 1,
@@ -3490,6 +3567,69 @@ test('GET /api/tv returns the popular TV shows payload from the local DB', async
     assert.equal(payload.shows[0].name, 'Popular Show 1')
     assert.equal(payload.featuredShow.title, 'Popular Show 1')
     assert.equal(payload.featuredShow.episodesLabel, '8 Episodes')
+  } finally {
+    await closeServer(server)
+  }
+})
+
+test('GET /api/tv/:showId hydrates summary-only records once before returning detail relations', async () => {
+  const summaryOnlyShow = {
+    id: 41,
+    tmdb_id: 900,
+    name: 'Summary Only',
+    overview: 'A show awaiting detailed relations.',
+    first_air_date: '2025-01-01',
+    poster_path: '/poster.jpg',
+    backdrop_path: '/backdrop.jpg',
+    vote_average: 8.2,
+    vote_count: 400,
+    genre_names: ['Drama'],
+    detail_payload: { number_of_seasons: 1 },
+    import_rank: 5,
+  }
+  const hydratedShow = { ...summaryOnlyShow, detail_hydrated_at: '2026-07-10T12:00:00.000Z' }
+  let showLookupCount = 0
+  let hydrationOptions = null
+  let hydrationCalls = 0
+
+  const pool = {
+    async query(sql) {
+      if (isSchemaSetupQuery(sql) || sql.includes('ALTER TABLE tv_shows') || sql.includes('CREATE TABLE IF NOT EXISTS tv_') || sql.includes('CREATE TABLE IF NOT EXISTS watched_tv_episodes')) return { rowCount: null }
+      if (sql.includes('WHERE tv_shows.tmdb_id = $1')) {
+        showLookupCount += 1
+        return { rows: [showLookupCount === 1 ? summaryOnlyShow : hydratedShow] }
+      }
+      if (sql.includes('FROM tv_seasons')) {
+        return { rows: [{ id: 12, season_number: 1, name: 'Season 1', overview: null, air_date: '2025-01-01', poster_path: null, episodes: [{ id: 101, tmdb_id: 9901, episode_number: 1, name: 'Pilot', overview: null, air_date: '2025-01-01', runtime_minutes: 45, still_path: null, is_aired: true, watched: false }] }] }
+      }
+      if (sql.includes('FROM tv_show_credits')) return { rows: [{ tmdb_person_id: 1, name: 'Lead Actor', profile_path: null, character_name: 'Lead', job: null, credit_type: 'actor' }] }
+      if (sql.includes('FROM tv_recommendations')) return { rows: [{ recommended_tmdb_id: 901, name: 'Related Show', first_air_date: '2025-02-01', poster_path: null, vote_average: 7.4 }] }
+      if (sql.includes('FROM tv_trailers')) return { rows: [] }
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+
+  const app = await createApp(pool, {
+    loadRuntimeConfig: () => ({ tmdbBearerToken: 'token', tmdbBaseUrl: 'https://example.test' }),
+    hydrateTvShow: async (_pool, options) => { hydrationCalls += 1; hydrationOptions = options },
+  })
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/tv/900`)
+    const payload = await response.json()
+
+    assert.equal(response.status, 200, payload.error)
+    assert.equal(showLookupCount, 2)
+    assert.deepEqual(hydrationOptions, { token: 'token', baseUrl: 'https://example.test', tvShowId: 900, importRank: 5 })
+    assert.equal(payload.show.seasons[0].episodes[0].name, 'Pilot')
+    assert.equal(payload.show.credits[0].name, 'Lead Actor')
+    assert.equal(payload.show.recommendations[0].title, 'Related Show')
+
+    const repeatResponse = await fetch(`http://127.0.0.1:${address.port}/api/tv/900`)
+    assert.equal(repeatResponse.status, 200)
+    assert.equal(hydrationCalls, 1)
   } finally {
     await closeServer(server)
   }
@@ -3996,4 +4136,71 @@ test('GET /api/movies/:movieId/trailer selects a transient playable YouTube trai
     global.fetch = originalFetch
     await closeServer(server)
   }
+})
+
+function createTvWatchUpdatePool({ episode = { id: 301, season_number: 2, episode_number: 4 }, season = { id: 71 }, watched = 3, total = 3 } = {}) {
+  const calls = []
+  const client = {
+    async query(sql, params = []) {
+      calls.push({ sql, params })
+      if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [], rowCount: 0 }
+      if (sql.includes('FROM users u CROSS JOIN tv_shows t')) return { rows: [{ user_id: 11, show_id: 22 }] }
+      if (sql.includes('SELECT e.id, e.episode_number, s.season_number')) return { rows: [episode] }
+      if (sql.includes('SELECT id FROM tv_seasons')) return { rows: [season] }
+      if (sql.includes('episode_totals AS')) return { rows: [{ user_id: 11, show_id: 22, watched, total }] }
+      if (sql.includes('INSERT INTO watched_tv_episodes') || sql.includes('DELETE FROM watched_tv_episodes')) return { rows: [], rowCount: 2 }
+      if (sql.includes('INSERT INTO watched_tv_shows') || sql.includes('DELETE FROM watched_tv_shows')) return { rows: [], rowCount: 1 }
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+    release() {},
+  }
+  return { pool: { async connect() { return client } }, calls }
+}
+
+test('mark_through_episode marks only aired episodes through the selected episode across seasons', async () => {
+  const { pool, calls } = createTvWatchUpdatePool()
+
+  const result = await updateTvEpisodeWatchStateForUser(pool, {
+    username: 'florind', showId: 900, action: 'mark_through_episode', episodeId: 301,
+  })
+
+  assert.deepEqual(result, { status: 'ok', updatedCount: 2 })
+  const bulkInsert = calls.find(({ sql }) => sql.includes('s.season_number < $3'))
+  assert.ok(bulkInsert)
+  assert.match(bulkInsert.sql, /e\.air_date IS NULL OR e\.air_date <= CURRENT_DATE/i)
+  assert.match(bulkInsert.sql, /e\.episode_number <= \$4/i)
+  assert.match(bulkInsert.sql, /ON CONFLICT DO NOTHING/i)
+  assert.deepEqual(bulkInsert.params, [11, 22, 2, 4])
+})
+
+test('mark_season marks only aired episodes in the requested season', async () => {
+  const { pool, calls } = createTvWatchUpdatePool()
+
+  const result = await updateTvEpisodeWatchStateForUser(pool, {
+    username: 'florind', showId: 900, action: 'mark_season', seasonId: 71,
+  })
+
+  assert.deepEqual(result, { status: 'ok', updatedCount: 2 })
+  const bulkInsert = calls.find(({ sql }) => sql.includes('WHERE e.tv_season_id = $2'))
+  assert.ok(bulkInsert)
+  assert.match(bulkInsert.sql, /e\.air_date IS NULL OR e\.air_date <= CURRENT_DATE/i)
+  assert.match(bulkInsert.sql, /ON CONFLICT DO NOTHING/i)
+  assert.deepEqual(bulkInsert.params, [11, 71])
+})
+
+test('individual episode watch actions are idempotent and synchronize whole-show completion', async () => {
+  const { pool, calls } = createTvWatchUpdatePool({ watched: 2, total: 3 })
+
+  const markResult = await updateTvEpisodeWatchStateForUser(pool, {
+    username: 'florind', showId: 900, action: 'mark_episode', episodeId: 301,
+  })
+  const unmarkResult = await updateTvEpisodeWatchStateForUser(pool, {
+    username: 'florind', showId: 900, action: 'unmark_episode', episodeId: 301,
+  })
+
+  assert.deepEqual(markResult, { status: 'ok', updatedCount: 2 })
+  assert.deepEqual(unmarkResult, { status: 'ok', updatedCount: 2 })
+  assert.equal(calls.some(({ sql }) => sql.includes('VALUES ($1, $2) ON CONFLICT DO NOTHING')), true)
+  assert.equal(calls.some(({ sql }) => sql.includes('DELETE FROM watched_tv_episodes WHERE user_id = $1 AND tv_episode_id = $2')), true)
+  assert.equal(calls.filter(({ sql }) => sql.includes('DELETE FROM watched_tv_shows')).length, 2)
 })

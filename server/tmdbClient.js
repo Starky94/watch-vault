@@ -180,6 +180,31 @@ export async function fetchTvDetails(fetchImpl, options) {
   })
 }
 
+export async function fetchTvSeason(fetchImpl, options) {
+  const { token, baseUrl, tvShowId, seasonNumber } = options
+  return tmdbRequest(fetchImpl, { token, baseUrl, path: `tv/${tvShowId}/season/${seasonNumber}` })
+}
+
+export async function fetchTvCredits(fetchImpl, options) {
+  const { token, baseUrl, tvShowId } = options
+  return tmdbRequest(fetchImpl, { token, baseUrl, path: `tv/${tvShowId}/credits` })
+}
+
+export async function fetchTvVideos(fetchImpl, options) {
+  const { token, baseUrl, tvShowId } = options
+  return tmdbRequest(fetchImpl, { token, baseUrl, path: `tv/${tvShowId}/videos` })
+}
+
+export async function fetchTvRecommendations(fetchImpl, options) {
+  const { token, baseUrl, tvShowId } = options
+  return tmdbRequest(fetchImpl, { token, baseUrl, path: `tv/${tvShowId}/recommendations` })
+}
+
+export async function fetchTvReviews(fetchImpl, options) {
+  const { token, baseUrl, tvShowId } = options
+  return tmdbRequest(fetchImpl, { token, baseUrl, path: `tv/${tvShowId}/reviews` })
+}
+
 export async function fetchMovieCredits(fetchImpl, options) {
   const { token, baseUrl, movieId } = options
 

@@ -3,9 +3,13 @@ import {
   fetchOnTheAirTvShowsPage,
   fetchPopularTvShowsPage,
   fetchTvDetails,
+  fetchTvCredits,
   fetchTvGenres,
+  fetchTvRecommendations,
+  fetchTvSeason,
+  fetchTvVideos,
 } from './tmdbClient.js'
-import { ensureMoviesTable, listKnownTvGenreIds, upsertTvGenres, upsertTvShows } from './database.js'
+import { ensureMoviesTable, ensureTvDetailTables, listKnownTvGenreIds, replaceTvDetailRelations, upsertTvGenres, upsertTvShows } from './database.js'
 
 export function normalizeTvShow(show, index) {
   return {
@@ -333,6 +337,7 @@ export async function hydrateTvShowByTmdbId(pool, options) {
   const { fetchImpl = fetch, token, baseUrl, tvShowId, importRank = 1 } = options
 
   await ensureMoviesTable(pool)
+  await ensureTvDetailTables(pool)
 
   const detailPayload = await fetchTvDetails(fetchImpl, {
     token,
@@ -350,8 +355,64 @@ export async function hydrateTvShowByTmdbId(pool, options) {
     },
   ])
 
+  const [creditsPayload, videosPayload, recommendationsPayload] = await Promise.all([
+    fetchTvCredits(fetchImpl, { token, baseUrl, tvShowId }),
+    fetchTvVideos(fetchImpl, { token, baseUrl, tvShowId }),
+    fetchTvRecommendations(fetchImpl, { token, baseUrl, tvShowId }),
+  ])
+  const seasons = await Promise.all(
+    (Array.isArray(detailPayload?.seasons) ? detailPayload.seasons : [])
+      .filter((season) => Number.isInteger(season?.season_number) && season.season_number >= 0)
+      .map(async (season) => normalizeTvSeason(await fetchTvSeason(fetchImpl, { token, baseUrl, tvShowId, seasonNumber: season.season_number })))
+  )
+  await replaceTvDetailRelations(pool, tvShowId, {
+    seasons,
+    credits: normalizeTvCredits(creditsPayload),
+    trailers: normalizeTvVideos(videosPayload),
+    recommendations: normalizeTvRecommendations(recommendationsPayload),
+  })
+
   return {
     ...normalizedTvShow,
     detailPayload: sanitizedDetailPayload,
   }
+}
+
+function normalizeTvSeason(payload) {
+  return {
+    tmdbId: payload?.id ?? null,
+    seasonNumber: payload?.season_number,
+    name: payload?.name,
+    overview: payload?.overview ?? null,
+    airDate: payload?.air_date ?? null,
+    posterPath: payload?.poster_path ?? null,
+    episodeCount: Array.isArray(payload?.episodes) ? payload.episodes.length : payload?.episode_count ?? 0,
+    rawPayload: payload ?? {},
+    episodes: (Array.isArray(payload?.episodes) ? payload.episodes : []).map((episode) => ({
+      tmdbId: episode?.id ?? null,
+      episodeNumber: episode?.episode_number,
+      name: episode?.name,
+      overview: episode?.overview ?? null,
+      airDate: episode?.air_date ?? null,
+      runtimeMinutes: episode?.runtime ?? null,
+      stillPath: episode?.still_path ?? null,
+      rawPayload: episode ?? {},
+    })),
+  }
+}
+
+function normalizeTvCredits(payload) {
+  const cast = Array.isArray(payload?.cast) ? payload.cast.slice(0, 10) : []
+  const crew = Array.isArray(payload?.crew) ? payload.crew.filter((credit) => ['Creator', 'Executive Producer'].includes(credit?.job)).slice(0, 3) : []
+  return [...cast.map((credit, index) => ({ tmdbPersonId: credit.id, name: credit.name, profilePath: credit.profile_path, characterName: credit.character, billingOrder: credit.order ?? index, creditType: 'actor' })), ...crew.map((credit) => ({ tmdbPersonId: credit.id, name: credit.name, profilePath: credit.profile_path, department: credit.department, job: credit.job, creditType: 'crew' }))]
+}
+
+function normalizeTvVideos(payload) {
+  return (Array.isArray(payload?.results) ? payload.results : [])
+    .filter((video) => video?.site === 'YouTube' && video?.key)
+    .map((video) => ({ provider: video.site, key: video.key, name: video.name || 'Trailer', site: video.site, type: video.type, official: Boolean(video.official) }))
+}
+
+function normalizeTvRecommendations(payload) {
+  return (Array.isArray(payload?.results) ? payload.results : []).slice(0, 10).map((show, index) => ({ tmdbId: show.id, name: show.name || 'Untitled', firstAirDate: show.first_air_date ?? null, posterPath: show.poster_path ?? null, voteAverage: show.vote_average ?? null, displayOrder: index, rawPayload: show }))
 }

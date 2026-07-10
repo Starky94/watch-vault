@@ -255,6 +255,98 @@ export async function ensureMoviesTable(pool) {
       UNIQUE (user_id, tv_show_id)
     )
   `)
+
+}
+
+export async function ensureTvDetailTables(pool) {
+  await pool.query(`
+    ALTER TABLE tv_shows
+    ADD COLUMN IF NOT EXISTS detail_hydrated_at TIMESTAMPTZ
+  `)
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS tv_seasons (
+      id BIGSERIAL PRIMARY KEY,
+      tv_show_id BIGINT NOT NULL REFERENCES tv_shows(id) ON DELETE CASCADE,
+      tmdb_id INTEGER,
+      season_number INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      overview TEXT,
+      air_date DATE,
+      poster_path TEXT,
+      episode_count INTEGER NOT NULL DEFAULT 0,
+      raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (tv_show_id, season_number)
+    )
+  `)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS tv_episodes (
+      id BIGSERIAL PRIMARY KEY,
+      tv_season_id BIGINT NOT NULL REFERENCES tv_seasons(id) ON DELETE CASCADE,
+      tmdb_id INTEGER,
+      episode_number INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      overview TEXT,
+      air_date DATE,
+      runtime_minutes INTEGER,
+      still_path TEXT,
+      raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (tv_season_id, episode_number)
+    )
+  `)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS tv_show_credits (
+      id BIGSERIAL PRIMARY KEY,
+      tv_show_id BIGINT NOT NULL REFERENCES tv_shows(id) ON DELETE CASCADE,
+      tmdb_person_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      profile_path TEXT,
+      character_name TEXT,
+      department TEXT,
+      job TEXT,
+      billing_order INTEGER,
+      credit_type TEXT NOT NULL,
+      UNIQUE (tv_show_id, tmdb_person_id, credit_type)
+    )
+  `)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS tv_recommendations (
+      id BIGSERIAL PRIMARY KEY,
+      tv_show_id BIGINT NOT NULL REFERENCES tv_shows(id) ON DELETE CASCADE,
+      recommended_tmdb_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      first_air_date DATE,
+      poster_path TEXT,
+      vote_average DOUBLE PRECISION,
+      display_order INTEGER NOT NULL,
+      raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      UNIQUE (tv_show_id, recommended_tmdb_id)
+    )
+  `)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS tv_trailers (
+      id BIGSERIAL PRIMARY KEY,
+      tv_show_id BIGINT NOT NULL REFERENCES tv_shows(id) ON DELETE CASCADE,
+      provider TEXT NOT NULL,
+      video_key TEXT NOT NULL,
+      name TEXT NOT NULL,
+      site TEXT NOT NULL,
+      video_type TEXT,
+      is_official BOOLEAN NOT NULL DEFAULT FALSE,
+      UNIQUE (tv_show_id, provider, video_key)
+    )
+  `)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS watched_tv_episodes (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      tv_episode_id BIGINT NOT NULL REFERENCES tv_episodes(id) ON DELETE CASCADE,
+      watched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (user_id, tv_episode_id)
+    )
+  `)
 }
 
 const demoUsers = [
@@ -1443,6 +1535,184 @@ export async function listUpcomingTvShows(pool, options = {}) {
   return result.rows
 }
 
+export async function getTvShowByTmdbId(pool, tmdbId) {
+  const result = await pool.query(
+    `SELECT tv_shows.*, COALESCE(ARRAY_REMOVE(ARRAY_AGG(tv_genres.name ORDER BY genre_ids.ordinality), NULL), '{}') AS genre_names
+     FROM tv_shows
+     LEFT JOIN LATERAL UNNEST(tv_shows.genre_ids) WITH ORDINALITY AS genre_ids(tmdb_genre_id, ordinality) ON TRUE
+     LEFT JOIN tv_genres ON tv_genres.tmdb_genre_id = genre_ids.tmdb_genre_id
+     WHERE tv_shows.tmdb_id = $1 OR tv_shows.id = $1
+     GROUP BY tv_shows.id
+     ORDER BY CASE WHEN tv_shows.tmdb_id = $1 THEN 0 ELSE 1 END
+     LIMIT 1`,
+    [tmdbId]
+  )
+  return result.rows[0] ?? null
+}
+
+export async function replaceTvDetailRelations(pool, tmdbId, detail = {}) {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const showResult = await client.query('SELECT id FROM tv_shows WHERE tmdb_id = $1 LIMIT 1', [tmdbId])
+    const showId = showResult.rows[0]?.id
+    if (!showId) throw new Error(`TV show ${tmdbId} is missing after hydration`)
+    await client.query('DELETE FROM tv_show_credits WHERE tv_show_id = $1', [showId])
+    await client.query('DELETE FROM tv_recommendations WHERE tv_show_id = $1', [showId])
+    await client.query('DELETE FROM tv_trailers WHERE tv_show_id = $1', [showId])
+    for (const credit of detail.credits ?? []) {
+      if (!Number.isInteger(credit.tmdbPersonId)) continue
+      await client.query(`INSERT INTO tv_show_credits (tv_show_id, tmdb_person_id, name, profile_path, character_name, department, job, billing_order, credit_type)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (tv_show_id, tmdb_person_id, credit_type) DO UPDATE SET
+        name=EXCLUDED.name, profile_path=EXCLUDED.profile_path, character_name=EXCLUDED.character_name, department=EXCLUDED.department, job=EXCLUDED.job, billing_order=EXCLUDED.billing_order`,
+      [showId, credit.tmdbPersonId, credit.name, credit.profilePath ?? null, credit.characterName ?? null, credit.department ?? null, credit.job ?? null, credit.billingOrder ?? null, credit.creditType])
+    }
+    for (const item of detail.recommendations ?? []) {
+      if (!Number.isInteger(item.tmdbId)) continue
+      await client.query(`INSERT INTO tv_recommendations (tv_show_id, recommended_tmdb_id, name, first_air_date, poster_path, vote_average, display_order, raw_payload)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb) ON CONFLICT (tv_show_id, recommended_tmdb_id) DO UPDATE SET
+        name=EXCLUDED.name, first_air_date=EXCLUDED.first_air_date, poster_path=EXCLUDED.poster_path, vote_average=EXCLUDED.vote_average, display_order=EXCLUDED.display_order, raw_payload=EXCLUDED.raw_payload`,
+      [showId, item.tmdbId, item.name, item.firstAirDate ?? null, item.posterPath ?? null, item.voteAverage ?? null, item.displayOrder, JSON.stringify(item.rawPayload ?? {})])
+    }
+    for (const trailer of detail.trailers ?? []) {
+      if (!trailer.key) continue
+      await client.query(`INSERT INTO tv_trailers (tv_show_id, provider, video_key, name, site, video_type, is_official)
+        VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (tv_show_id, provider, video_key) DO UPDATE SET name=EXCLUDED.name, site=EXCLUDED.site, video_type=EXCLUDED.video_type, is_official=EXCLUDED.is_official`,
+      [showId, trailer.provider, trailer.key, trailer.name, trailer.site, trailer.type ?? null, Boolean(trailer.official)])
+    }
+    for (const season of detail.seasons ?? []) {
+      if (!Number.isInteger(season.seasonNumber)) continue
+      const seasonResult = await client.query(`INSERT INTO tv_seasons (tv_show_id, tmdb_id, season_number, name, overview, air_date, poster_path, episode_count, raw_payload, updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,NOW()) ON CONFLICT (tv_show_id, season_number) DO UPDATE SET
+        tmdb_id=EXCLUDED.tmdb_id, name=EXCLUDED.name, overview=EXCLUDED.overview, air_date=EXCLUDED.air_date, poster_path=EXCLUDED.poster_path, episode_count=EXCLUDED.episode_count, raw_payload=EXCLUDED.raw_payload, updated_at=NOW() RETURNING id`,
+      [showId, season.tmdbId ?? null, season.seasonNumber, season.name || `Season ${season.seasonNumber}`, season.overview ?? null, season.airDate ?? null, season.posterPath ?? null, season.episodeCount ?? 0, JSON.stringify(season.rawPayload ?? {})])
+      const seasonId = seasonResult.rows[0].id
+      if (Array.isArray(season.episodes)) {
+        for (const episode of season.episodes) {
+          if (!Number.isInteger(episode.episodeNumber)) continue
+          await client.query(`INSERT INTO tv_episodes (tv_season_id, tmdb_id, episode_number, name, overview, air_date, runtime_minutes, still_path, raw_payload, updated_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,NOW())
+            ON CONFLICT (tv_season_id, episode_number) DO UPDATE SET
+              tmdb_id=EXCLUDED.tmdb_id, name=EXCLUDED.name, overview=EXCLUDED.overview,
+              air_date=EXCLUDED.air_date, runtime_minutes=EXCLUDED.runtime_minutes,
+              still_path=EXCLUDED.still_path, raw_payload=EXCLUDED.raw_payload, updated_at=NOW()`,
+          [seasonId, episode.tmdbId ?? null, episode.episodeNumber, episode.name || `Episode ${episode.episodeNumber}`, episode.overview ?? null, episode.airDate ?? null, episode.runtimeMinutes ?? null, episode.stillPath ?? null, JSON.stringify(episode.rawPayload ?? {})])
+        }
+      }
+    }
+    await client.query('UPDATE tv_shows SET detail_hydrated_at=NOW() WHERE id=$1', [showId])
+    await client.query('COMMIT')
+  } catch (error) { await client.query('ROLLBACK'); throw error } finally { client.release() }
+}
+
+export async function getTvDetailForUser(pool, { showId, username = null }) {
+  const show = await getTvShowByTmdbId(pool, showId)
+  if (!show) return null
+  const [seasons, credits, recommendations, trailers] = await Promise.all([
+    pool.query(`SELECT s.*, COALESCE(json_agg(json_build_object('id', e.id, 'tmdb_id', e.tmdb_id, 'episode_number', e.episode_number, 'name', e.name, 'overview', e.overview, 'air_date', e.air_date, 'runtime_minutes', e.runtime_minutes, 'still_path', e.still_path, 'is_aired', e.air_date IS NULL OR e.air_date <= CURRENT_DATE, 'watched', w.id IS NOT NULL) ORDER BY e.episode_number) FILTER (WHERE e.id IS NOT NULL), '[]') AS episodes FROM tv_seasons s LEFT JOIN tv_episodes e ON e.tv_season_id=s.id LEFT JOIN watched_tv_episodes w ON w.tv_episode_id=e.id AND w.user_id=(SELECT id FROM users WHERE username=$2) WHERE s.tv_show_id=$1 GROUP BY s.id ORDER BY s.season_number`, [show.id, username]),
+    pool.query('SELECT * FROM tv_show_credits WHERE tv_show_id = $1 ORDER BY credit_type, billing_order NULLS LAST LIMIT 12', [show.id]),
+    pool.query('SELECT * FROM tv_recommendations WHERE tv_show_id = $1 ORDER BY display_order LIMIT 10', [show.id]),
+    pool.query('SELECT * FROM tv_trailers WHERE tv_show_id = $1 ORDER BY is_official DESC LIMIT 5', [show.id]),
+  ])
+  return { show, seasons: seasons.rows, credits: credits.rows, recommendations: recommendations.rows, trailers: trailers.rows }
+}
+
+export async function updateTvEpisodeWatchStateForUser(pool, { username, showId, action, episodeId = null, seasonId = null }) {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const contextResult = await client.query(
+      `SELECT u.id AS user_id, t.id AS show_id
+       FROM users u CROSS JOIN tv_shows t
+       WHERE u.username = $1 AND (t.tmdb_id = $2 OR t.id = $2)
+       LIMIT 1`,
+      [username, showId]
+    )
+    const context = contextResult.rows[0]
+    if (!context) {
+      await client.query('ROLLBACK')
+      return { status: 'missing_user_or_show' }
+    }
+
+    let updatedCount = 0
+    if (action === 'mark_episode' || action === 'unmark_episode' || action === 'mark_through_episode') {
+      const episodeResult = await client.query(
+        `SELECT e.id, e.episode_number, s.season_number
+         FROM tv_episodes e
+         JOIN tv_seasons s ON s.id = e.tv_season_id
+         WHERE e.id = $1 AND s.tv_show_id = $2 AND (e.air_date IS NULL OR e.air_date <= CURRENT_DATE)
+         LIMIT 1`,
+        [episodeId, context.show_id]
+      )
+      const episode = episodeResult.rows[0]
+      if (!episode) {
+        await client.query('ROLLBACK')
+        return { status: 'missing_episode' }
+      }
+
+      let result
+      if (action === 'unmark_episode') {
+        result = await client.query(
+          'DELETE FROM watched_tv_episodes WHERE user_id = $1 AND tv_episode_id = $2',
+          [context.user_id, episode.id]
+        )
+      } else if (action === 'mark_episode') {
+        result = await client.query(
+          'INSERT INTO watched_tv_episodes (user_id, tv_episode_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+          [context.user_id, episode.id]
+        )
+      } else {
+        result = await client.query(
+          `INSERT INTO watched_tv_episodes (user_id, tv_episode_id)
+           SELECT $1, e.id
+           FROM tv_episodes e
+           JOIN tv_seasons s ON s.id = e.tv_season_id
+           WHERE s.tv_show_id = $2
+             AND (e.air_date IS NULL OR e.air_date <= CURRENT_DATE)
+             AND (s.season_number < $3 OR (s.season_number = $3 AND e.episode_number <= $4))
+           ON CONFLICT DO NOTHING`,
+          [context.user_id, context.show_id, episode.season_number, episode.episode_number]
+        )
+      }
+      updatedCount = result.rowCount ?? 0
+    } else if (action === 'mark_season') {
+      const seasonResult = await client.query(
+        'SELECT id FROM tv_seasons WHERE id = $1 AND tv_show_id = $2 LIMIT 1',
+        [seasonId, context.show_id]
+      )
+      const season = seasonResult.rows[0]
+      if (!season) {
+        await client.query('ROLLBACK')
+        return { status: 'missing_season' }
+      }
+      const result = await client.query(
+        `INSERT INTO watched_tv_episodes (user_id, tv_episode_id)
+         SELECT $1, e.id
+         FROM tv_episodes e
+         WHERE e.tv_season_id = $2 AND (e.air_date IS NULL OR e.air_date <= CURRENT_DATE)
+         ON CONFLICT DO NOTHING`,
+        [context.user_id, season.id]
+      )
+      updatedCount = result.rowCount ?? 0
+    } else {
+      await client.query('ROLLBACK')
+      return { status: 'invalid_action' }
+    }
+
+    await syncTvShowWatchCompletion(client, username, showId)
+    await client.query('COMMIT')
+    return { status: 'ok', updatedCount }
+  } catch (error) { await client.query('ROLLBACK'); throw error } finally { client.release() }
+}
+
+async function syncTvShowWatchCompletion(client, username, showId) {
+  const result = await client.query(`WITH selected_user AS (SELECT id FROM users WHERE username=$1), selected_show AS (SELECT id FROM tv_shows WHERE tmdb_id=$2 OR id=$2 LIMIT 1), episode_totals AS (SELECT COUNT(*)::integer total, COUNT(w.id)::integer watched FROM tv_episodes e JOIN tv_seasons s ON s.id=e.tv_season_id LEFT JOIN watched_tv_episodes w ON w.tv_episode_id=e.id AND w.user_id=(SELECT id FROM selected_user) WHERE s.tv_show_id=(SELECT id FROM selected_show) AND (e.air_date IS NULL OR e.air_date <= CURRENT_DATE)) SELECT (SELECT id FROM selected_user) user_id, (SELECT id FROM selected_show) show_id, total, watched FROM episode_totals`, [username, showId])
+  const row = result.rows[0]
+  if (!row?.user_id || !row?.show_id) return
+  if (row.total > 0 && row.total === row.watched) await client.query('INSERT INTO watched_tv_shows (user_id,tv_show_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', [row.user_id, row.show_id])
+  else await client.query('DELETE FROM watched_tv_shows WHERE user_id=$1 AND tv_show_id=$2', [row.user_id, row.show_id])
+}
+
 export async function listSimilarMovies(pool, tmdbId, options = {}) {
   const { limit = 10 } = options
   const normalizedLimit = Number.isInteger(limit) ? Math.max(1, Math.min(limit, 10)) : 10
@@ -2005,22 +2275,51 @@ export async function getTvLibraryForUser(pool, username) {
   return row ? { status: 'ok', watchedIds: row.watched_ids.map(Number), watchlistIds: row.watchlist_ids.map(Number) } : { status: 'missing_user' }
 }
 
+export async function listTvWatchlistShowsForUser(pool, username) {
+  const result = await pool.query(
+    `
+      SELECT
+        tv_shows.tmdb_id,
+        tv_shows.name,
+        tv_shows.first_air_date,
+        tv_shows.poster_path,
+        tv_shows.backdrop_path,
+        tv_shows.vote_average,
+        COALESCE(
+          ARRAY_REMOVE(ARRAY_AGG(tv_genres.name ORDER BY genre_ids.ordinality), NULL),
+          '{}'
+        ) AS genre_names,
+        tv_watchlist_items.created_at AS watchlisted_at
+      FROM tv_watchlist_items
+      JOIN users ON users.id = tv_watchlist_items.user_id
+      JOIN tv_shows ON tv_shows.id = tv_watchlist_items.tv_show_id
+      LEFT JOIN LATERAL UNNEST(tv_shows.genre_ids) WITH ORDINALITY AS genre_ids(tmdb_genre_id, ordinality) ON TRUE
+      LEFT JOIN tv_genres ON tv_genres.tmdb_genre_id = genre_ids.tmdb_genre_id
+      WHERE users.username = $1
+      GROUP BY tv_shows.id, tv_watchlist_items.created_at
+      ORDER BY tv_watchlist_items.created_at DESC, tv_shows.tmdb_id ASC
+    `,
+    [username]
+  )
+
+  return result.rows
+}
+
 export async function getTvStatsForUser(pool, username, period = 'month') {
   const result = await pool.query(
     `
       WITH selected_user AS (SELECT id FROM users WHERE username = $1 LIMIT 1),
       watched_totals AS (
         SELECT
-          COUNT(*)::INTEGER AS shows_watched,
-          COALESCE(SUM(COALESCE(NULLIF(tv_shows.detail_payload->>'number_of_episodes', '')::INTEGER, 0)), 0)::INTEGER AS episodes_watched,
-          COALESCE(SUM(
-            COALESCE(NULLIF(tv_shows.detail_payload->>'number_of_episodes', '')::INTEGER, 0) *
-            COALESCE(NULLIF(tv_shows.detail_payload->'episode_run_time'->>0, '')::INTEGER, 0)
-          ), 0)::INTEGER AS time_watched_minutes
-        FROM watched_tv_shows
-        JOIN tv_shows ON tv_shows.id = watched_tv_shows.tv_show_id
-        WHERE watched_tv_shows.user_id IN (SELECT id FROM selected_user)
-          AND watched_tv_shows.created_at >= date_trunc($2, NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+          COUNT(DISTINCT CASE WHEN watched_tv_shows.id IS NOT NULL THEN watched_tv_shows.tv_show_id END)::INTEGER AS shows_watched,
+          COUNT(watched_tv_episodes.id)::INTEGER AS episodes_watched,
+          COALESCE(SUM(tv_episodes.runtime_minutes), 0)::INTEGER AS time_watched_minutes
+        FROM watched_tv_episodes
+        JOIN tv_episodes ON tv_episodes.id = watched_tv_episodes.tv_episode_id
+        JOIN tv_seasons ON tv_seasons.id = tv_episodes.tv_season_id
+        LEFT JOIN watched_tv_shows ON watched_tv_shows.tv_show_id = tv_seasons.tv_show_id AND watched_tv_shows.user_id = watched_tv_episodes.user_id
+        WHERE watched_tv_episodes.user_id IN (SELECT id FROM selected_user)
+          AND watched_tv_episodes.watched_at >= date_trunc($2, NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
       ),
       watchlist_totals AS (
         SELECT COUNT(*)::INTEGER AS watchlist_count
@@ -2042,7 +2341,8 @@ export async function getTvStatsForUser(pool, username, period = 'month') {
 }
 
 export async function toggleTvLibraryItemForUser(pool, { username, showId, kind }) {
-  const table = kind === 'watched' ? 'watched_tv_shows' : 'tv_watchlist_items'
+  if (kind !== 'watchlist') return { status: 'unsupported_kind' }
+  const table = 'tv_watchlist_items'
   const column = 'tv_show_id'
   const result = await pool.query(
     `
@@ -2064,16 +2364,6 @@ export async function toggleTvLibraryItemForUser(pool, { username, showId, kind 
   const row = result.rows[0] ?? null
   if (!row?.has_user) return { status: 'missing_user' }
   if (!row.has_show) return { status: 'missing_show' }
-  if (kind === 'watched' && row.added) {
-    await pool.query(
-      `
-        DELETE FROM tv_watchlist_items
-        WHERE user_id IN (SELECT id FROM users WHERE username = $1)
-          AND tv_show_id IN (SELECT id FROM tv_shows WHERE tmdb_id = $2 OR id = $2)
-      `,
-      [username, showId]
-    )
-  }
   return { status: 'ok', added: Boolean(row.added), removed: Boolean(row.removed) }
 }
 
