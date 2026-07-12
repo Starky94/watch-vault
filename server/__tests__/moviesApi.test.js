@@ -3590,7 +3590,7 @@ test('listTvWatchlistShowsForUser returns a user’s saved shows in most-recent 
   assert.deepEqual(executedParams, ['florind'])
 })
 
-test('listContinueWatchingTvShowsForUser selects the five most recently watched in-progress shows', async () => {
+test('listContinueWatchingTvShowsForUser selects paginated, most recently watched in-progress shows', async () => {
   let executedSql = ''
   let executedParams = []
   const rows = [{ tmdb_id: 91, name: 'In Progress', watched_episode_count: 3, aired_episode_count: 8 }]
@@ -3602,15 +3602,16 @@ test('listContinueWatchingTvShowsForUser selects the five most recently watched 
     },
   }
 
-  const shows = await listContinueWatchingTvShowsForUser(pool, 'florind')
+  const shows = await listContinueWatchingTvShowsForUser(pool, 'florind', { limit: 30, page: 2 })
 
   assert.deepEqual(shows, rows)
   assert.match(executedSql, /HAVING COUNT\(watched_tv_episodes\.id\) > 0/i)
   assert.match(executedSql, /COUNT\(watched_tv_episodes\.id\) < COUNT\(\*\)/i)
   assert.match(executedSql, /MAX\(watched_tv_episodes\.watched_at\) AS last_watched_at/i)
   assert.match(executedSql, /ORDER BY episode_progress\.last_watched_at DESC, tv_shows\.tmdb_id ASC/i)
-  assert.match(executedSql, /LIMIT 5/i)
-  assert.deepEqual(executedParams, ['florind'])
+  assert.match(executedSql, /LIMIT \$2/i)
+  assert.match(executedSql, /OFFSET \$3/i)
+  assert.deepEqual(executedParams, ['florind', 30, 30])
 })
 
 test('listLatestEpisodeTvShows selects one aired episode per show and prioritizes date then popularity', async () => {
@@ -3704,6 +3705,7 @@ test('GET /api/tv/library returns mapped in-progress TV shows for Continue Watch
     latest_watched_episode_number: 4,
     last_watched_at: '2026-07-12T10:00:00.000Z',
   }
+  let continueWatchingParams = []
   const pool = {
     async query(sql, params) {
       if (isSchemaSetupQuery(sql)) return { rowCount: null }
@@ -3711,7 +3713,10 @@ test('GET /api/tv/library returns mapped in-progress TV shows for Continue Watch
       if (sql.includes('COALESCE(ARRAY(SELECT tv_shows.tmdb_id FROM watched_tv_shows')) return { rows: [{ watched_ids: [], watchlist_ids: [] }] }
       if (sql.includes('watched_totals AS')) return { rows: [{ has_user: true, shows_watched: 0, episodes_watched: 3, time_watched_minutes: 120, watchlist_count: 0 }] }
       if (sql.includes('FROM tv_watchlist_items') && sql.includes('watchlisted_at')) return { rows: [] }
-      if (sql.includes('WITH episode_progress AS')) return { rows: params[0] === 'florind' ? [continueWatchingShow] : [] }
+      if (sql.includes('WITH episode_progress AS')) {
+        continueWatchingParams = params
+        return { rows: params[0] === 'florind' ? [continueWatchingShow] : [] }
+      }
       throw new Error(`Unexpected query: ${sql}`)
     },
   }
@@ -3724,6 +3729,7 @@ test('GET /api/tv/library returns mapped in-progress TV shows for Continue Watch
     const payload = await response.json()
 
     assert.equal(response.status, 200)
+    assert.deepEqual(continueWatchingParams, ['florind', 5, 0])
     assert.deepEqual(payload.continueWatchingShows, [{
       id: 91,
       title: 'In Progress',
@@ -3735,6 +3741,71 @@ test('GET /api/tv/library returns mapped in-progress TV shows for Continue Watch
       latestWatchedEpisodeLabel: 'S2 E4',
       lastWatchedAt: '2026-07-12T10:00:00.000Z',
     }])
+  } finally {
+    await closeServer(server)
+  }
+})
+
+test('GET /api/tv/continue-watching returns paginated mapped in-progress shows', async () => {
+  const continueWatchingShow = {
+    tmdb_id: 91,
+    name: 'In Progress',
+    poster_path: '/progress.jpg',
+    backdrop_path: '/progress-backdrop.jpg',
+    watched_episode_count: 3,
+    aired_episode_count: 8,
+    latest_watched_season_number: 2,
+    latest_watched_episode_number: 4,
+    last_watched_at: '2026-07-12T10:00:00.000Z',
+  }
+  let continueWatchingParams = []
+  const pool = {
+    async query(sql, params) {
+      if (isSchemaSetupQuery(sql)) return { rowCount: null }
+      if (sql.includes('FROM users') && sql.includes('full_name') && sql.includes('WHERE username = $1')) return { rows: [{ id: 1, username: 'florind', full_name: 'Florind' }] }
+      if (sql.includes('WITH episode_progress AS')) {
+        continueWatchingParams = params
+        return { rows: [continueWatchingShow] }
+      }
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+  const app = await createApp(pool)
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/tv/continue-watching?page=2&limit=30`, { headers: { 'x-watchvault-username': 'florind' } })
+    const payload = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.deepEqual(continueWatchingParams, ['florind', 31, 31])
+    assert.deepEqual(payload.pagination, { page: 2, pageSize: 30, hasNextPage: false, hasPreviousPage: true })
+    assert.deepEqual(payload.shows, [{
+      id: 91,
+      title: 'In Progress',
+      posterUrl: 'https://image.tmdb.org/t/p/w500/progress.jpg',
+      backdropUrl: 'https://image.tmdb.org/t/p/w1280/progress-backdrop.jpg',
+      watchedEpisodeCount: 3,
+      airedEpisodeCount: 8,
+      progress: 38,
+      latestWatchedEpisodeLabel: 'S2 E4',
+      lastWatchedAt: '2026-07-12T10:00:00.000Z',
+    }])
+  } finally {
+    await closeServer(server)
+  }
+})
+
+test('GET /api/tv/continue-watching requires authentication', async () => {
+  const pool = { async query(sql) { if (isSchemaSetupQuery(sql)) return { rowCount: null }; throw new Error(`Unexpected query: ${sql}`) } }
+  const app = await createApp(pool)
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/tv/continue-watching`)
+    assert.equal(response.status, 401)
   } finally {
     await closeServer(server)
   }

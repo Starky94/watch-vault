@@ -37,6 +37,7 @@ const appScreens = {
 const routeKinds = {
   home: 'home',
   search: 'search',
+  continueWatching: 'continueWatching',
   movieDetail: 'movieDetail',
   tvDetail: 'tvDetail',
   personDetail: 'personDetail',
@@ -220,6 +221,8 @@ function App() {
   const [statsPeriod, setStatsPeriod] = useState('month')
   const [tvStatsState, setTvStatsState] = useState({ status: 'idle', stats: emptyTvStats, error: '' })
   const [continueWatchingState, setContinueWatchingState] = useState({ status: 'idle', shows: [], error: '' })
+  const [continueWatchingPage, setContinueWatchingPage] = useState(1)
+  const [continueWatchingPageState, setContinueWatchingPageState] = useState(() => createTvCollectionState())
   const [selectedTvShowId, setSelectedTvShowId] = useState(null)
   const [tvWatchlistIds, setTvWatchlistIds] = useState(() => new Set(initialTvWatchlistIds))
   const [tvWatchlistShows, setTvWatchlistShows] = useState([])
@@ -437,6 +440,11 @@ function App() {
     const showId = Number(show?.id)
     if (!Number.isInteger(showId)) return
     handleNavigateToPath(`/tv/${showId}`, { kind: routeKinds.tvDetail, showId }, primaryViews.tvShows, { tvPreview: show })
+  }
+
+  function handleOpenContinueWatching() {
+    setContinueWatchingPage(1)
+    handleNavigateToPath('/tv/continue-watching', { kind: routeKinds.continueWatching })
   }
 
   function handleOpenPersonDetail(person) {
@@ -2132,6 +2140,55 @@ function App() {
   }, [activeView, topRatedTvPage])
 
   useEffect(() => {
+    if (currentRoute.kind !== routeKinds.continueWatching) {
+      return
+    }
+
+    if (!user?.username) {
+      setContinueWatchingPageState(createTvCollectionState())
+      return
+    }
+
+    let cancelled = false
+
+    async function loadContinueWatchingShows() {
+      setContinueWatchingPageState(createTvCollectionLoadingState({ page: continueWatchingPage }))
+
+      try {
+        const response = await fetch(buildTvApiPath('/api/tv/continue-watching', continueWatchingPage), {
+          headers: buildAuthHeaders(user),
+        })
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+
+        if (!cancelled) {
+          setContinueWatchingPageState({
+            status: 'success',
+            shows: Array.isArray(payload.shows) ? payload.shows.map(mapContinueWatchingTvShowPayload) : [],
+            pagination: mapPaginationPayload(payload.pagination, continueWatchingPage),
+            error: '',
+          })
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setContinueWatchingPageState({
+            status: 'error',
+            shows: [],
+            pagination: createPaginationState(continueWatchingPage),
+            error: error instanceof Error ? error.message : 'Unable to load your TV progress right now.',
+          })
+        }
+      }
+    }
+
+    loadContinueWatchingShows()
+
+    return () => {
+      cancelled = true
+    }
+  }, [continueWatchingPage, currentRoute.kind, user])
+
+  useEffect(() => {
     if (activeView !== primaryViews.movies || moviesScreenMode !== movieScreenModes.genreList || !selectedGenre?.name) {
       return
     }
@@ -2312,6 +2369,14 @@ function App() {
                 isSignedIn={Boolean(user)}
                 watchlistIds={tvWatchlistIds}
               />
+            ) : currentRoute.kind === routeKinds.continueWatching ? (
+              <ContinueWatchingPage
+                isSignedIn={Boolean(user)}
+                pageState={continueWatchingPageState}
+                onOpenLogin={handleOpenLogin}
+                onOpenTvShow={handleOpenTvDetail}
+                onPageChange={setContinueWatchingPage}
+              />
             ) : activeView === primaryViews.home ? (
               <HomeScreen
                 user={user}
@@ -2324,6 +2389,7 @@ function App() {
                 watchlistState={watchlistState}
                 popularMoviesState={popularMoviesState}
                 continueWatchingState={continueWatchingState}
+                onOpenContinueWatching={handleOpenContinueWatching}
                 onOpenTvShow={handleOpenTvDetail}
                 latestEpisodesState={latestEpisodesState}
                 onOpenLatestEpisodes={handleOpenRecentlyAiredTvShows}
@@ -2682,7 +2748,7 @@ function SearchResultGroup({ children, emptyMessage, error, isLoading, items, ti
   )
 }
 
-function HomeScreen({ user, onOpenMovie, onOpenPopularMovies, onOpenWatchlist, stats, statsPeriod, onStatsPeriodChange, watchlistState, popularMoviesState, continueWatchingState, onOpenTvShow, latestEpisodesState, onOpenLatestEpisodes, tvWatchlistIds, tvWatchedIds }) {
+function HomeScreen({ user, onOpenMovie, onOpenPopularMovies, onOpenWatchlist, stats, statsPeriod, onStatsPeriodChange, watchlistState, popularMoviesState, continueWatchingState, onOpenContinueWatching, onOpenTvShow, latestEpisodesState, onOpenLatestEpisodes, tvWatchlistIds, tvWatchedIds }) {
   const greeting = user ? `Good evening, ${getFirstName(user.fullName)}! 🍿` : 'Good evening! 🍿'
   const homeWatchlistMovies = watchlistState.movies.slice(0, 5)
   const trendingMovies = popularMoviesState.movies.slice(0, 5)
@@ -2731,7 +2797,7 @@ function HomeScreen({ user, onOpenMovie, onOpenPopularMovies, onOpenWatchlist, s
         ))}
       </section>
 
-      <ContentSection title="Continue Watching" action="See all">
+      <ContentSection title="Continue Watching" action="See all" onAction={onOpenContinueWatching}>
         {continueWatchingState.status === 'loading' ? <SectionMessage message="Loading your TV progress..." /> : null}
         {continueWatchingState.status === 'error' ? <SectionMessage message={continueWatchingState.error} tone="error" /> : null}
         {continueWatchingState.status === 'idle' ? <SectionMessage message="Sign in to view shows you are watching." /> : null}
@@ -3243,6 +3309,43 @@ function MoviesScreen({
           </section>
         </>
       )}
+    </section>
+  )
+}
+
+function ContinueWatchingPage({ isSignedIn, pageState, onOpenLogin, onOpenTvShow, onPageChange }) {
+  if (!isSignedIn) {
+    return (
+      <section className="continue-watching-page">
+        <div className="movies-heading">
+          <h1>Continue Watching</h1>
+          <p>Pick up where you left off in your TV shows.</p>
+        </div>
+        <section className="content-section">
+          <SectionMessage message="Sign in to view shows you are watching." />
+          <button type="button" className="primary-button" onClick={onOpenLogin}>Sign In</button>
+        </section>
+      </section>
+    )
+  }
+
+  return (
+    <section className="continue-watching-page">
+      <div className="movies-heading">
+        <h1>Continue Watching</h1>
+        <p>Pick up where you left off in your TV shows.</p>
+      </div>
+      <section className="content-section">
+        {pageState.status === 'loading' || pageState.status === 'idle' ? <SectionMessage message="Loading your TV progress..." /> : null}
+        {pageState.status === 'error' ? <SectionMessage message={pageState.error} tone="error" /> : null}
+        {pageState.status === 'success' && pageState.shows.length === 0 ? <SectionMessage message="Start watching a TV show to see it here." /> : null}
+        {pageState.status === 'success' && pageState.shows.length > 0 ? (
+          <div className="continue-watching-grid">
+            {pageState.shows.map((item) => <ProgressCard key={item.id} item={item} onOpenTvShow={onOpenTvShow} />)}
+          </div>
+        ) : null}
+        <PaginationControls pagination={pageState.pagination} onPageChange={onPageChange} />
+      </section>
     </section>
   )
 }
@@ -4195,20 +4298,11 @@ function MovieDetailPage({
           </div>
         </section>
 
-        <section className="content-section movie-detail-panel">
+        <section className="content-section movie-detail-panel movie-detail-more-like-this">
           <div className="section-header">
             <h2>More Like This</h2>
           </div>
           <SimilarMoviesGrid similarMoviesState={similarMoviesState} onOpenMovie={onOpenMovie} />
-        </section>
-
-        <section className="content-section movie-detail-panel movie-detail-facts">
-          <div className="movie-detail-facts-list">
-            <DetailFactRow icon={DirectorIcon} label="Director" value="Denis Villeneuve" />
-            <DetailFactRow icon={ScriptIcon} label="Screenplay" value="Jon Spaihts, Denis Villeneuve" />
-            <DetailFactRow icon={LanguageIcon} label="Language" value="English" />
-            <DetailFactRow icon={AwardIcon} label="Awards" value="6 wins & 34 nominations" />
-          </div>
         </section>
 
         <section className="content-section movie-detail-panel movie-detail-reviews">
@@ -4574,7 +4668,7 @@ function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOp
                   </button>
                 ))
               ) : (
-                <SectionMessage message="No local collaborator data is available yet." />
+                <SectionMessage message="Co-stars will appear here when shared credits are available." />
               )}
             </div>
           </section>
@@ -5144,7 +5238,7 @@ function PaginationControls({ pagination, onPageChange }) {
   }
 
   return (
-    <div className="pagination-controls" aria-label="Movie pagination">
+    <div className="pagination-controls" aria-label="Pagination">
       <button
         type="button"
         className="secondary-button pagination-button"
@@ -5867,6 +5961,10 @@ function readAppRoute(pathname = window.location.pathname, search = window.locat
     return { kind: routeKinds.search, query: new URLSearchParams(search).get('q')?.trim() || '' }
   }
 
+  if (/^\/tv\/continue-watching\/?$/.test(pathname)) {
+    return { kind: routeKinds.continueWatching }
+  }
+
   const tvDetailMatch = pathname.match(/^\/tv\/(\d+)\/?$/)
   const personDetailMatch = pathname.match(/^\/people\/(\d+)\/?$/)
   const detailMatch = pathname.match(/^\/movies\/(\d+)\/?$/)
@@ -6456,17 +6554,6 @@ function DirectorIcon() {
     <IconBase>
       <rect x="4.5" y="6.5" width="10" height="10" rx="2" />
       <path d="m15 9 4-2v10l-4-2" />
-    </IconBase>
-  )
-}
-
-function ScriptIcon() {
-  return (
-    <IconBase>
-      <rect x="6" y="4.5" width="12" height="15" rx="2" />
-      <path d="M9 9h6" />
-      <path d="M9 12.5h6" />
-      <path d="M9 16h4" />
     </IconBase>
   )
 }

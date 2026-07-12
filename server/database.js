@@ -2517,7 +2517,11 @@ export async function listTvWatchlistShowsForUser(pool, username) {
   return result.rows
 }
 
-export async function listContinueWatchingTvShowsForUser(pool, username) {
+export async function listContinueWatchingTvShowsForUser(pool, username, options = {}) {
+  const { limit = 5, page = 1 } = options
+  const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 5
+  const normalizedPage = Number.isInteger(page) ? Math.max(1, page) : 1
+  const offset = (normalizedPage - 1) * normalizedLimit
   const result = await pool.query(
     `
       WITH episode_progress AS (
@@ -2563,9 +2567,10 @@ export async function listContinueWatchingTvShowsForUser(pool, username) {
       JOIN tv_shows ON tv_shows.id = episode_progress.tv_show_id
       JOIN latest_watched_episodes ON latest_watched_episodes.tv_show_id = episode_progress.tv_show_id
       ORDER BY episode_progress.last_watched_at DESC, tv_shows.tmdb_id ASC
-      LIMIT 5
+      LIMIT $2
+      OFFSET $3
     `,
-    [username]
+    [username, normalizedLimit, offset]
   )
 
   return result.rows

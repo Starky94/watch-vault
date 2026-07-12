@@ -529,9 +529,31 @@ export async function createApp(pool, options = {}) {
         getTvLibraryForUser(pool, user.username),
         getTvStatsForUser(pool, user.username, period),
         listTvWatchlistShowsForUser(pool, user.username),
-        listContinueWatchingTvShowsForUser(pool, user.username),
+        listContinueWatchingTvShowsForUser(pool, user.username, { limit: 5 }),
       ])
       response.json({ watchedIds: library.watchedIds, watchlistIds: library.watchlistIds, watchlistShows: watchlistShows.map(mapWatchlistTvShow), continueWatchingShows: continueWatchingShows.map(mapContinueWatchingTvShow), stats: mapTvStats(stats) })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/tv/continue-watching', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+
+      const pagination = readPaginationQuery(request, { defaultLimit: 30 })
+      const shows = await listContinueWatchingTvShowsForUser(pool, user.username, {
+        limit: pagination.limit + 1,
+        page: pagination.page,
+      })
+      const pagedShows = shows.slice(0, pagination.limit)
+
+      response.json({
+        count: pagedShows.length,
+        shows: pagedShows.map(mapContinueWatchingTvShow),
+        pagination: buildPaginationPayload(pagination, shows.length > pagination.limit),
+      })
     } catch (error) {
       next(error)
     }
