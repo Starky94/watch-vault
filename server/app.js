@@ -7,6 +7,7 @@ import {
   countMovies,
   countStoredDataBytes,
   countTvShows,
+  ensureFavoriteActorsTable,
   ensureTvDetailTables,
   ensureMoviesTable,
   findUserByCredentials,
@@ -19,19 +20,25 @@ import {
   getTvShowByTmdbId,
   getMovieByTmdbId,
   listCoStarsForPerson,
+  listFavoriteActorsForUser,
   listGenres,
   listMovieSummariesByTmdbIds,
+  searchActors,
+  searchMovies,
+  searchTvShows,
   listWatchlistMoviesForUser,
   listWatchedMoviesForUser,
   listMovies,
   listRecentlyReleasedMovies,
   listRecentlyAiredTvShows,
+  listLatestEpisodeTvShows,
   removeMovieFromWatchedForUser,
   removeMovieFromWatchlistForUser,
   listSimilarMovies,
   listTopRatedTvShows,
   listTopRatedMovies,
   listTvShows,
+  listContinueWatchingTvShowsForUser,
   listTvWatchlistShowsForUser,
   syncPersonProfile,
   updateUserPassword,
@@ -40,9 +47,10 @@ import {
   updateTvEpisodeWatchStateForUser,
   listUpcomingTvShows,
   listUpcomingMovies,
+  toggleFavoriteActorForUser,
 } from './database.js'
 import { adminJobs, findAdminJob, listAdminJobs } from './adminJobs.js'
-import { fetchMovieReviews, fetchMovieVideos, fetchPersonCombinedCredits, fetchPersonDetails, fetchTvReviews } from './tmdbClient.js'
+import { fetchMovieReviews, fetchMovieVideos, fetchPersonCombinedCredits, fetchPersonDetails, fetchTvReviews, searchMovies as searchTmdbMovies, searchTvShows as searchTmdbTvShows } from './tmdbClient.js'
 import { hydrateMovieByTmdbId } from './movieImportService.js'
 import { hydrateTvShowByTmdbId } from './tvImportService.js'
 
@@ -78,6 +86,52 @@ export async function createApp(pool, options = {}) {
           name: genre.name,
           movieCount: genre.movie_count,
         })),
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/search', async (request, response, next) => {
+    const query = typeof request.query.q === 'string' ? request.query.q.trim() : ''
+
+    if (!query) {
+      response.status(400).json({ error: 'q is required' })
+      return
+    }
+
+    try {
+      const [movies, shows, actors] = await Promise.all([
+        searchMovies(pool, query),
+        searchTvShows(pool, query),
+        searchActors(pool, query),
+      ])
+
+      response.json({ query, movies, shows, actors })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/search/tmdb', async (request, response, next) => {
+    const query = typeof request.query.q === 'string' ? request.query.q.trim() : ''
+
+    if (!query) {
+      response.status(400).json({ error: 'q is required' })
+      return
+    }
+
+    try {
+      const config = loadRuntimeConfig()
+      const [moviePayload, tvPayload] = await Promise.all([
+        searchTmdbMovies(fetch, { token: config.tmdbBearerToken, baseUrl: config.tmdbBaseUrl, query }),
+        searchTmdbTvShows(fetch, { token: config.tmdbBearerToken, baseUrl: config.tmdbBaseUrl, query }),
+      ])
+
+      response.json({
+        query,
+        movies: (Array.isArray(moviePayload?.results) ? moviePayload.results : []).slice(0, 20).map(mapTmdbMovieSearchResult),
+        shows: (Array.isArray(tvPayload?.results) ? tvPayload.results : []).slice(0, 20).map(mapTmdbTvSearchResult),
       })
     } catch (error) {
       next(error)
@@ -187,6 +241,38 @@ export async function createApp(pool, options = {}) {
         count: movies.length,
         movies: movies.map(mapWatchlistMovie),
       })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/favorite-actors', async (request, response, next) => {
+    try {
+      await ensureFavoriteActorsTable(pool)
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+
+      const actors = await listFavoriteActorsForUser(pool, user.username)
+      response.json({ count: actors.length, actors: actors.map(mapFavoriteActor) })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/favorite-actors/:personId', async (request, response, next) => {
+    const personId = Number.parseInt(request.params.personId, 10)
+    if (!Number.isInteger(personId)) return response.status(400).json({ error: `Invalid person id: ${request.params.personId}` })
+
+    try {
+      await ensureFavoriteActorsTable(pool)
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+
+      const result = await toggleFavoriteActorForUser(pool, { username: user.username, personId })
+      if (result.status === 'missing_actor') return response.status(404).json({ error: `Actor ${personId} was not found in the local database` })
+      if (result.status === 'missing_user') return response.status(401).json({ error: 'Authentication required' })
+
+      response.json({ favorited: result.favorited })
     } catch (error) {
       next(error)
     }
@@ -439,12 +525,13 @@ export async function createApp(pool, options = {}) {
       if (!user) return response.status(401).json({ error: 'Authentication required' })
       const period = readStatsPeriod(request, response)
       if (!period) return
-      const [library, stats, watchlistShows] = await Promise.all([
+      const [library, stats, watchlistShows, continueWatchingShows] = await Promise.all([
         getTvLibraryForUser(pool, user.username),
         getTvStatsForUser(pool, user.username, period),
         listTvWatchlistShowsForUser(pool, user.username),
+        listContinueWatchingTvShowsForUser(pool, user.username),
       ])
-      response.json({ watchedIds: library.watchedIds, watchlistIds: library.watchlistIds, watchlistShows: watchlistShows.map(mapWatchlistTvShow), stats: mapTvStats(stats) })
+      response.json({ watchedIds: library.watchedIds, watchlistIds: library.watchlistIds, watchlistShows: watchlistShows.map(mapWatchlistTvShow), continueWatchingShows: continueWatchingShows.map(mapContinueWatchingTvShow), stats: mapTvStats(stats) })
     } catch (error) {
       next(error)
     }
@@ -627,6 +714,15 @@ export async function createApp(pool, options = {}) {
         shows: pagedShows,
         pagination: buildPaginationPayload(pagination, shows.length > pagination.limit),
       })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/tv/latest-episodes', async (_request, response, next) => {
+    try {
+      const shows = await listLatestEpisodeTvShows(pool)
+      response.json({ count: shows.length, shows: shows.map(mapLatestEpisodeTvShow) })
     } catch (error) {
       next(error)
     }
@@ -943,6 +1039,37 @@ function mapFeaturedMovie(movie) {
     summary: movie.overview || 'Overview not available yet.',
     posterPath: movie.poster_path,
     backdropPath: movie.backdrop_path,
+  }
+}
+
+function mapTmdbMovieSearchResult(movie) {
+  return {
+    id: movie?.id,
+    title: movie?.title || 'Untitled',
+    year: formatMovieYear(movie?.release_date),
+    rating: formatSearchCardRating(movie?.vote_average),
+    meta: movie?.release_date ? 'Movie' : 'Release TBA',
+    releaseDate: movie?.release_date || null,
+    posterUrl: resolvePosterPath(movie?.poster_path),
+    theme: 'theme-catalog',
+  }
+}
+
+function mapTmdbTvSearchResult(show) {
+  return {
+    id: show?.id,
+    title: show?.name || 'Untitled',
+    year: formatMovieYear(show?.first_air_date),
+    rating: formatSearchCardRating(show?.vote_average),
+    meta: 'TV Series',
+    seasonMeta: 'TV Series',
+    genreLabel: 'Genre TBA',
+    maturityRating: 'TV Series',
+    audience: formatVoteCount(show?.vote_count),
+    description: show?.overview || 'Overview not available yet.',
+    posterUrl: resolvePosterPath(show?.poster_path),
+    backdropUrl: resolveBackdropPath(show?.backdrop_path),
+    theme: 'theme-catalog',
   }
 }
 
@@ -1301,6 +1428,10 @@ function formatScore(voteAverage) {
   return `${voteAverage.toFixed(1)}/10`
 }
 
+function formatSearchCardRating(voteAverage) {
+  return typeof voteAverage === 'number' ? voteAverage.toFixed(1) : 'N/A'
+}
+
 function formatVoteCount(voteCount) {
   if (typeof voteCount !== 'number') {
     return 'No votes'
@@ -1504,6 +1635,17 @@ function mapWatchlistMovie(movie) {
   }
 }
 
+function mapFavoriteActor(actor) {
+  return {
+    id: actor.tmdb_person_id,
+    name: actor.name,
+    profileUrl: resolveProfilePath(actor.profile_path),
+    role: actor.known_for_department || 'Actor',
+    popularity: typeof actor.popularity === 'number' ? actor.popularity : 0,
+    favoritedAt: actor.favorited_at ?? null,
+  }
+}
+
 function mapWatchlistTvShow(show) {
   return {
     id: show.tmdb_id,
@@ -1515,6 +1657,39 @@ function mapWatchlistTvShow(show) {
     posterUrl: resolvePosterPath(show.poster_path),
     backdropUrl: resolveBackdropPath(show.backdrop_path),
     watchlistedAt: show.watchlisted_at ?? null,
+  }
+}
+
+function mapContinueWatchingTvShow(show) {
+  const watchedEpisodeCount = Number(show.watched_episode_count) || 0
+  const airedEpisodeCount = Number(show.aired_episode_count) || 0
+
+  return {
+    id: show.tmdb_id,
+    title: show.name,
+    posterUrl: resolvePosterPath(show.poster_path),
+    backdropUrl: resolveBackdropPath(show.backdrop_path),
+    watchedEpisodeCount,
+    airedEpisodeCount,
+    progress: airedEpisodeCount > 0 ? Math.round((watchedEpisodeCount / airedEpisodeCount) * 100) : 0,
+    latestWatchedEpisodeLabel: `S${show.latest_watched_season_number} E${show.latest_watched_episode_number}`,
+    lastWatchedAt: show.last_watched_at ?? null,
+  }
+}
+
+function mapLatestEpisodeTvShow(show) {
+  return {
+    id: show.tmdb_id,
+    title: show.name,
+    posterUrl: resolvePosterPath(show.poster_path),
+    backdropUrl: resolveBackdropPath(show.backdrop_path),
+    popularity: typeof show.popularity === 'number' ? show.popularity : 0,
+    latestEpisode: {
+      seasonNumber: show.season_number,
+      episodeNumber: show.episode_number,
+      title: show.episode_name || `Episode ${show.episode_number}`,
+      airDate: show.air_date,
+    },
   }
 }
 

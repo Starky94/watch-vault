@@ -36,6 +36,7 @@ const appScreens = {
 
 const routeKinds = {
   home: 'home',
+  search: 'search',
   movieDetail: 'movieDetail',
   tvDetail: 'tvDetail',
   personDetail: 'personDetail',
@@ -49,19 +50,6 @@ const adminRunIdleState = {
 
 const watchlistAccentOptions = ['gold', 'violet', 'silver']
 
-const continueWatching = [
-  { title: 'Eclipse Point', meta: 'S1 E6', progress: 72, theme: 'theme-eclipse' },
-  { title: 'The Last Harbor', meta: 'S2 E3', progress: 45, theme: 'theme-harbor' },
-  { title: 'Silent Code', meta: '2024', progress: 60, theme: 'theme-code' },
-  { title: 'Beyond the Ridge', meta: 'S1 E4', progress: 30, theme: 'theme-ridge' },
-  { title: 'Neon City', meta: '2023', progress: 80, theme: 'theme-neon' },
-]
-
-const newEpisodes = [
-  { title: 'Fragments', meta: 'New tonight', copy: 'A memory-bending thriller returns with its mid-season reveal.' },
-  { title: 'Astra Division', meta: 'Tomorrow', copy: 'The crew finally reaches the signal source beyond Titan.' },
-]
-
 const tvShowTabs = ['All Shows', 'Popular', 'Airing Now', 'Upcoming', 'Top Rated']
 const initialTvWatchlistIds = []
 const initialTvWatchedIds = []
@@ -74,7 +62,7 @@ const mobileNavItems = [
   { label: 'More', icon: MoreIcon },
 ]
 
-const watchlistTabs = ['All', 'Movies', 'TV Shows']
+const watchlistTabs = ['All', 'Movies', 'TV Shows', 'Actors']
 const moviesPageSize = 30
 const genreAccentPalette = ['#ff6b7a', '#7c8dff', '#ffd86f', '#84b3ff', '#ff6cb6', '#67e8f9', '#9ae66e']
 
@@ -113,6 +101,22 @@ function App() {
   const [activeWatchlistTab, setActiveWatchlistTab] = useState(watchlistTabs[0])
   const [moviesScreenMode, setMoviesScreenMode] = useState(movieScreenModes.overview)
   const [currentScreen, setCurrentScreen] = useState(appScreens.dashboard)
+  const [searchInput, setSearchInput] = useState(() => readAppRoute().query || '')
+  const [searchError, setSearchError] = useState('')
+  const [searchResultsState, setSearchResultsState] = useState({
+    status: 'idle',
+    movies: [],
+    shows: [],
+    actors: [],
+    error: '',
+  })
+  const [tmdbSearchState, setTmdbSearchState] = useState({
+    status: 'idle',
+    movies: [],
+    shows: [],
+    error: '',
+  })
+  const tmdbSearchRequestId = useRef(0)
   const [user, setUser] = useState(null)
   const [authStatus, setAuthStatus] = useState('idle')
   const [authError, setAuthError] = useState('')
@@ -137,6 +141,7 @@ function App() {
   const [recentTvState, setRecentTvState] = useState(() => createTvCollectionState())
   const [upcomingTvState, setUpcomingTvState] = useState(() => createTvCollectionState())
   const [topRatedTvState, setTopRatedTvState] = useState(() => createTvCollectionState())
+  const [latestEpisodesState, setLatestEpisodesState] = useState(() => createTvCollectionState())
   const [genreMoviesPage, setGenreMoviesPage] = useState(1)
   const [genreMoviesState, setGenreMoviesState] = useState(() => createMovieCollectionState())
   const [genresState, setGenresState] = useState({
@@ -182,6 +187,11 @@ function App() {
     movies: [],
     error: '',
   })
+  const [favoriteActorsState, setFavoriteActorsState] = useState({
+    status: 'idle',
+    actors: [],
+    error: '',
+  })
   const [watchlistActionState, setWatchlistActionState] = useState({
     status: 'idle',
     movieId: null,
@@ -209,6 +219,7 @@ function App() {
   })
   const [statsPeriod, setStatsPeriod] = useState('month')
   const [tvStatsState, setTvStatsState] = useState({ status: 'idle', stats: emptyTvStats, error: '' })
+  const [continueWatchingState, setContinueWatchingState] = useState({ status: 'idle', shows: [], error: '' })
   const [selectedTvShowId, setSelectedTvShowId] = useState(null)
   const [tvWatchlistIds, setTvWatchlistIds] = useState(() => new Set(initialTvWatchlistIds))
   const [tvWatchlistShows, setTvWatchlistShows] = useState([])
@@ -232,6 +243,13 @@ function App() {
       window.removeEventListener('popstate', handlePopState)
     }
   }, [])
+
+  useEffect(() => {
+    if (currentRoute.kind === routeKinds.search) {
+      setSearchInput(currentRoute.query)
+      setSearchError('')
+    }
+  }, [currentRoute])
 
   useEffect(() => {
     try {
@@ -340,13 +358,58 @@ function App() {
   }
 
   function handleNavigateToPath(path, nextRoute, nextView = primaryViews.home, historyState = {}) {
-    if (window.location.pathname !== path) {
+    if (`${window.location.pathname}${window.location.search}` !== path) {
       window.history.pushState(historyState, '', path)
     }
 
     setCurrentRoute(nextRoute)
     setCurrentScreen(appScreens.dashboard)
     setActiveView(nextView)
+  }
+
+  function handleSearchSubmit() {
+    const query = searchInput.trim()
+
+    if (!query) {
+      setSearchError('Enter a title or actor to search.')
+      return false
+    }
+
+    setSearchError('')
+    handleNavigateToPath(buildSearchPath(query), { kind: routeKinds.search, query })
+    return true
+  }
+
+  async function handleSearchTmdb() {
+    const query = currentRoute.kind === routeKinds.search ? currentRoute.query : ''
+    if (!query) return
+
+    const requestId = ++tmdbSearchRequestId.current
+    setTmdbSearchState({ status: 'loading', movies: [], shows: [], error: '' })
+
+    try {
+      const response = await fetch(`/api/search/tmdb?q=${encodeURIComponent(query)}`)
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+
+      if (requestId === tmdbSearchRequestId.current) {
+        setTmdbSearchState({
+          status: 'success',
+          movies: Array.isArray(payload.movies) ? payload.movies : [],
+          shows: Array.isArray(payload.shows) ? payload.shows : [],
+          error: '',
+        })
+      }
+    } catch (error) {
+      if (requestId === tmdbSearchRequestId.current) {
+        setTmdbSearchState({
+          status: 'error',
+          movies: [],
+          shows: [],
+          error: error instanceof Error ? error.message : 'Unable to search TMDB right now.',
+        })
+      }
+    }
   }
 
   function handleOpenMovieDetail(movie) {
@@ -755,6 +818,38 @@ function App() {
     }
   }
 
+  async function loadFavoriteActorsForUser(nextUser) {
+    if (!nextUser?.username) {
+      setFavoriteActorsState({ status: 'idle', actors: [], error: '' })
+      return
+    }
+
+    setFavoriteActorsState((state) => ({ ...state, status: 'loading', error: '' }))
+    try {
+      const response = await fetch('/api/favorite-actors', { headers: buildAuthHeaders(nextUser) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+      setFavoriteActorsState({ status: 'success', actors: Array.isArray(payload.actors) ? payload.actors : [], error: '' })
+    } catch (error) {
+      setFavoriteActorsState({ status: 'error', actors: [], error: error instanceof Error ? error.message : 'Unable to load favorite actors right now.' })
+    }
+  }
+
+  async function handleToggleFavoriteActor(person) {
+    const personId = Number(person?.id)
+    if (!Number.isInteger(personId)) return
+    if (!user) return handleOpenLogin()
+
+    try {
+      const response = await fetch(`/api/favorite-actors/${personId}`, { method: 'POST', headers: buildAuthHeaders(user) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+      await loadFavoriteActorsForUser(user)
+    } catch (error) {
+      setFavoriteActorsState((state) => ({ ...state, status: 'error', error: error instanceof Error ? error.message : 'Unable to update favorite actor.' }))
+    }
+  }
+
   async function loadWatchedForUser(nextUser) {
     if (!nextUser?.username) {
       setWatchedState({
@@ -821,9 +916,11 @@ function App() {
       setTvWatchlistIds(new Set())
       setTvWatchlistShows([])
       setTvStatsState({ status: 'idle', stats: emptyTvStats, error: '' })
+      setContinueWatchingState({ status: 'idle', shows: [], error: '' })
       return
     }
     setTvStatsState((state) => ({ ...state, status: 'loading', error: '' }))
+    setContinueWatchingState((state) => ({ ...state, status: 'loading', error: '' }))
     try {
       const response = await fetch(`/api/tv/library?period=${statsPeriod}`, { headers: buildAuthHeaders(nextUser) })
       const payload = await response.json().catch(() => ({}))
@@ -832,11 +929,13 @@ function App() {
       setTvWatchlistIds(new Set(payload.watchlistIds ?? []))
       setTvWatchlistShows(Array.isArray(payload.watchlistShows) ? payload.watchlistShows.map(mapTvWatchlistShowPayload) : [])
       setTvStatsState({ status: 'success', stats: mapTvStatsPayload(payload.stats), error: '' })
+      setContinueWatchingState({ status: 'success', shows: Array.isArray(payload.continueWatchingShows) ? payload.continueWatchingShows.map(mapContinueWatchingTvShowPayload) : [], error: '' })
     } catch (error) {
       setTvWatchedIds(new Set())
       setTvWatchlistIds(new Set())
       setTvWatchlistShows([])
       setTvStatsState({ status: 'error', stats: emptyTvStats, error: error instanceof Error ? error.message : 'Unable to load TV stats right now.' })
+      setContinueWatchingState({ status: 'error', shows: [], error: error instanceof Error ? error.message : 'Unable to load your TV progress right now.' })
     }
   }
 
@@ -977,6 +1076,7 @@ function App() {
     loadWatchlistForUser(user)
     loadWatchedForUser(user)
     loadTvLibraryForUser(user)
+    loadFavoriteActorsForUser(user)
   }, [user, statsPeriod])
 
   async function handleAddMovieToWatched(movie) {
@@ -1248,6 +1348,69 @@ function App() {
       }))
     }
   }
+
+  useEffect(() => {
+    tmdbSearchRequestId.current += 1
+    setTmdbSearchState({ status: 'idle', movies: [], shows: [], error: '' })
+
+    if (currentRoute.kind !== routeKinds.search || !currentRoute.query) {
+      setSearchResultsState({
+        status: 'idle',
+        movies: [],
+        shows: [],
+        actors: [],
+        error: '',
+      })
+      return
+    }
+
+    let cancelled = false
+
+    async function loadSearchResults() {
+      setSearchResultsState({
+        status: 'loading',
+        movies: [],
+        shows: [],
+        actors: [],
+        error: '',
+      })
+
+      try {
+        const response = await fetch(`/api/search?q=${encodeURIComponent(currentRoute.query)}`)
+        const payload = await response.json().catch(() => ({}))
+
+        if (!response.ok) {
+          throw new Error(payload.error || `Request failed with status ${response.status}`)
+        }
+
+        if (!cancelled) {
+          setSearchResultsState({
+            status: 'success',
+            movies: Array.isArray(payload.movies) ? payload.movies.map(mapMovieRowToCard) : [],
+            shows: Array.isArray(payload.shows) ? payload.shows.map(mapTvRowToCard) : [],
+            actors: Array.isArray(payload.actors) ? payload.actors.map(mapSearchActorPayload) : [],
+            error: '',
+          })
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setSearchResultsState({
+            status: 'error',
+            movies: [],
+            shows: [],
+            actors: [],
+            error: error instanceof Error ? error.message : 'Unable to search right now.',
+          })
+        }
+      }
+    }
+
+    loadSearchResults()
+
+    return () => {
+      cancelled = true
+    }
+  }, [currentRoute])
 
   useEffect(() => {
     if (currentRoute.kind !== routeKinds.movieDetail) {
@@ -1586,6 +1749,48 @@ function App() {
       cancelled = true
     }
   }, [activeView, popularMoviesPage])
+
+  useEffect(() => {
+    if (activeView !== primaryViews.home) {
+      return
+    }
+
+    let cancelled = false
+
+    async function loadLatestEpisodes() {
+      setLatestEpisodesState(createTvCollectionLoadingState())
+
+      try {
+        const response = await fetch('/api/tv/latest-episodes')
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+
+        if (!cancelled) {
+          setLatestEpisodesState({
+            status: 'success',
+            shows: Array.isArray(payload.shows) ? payload.shows.map(mapLatestEpisodeTvShowPayload) : [],
+            pagination: createPaginationState(),
+            error: '',
+          })
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setLatestEpisodesState({
+            status: 'error',
+            shows: [],
+            pagination: createPaginationState(),
+            error: error instanceof Error ? error.message : 'Unable to load the latest TV episodes right now.',
+          })
+        }
+      }
+    }
+
+    loadLatestEpisodes()
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeView])
 
   useEffect(() => {
     if (activeView !== primaryViews.movies) {
@@ -1978,9 +2183,8 @@ function App() {
 
   const watchlistMovieIds = new Set(watchlistState.movies.map((movie) => Number(movie.id)))
   const watchedMovieIds = new Set(watchedState.movies.map((movie) => Number(movie.id)))
-  const homeStats = buildHomeStats({
+  const homeStats = buildMoviesPageStats({
     stats: movieStatsState.stats,
-    watchlistCount: watchlistState.movies.length,
   })
   const moviesPageStats = buildMoviesPageStats({
     stats: movieStatsState.stats,
@@ -2042,13 +2246,30 @@ function App() {
             <DesktopTopbar
               activeView={activeView}
               currentScreen={currentScreen}
+              searchError={searchError}
+              searchInput={searchInput}
+              onSearchInputChange={(value) => {
+                setSearchInput(value)
+                if (searchError) setSearchError('')
+              }}
+              onSearchSubmit={handleSearchSubmit}
               onOpenAdmin={handleOpenAdmin}
               onOpenAccount={handleOpenAccount}
               onOpenLogin={handleOpenLogin}
               onLogout={handleLogout}
               user={user}
             />
-            <MobileHeader onOpenLogin={handleOpenLogin} user={user} />
+            <MobileHeader
+              onOpenLogin={handleOpenLogin}
+              searchError={searchError}
+              searchInput={searchInput}
+              onSearchInputChange={(value) => {
+                setSearchInput(value)
+                if (searchError) setSearchError('')
+              }}
+              onSearchSubmit={handleSearchSubmit}
+              user={user}
+            />
 
             {currentScreen === appScreens.admin ? (
               <AdminScreen
@@ -2063,6 +2284,20 @@ function App() {
                 onBack={handleOpenDashboard}
                 onSubmit={handleChangePassword}
                 user={user}
+              />
+            ) : currentRoute.kind === routeKinds.search ? (
+              <SearchResultsPage
+                query={currentRoute.query}
+                searchResultsState={searchResultsState}
+                tmdbSearchState={tmdbSearchState}
+                onSearchTmdb={handleSearchTmdb}
+                onOpenMovie={handleOpenMovieDetail}
+                onOpenTvShow={handleOpenTvDetail}
+                onOpenPerson={handleOpenPersonDetail}
+                watchedMovieIds={watchedMovieIds}
+                watchlistMovieIds={watchlistMovieIds}
+                watchedTvIds={tvWatchedIds}
+                watchlistTvIds={tvWatchlistIds}
               />
             ) : currentRoute.kind === routeKinds.tvDetail ? (
               <TvDetailPage
@@ -2083,8 +2318,16 @@ function App() {
                 onOpenPopularMovies={handleOpenPopularMovies}
                 onOpenWatchlist={handleOpenWatchlistCta}
                 stats={homeStats}
+                statsPeriod={statsPeriod}
+                onStatsPeriodChange={setStatsPeriod}
                 watchlistState={watchlistState}
                 popularMoviesState={popularMoviesState}
+                continueWatchingState={continueWatchingState}
+                onOpenTvShow={handleOpenTvDetail}
+                latestEpisodesState={latestEpisodesState}
+                onOpenLatestEpisodes={handleOpenRecentlyAiredTvShows}
+                tvWatchlistIds={tvWatchlistIds}
+                tvWatchedIds={tvWatchedIds}
               />
             ) : activeView === primaryViews.watchlist ? (
               <WatchlistScreen
@@ -2094,6 +2337,8 @@ function App() {
                 onOpenLogin={handleOpenLogin}
                 onOpenMovie={handleOpenMovieDetail}
                 onOpenTvShow={handleOpenTvDetail}
+                onOpenPerson={handleOpenPersonDetail}
+                favoriteActorsState={favoriteActorsState}
                 watchlistState={watchlistState}
                 tvWatchlistShows={tvWatchlistShows}
               />
@@ -2129,6 +2374,9 @@ function App() {
                 onBackToMovies={() => handleMovieViewSelection(primaryViews.movies)}
                 onOpenMovie={handleOpenMovieDetail}
                 onOpenPerson={handleOpenPersonDetail}
+                isSignedIn={Boolean(user)}
+                favoriteActorIds={new Set(favoriteActorsState.actors.map((actor) => Number(actor.id)))}
+                onToggleFavorite={handleToggleFavoriteActor}
               />
             ) : currentRoute.kind === routeKinds.movieDetail ? (
               <MovieDetailPage
@@ -2206,7 +2454,7 @@ function Brand() {
   )
 }
 
-function DesktopTopbar({ activeView, currentScreen, onOpenAdmin, onOpenAccount, onOpenLogin, onLogout, user }) {
+function DesktopTopbar({ onOpenAdmin, onOpenAccount, onOpenLogin, onLogout, onSearchInputChange, onSearchSubmit, searchError, searchInput, user }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef(null)
 
@@ -2245,21 +2493,21 @@ function DesktopTopbar({ activeView, currentScreen, onOpenAdmin, onOpenAccount, 
 
   return (
     <header className="topbar desktop-only">
-      <label className="searchbar" aria-label="Search">
-        <SearchIcon />
-        <input
-          type="text"
-          placeholder={
-            currentScreen === appScreens.admin
-              ? 'Search admin tools, jobs, diagnostics...'
-              : activeView === primaryViews.movies || activeView === primaryViews.watchlist
-              ? 'Search movies, actors, directors...'
-              : activeView === primaryViews.tvShows
-              ? 'Search shows, genres, people...'
-              : 'Search movies, shows, people...'
-          }
-        />
-      </label>
+      <form className="topbar-search" onSubmit={(event) => { event.preventDefault(); onSearchSubmit() }}>
+        <label className="searchbar" aria-label="Search movies, shows, and actors">
+          <SearchIcon />
+          <input
+            type="text"
+            value={searchInput}
+            onChange={(event) => onSearchInputChange(event.target.value)}
+            placeholder="Search movies, shows, actors..."
+            aria-invalid={Boolean(searchError)}
+            aria-describedby={searchError ? 'desktop-search-error' : undefined}
+          />
+        </label>
+        <button type="submit" className="search-submit-button">Search</button>
+        {searchError ? <span id="desktop-search-error" className="search-error" role="alert">{searchError}</span> : null}
+      </form>
 
       <div className="topbar-actions">
         <button type="button" className="icon-button">
@@ -2317,33 +2565,123 @@ function DesktopTopbar({ activeView, currentScreen, onOpenAdmin, onOpenAccount, 
   )
 }
 
-function MobileHeader({ onOpenLogin, user }) {
-  return (
-    <header className="mobile-header mobile-only">
-      <Brand />
+function MobileHeader({ onOpenLogin, onSearchInputChange, onSearchSubmit, searchError, searchInput, user }) {
+  const [searchOpen, setSearchOpen] = useState(false)
 
-      <div className="mobile-actions">
-        <button type="button" className="icon-button">
-          <SearchIcon />
-        </button>
-        <button type="button" className="icon-button">
-          <BellIcon />
-        </button>
-        {user ? (
-          <button type="button" className="avatar-button" aria-label={user.fullName}>
-            <div className="avatar small">{getUserInitial(user.fullName)}</div>
+  return (
+    <div className="mobile-only">
+      <header className="mobile-header">
+        <Brand />
+
+        <div className="mobile-actions">
+          <button type="button" className="icon-button" aria-label="Search" aria-expanded={searchOpen} onClick={() => setSearchOpen((value) => !value)}>
+            <SearchIcon />
           </button>
-        ) : (
-          <button type="button" className="mobile-sign-in-button" onClick={onOpenLogin}>
-            Sign In
+          <button type="button" className="icon-button">
+            <BellIcon />
           </button>
-        )}
-      </div>
-    </header>
+          {user ? (
+            <button type="button" className="avatar-button" aria-label={user.fullName}>
+              <div className="avatar small">{getUserInitial(user.fullName)}</div>
+            </button>
+          ) : (
+            <button type="button" className="mobile-sign-in-button" onClick={onOpenLogin}>
+              Sign In
+            </button>
+          )}
+        </div>
+      </header>
+
+      {searchOpen ? (
+        <form className="mobile-search-form" onSubmit={(event) => { event.preventDefault(); if (onSearchSubmit()) setSearchOpen(false) }}>
+          <label className="searchbar" aria-label="Search movies, shows, and actors">
+            <SearchIcon />
+            <input type="text" autoFocus value={searchInput} onChange={(event) => onSearchInputChange(event.target.value)} placeholder="Search movies, shows, actors..." aria-invalid={Boolean(searchError)} aria-describedby={searchError ? 'mobile-search-error' : undefined} />
+          </label>
+          <button type="submit" className="search-submit-button">Search</button>
+          {searchError ? <span id="mobile-search-error" className="search-error" role="alert">{searchError}</span> : null}
+        </form>
+      ) : null}
+    </div>
   )
 }
 
-function HomeScreen({ user, onOpenMovie, onOpenPopularMovies, onOpenWatchlist, stats, watchlistState, popularMoviesState }) {
+function SearchResultsPage({
+  onOpenMovie,
+  onOpenPerson,
+  onSearchTmdb,
+  onOpenTvShow,
+  query,
+  searchResultsState,
+  tmdbSearchState,
+  watchedMovieIds,
+  watchedTvIds,
+  watchlistMovieIds,
+  watchlistTvIds,
+}) {
+  if (!query) {
+    return (
+      <section className="search-results-page">
+        <div className="search-results-heading">
+          <p className="eyebrow">Search</p>
+          <h1>Find something to watch</h1>
+          <p>Enter a movie, show, or actor in the search field above.</p>
+        </div>
+      </section>
+    )
+  }
+
+  const isLoading = searchResultsState.status === 'loading' || searchResultsState.status === 'idle'
+  const hasError = searchResultsState.status === 'error'
+  const isTmdbLoading = tmdbSearchState.status === 'loading'
+  const showingTmdbResults = tmdbSearchState.status === 'success'
+  const titleMovies = showingTmdbResults ? tmdbSearchState.movies : searchResultsState.movies
+  const titleShows = showingTmdbResults ? tmdbSearchState.shows : searchResultsState.shows
+
+  return (
+    <section className="search-results-page">
+      <div className="search-results-heading">
+        <p className="eyebrow">Search results</p>
+        <h1>Results for “{query}”</h1>
+        <div className="tmdb-search-action">
+          <button type="button" className="search-tmdb-button" onClick={onSearchTmdb} disabled={isTmdbLoading}>
+            {isTmdbLoading ? 'Searching TMDB…' : 'Search TMDB'}
+          </button>
+          {tmdbSearchState.status === 'error' ? <p className="tmdb-search-error" role="alert">Could not search TMDB. {tmdbSearchState.error}</p> : null}
+        </div>
+      </div>
+
+      <SearchResultGroup title={showingTmdbResults ? 'TMDB Movies' : 'Movies'} isLoading={isLoading || isTmdbLoading} error={hasError ? searchResultsState.error : ''} items={titleMovies} emptyMessage={showingTmdbResults ? 'No TMDB movies matched this search.' : 'No movies matched this search.'}>
+        <div className="movie-card-grid popular-movies-catalog">
+          {titleMovies.map((movie) => <MovieCard key={movie.id} movie={movie} onOpenMovie={onOpenMovie} isWatched={watchedMovieIds.has(Number(movie.id))} isInWatchlist={watchlistMovieIds.has(Number(movie.id))} />)}
+        </div>
+      </SearchResultGroup>
+
+      <SearchResultGroup title={showingTmdbResults ? 'TMDB TV Shows' : 'TV Shows'} isLoading={isLoading || isTmdbLoading} error={hasError ? searchResultsState.error : ''} items={titleShows} emptyMessage={showingTmdbResults ? 'No TMDB TV shows matched this search.' : 'No TV shows matched this search.'}>
+        <div className="tv-show-card-grid popular-movies-catalog">
+          {titleShows.map((show) => <TvShowPosterCard key={show.id} show={show} onSelectShow={onOpenTvShow} isWatched={watchedTvIds.has(Number(show.id))} isInWatchlist={watchlistTvIds.has(Number(show.id))} />)}
+        </div>
+      </SearchResultGroup>
+
+      <SearchResultGroup title="Actors" isLoading={isLoading} error={hasError ? searchResultsState.error : ''} items={searchResultsState.actors} emptyMessage="No actors matched this search.">
+        <div className="favorite-actors-grid">
+          {searchResultsState.actors.map((actor) => <FavoriteActorCard key={actor.id} actor={actor} onOpenPerson={onOpenPerson} />)}
+        </div>
+      </SearchResultGroup>
+    </section>
+  )
+}
+
+function SearchResultGroup({ children, emptyMessage, error, isLoading, items, title }) {
+  return (
+    <section className="content-section search-results-group">
+      <div className="section-header"><h2>{title}</h2><span className="search-result-count">{isLoading ? '' : items.length}</span></div>
+      {isLoading ? <SectionMessage message={`Searching ${title.toLowerCase()}...`} /> : error ? <SectionMessage tone="error" message={`Could not search ${title.toLowerCase()}. ${error}`} /> : items.length ? children : <SectionMessage message={emptyMessage} />}
+    </section>
+  )
+}
+
+function HomeScreen({ user, onOpenMovie, onOpenPopularMovies, onOpenWatchlist, stats, statsPeriod, onStatsPeriodChange, watchlistState, popularMoviesState, continueWatchingState, onOpenTvShow, latestEpisodesState, onOpenLatestEpisodes, tvWatchlistIds, tvWatchedIds }) {
   const greeting = user ? `Good evening, ${getFirstName(user.fullName)}! 🍿` : 'Good evening! 🍿'
   const homeWatchlistMovies = watchlistState.movies.slice(0, 5)
   const trendingMovies = popularMoviesState.movies.slice(0, 5)
@@ -2377,7 +2715,7 @@ function HomeScreen({ user, onOpenMovie, onOpenPopularMovies, onOpenWatchlist, s
           <div className="person person-right" />
         </div>
 
-        <StatsPanel title="Your Stats" items={stats} />
+        <StatsPanel title="Your Stats" items={stats} period={statsPeriod} onPeriodChange={onStatsPeriodChange} />
       </section>
 
       <section className="mobile-stats mobile-only">
@@ -2393,11 +2731,11 @@ function HomeScreen({ user, onOpenMovie, onOpenPopularMovies, onOpenWatchlist, s
       </section>
 
       <ContentSection title="Continue Watching" action="See all">
-        <div className="feature-grid">
-          {continueWatching.map((item) => (
-            <ProgressCard key={item.title} item={item} />
-          ))}
-        </div>
+        {continueWatchingState.status === 'loading' ? <SectionMessage message="Loading your TV progress..." /> : null}
+        {continueWatchingState.status === 'error' ? <SectionMessage message={continueWatchingState.error} tone="error" /> : null}
+        {continueWatchingState.status === 'idle' ? <SectionMessage message="Sign in to view shows you are watching." /> : null}
+        {continueWatchingState.status === 'success' && continueWatchingState.shows.length === 0 ? <SectionMessage message="Start watching a TV show to see it here." /> : null}
+        {continueWatchingState.shows.length > 0 ? <div className="feature-grid">{continueWatchingState.shows.map((item) => <ProgressCard key={item.id} item={item} onOpenTvShow={onOpenTvShow} />)}</div> : null}
       </ContentSection>
 
       <section className="split-row">
@@ -2436,19 +2774,8 @@ function HomeScreen({ user, onOpenMovie, onOpenPopularMovies, onOpenWatchlist, s
         </ContentSection>
       </section>
 
-      <ContentSection title="New Episodes" action="See all">
-        <div className="episode-grid">
-          {newEpisodes.map((episode) => (
-            <article key={episode.title} className="episode-card">
-              <div className={`episode-poster ${episode.title === 'Fragments' ? 'theme-fragments' : 'theme-astra'}`} />
-              <div className="episode-copy">
-                <span className="episode-meta">{episode.meta}</span>
-                <h3>{episode.title}</h3>
-                <p>{episode.copy}</p>
-              </div>
-            </article>
-          ))}
-        </div>
+      <ContentSection title="New Episodes" action="See all" onAction={onOpenLatestEpisodes}>
+        <TvShowsGrid tvState={latestEpisodesState} onSelectShow={onOpenTvShow} watchedIds={tvWatchedIds} watchlistIds={tvWatchlistIds} />
       </ContentSection>
     </>
   )
@@ -3114,7 +3441,9 @@ function WatchlistScreen({
   onTabChange,
   onOpenLogin,
   onOpenMovie,
+  onOpenPerson,
   onOpenTvShow,
+  favoriteActorsState,
   watchlistState,
   tvWatchlistShows,
 }) {
@@ -3157,6 +3486,7 @@ function WatchlistScreen({
             { label: 'Total', value: String(allItems.length), caption: 'In Watchlist' },
             { label: 'Movies', value: String(watchlistState.movies.length), caption: 'Titles' },
             { label: 'TV Shows', value: String(tvWatchlistShows.length), caption: 'Series' },
+            { label: 'Actors', value: String(favoriteActorsState.actors.length), caption: 'Favorites' },
           ].map((item) => (
             <article key={item.label} className={`watchlist-stat${item.accent ? ' accent' : ''}`}>
               <span>{item.label}</span>
@@ -3180,18 +3510,43 @@ function WatchlistScreen({
         ))}
       </div>
 
-      <div className="watchlist-grid-mobile">
-        {filteredItems.map((item) => (
-          <WatchlistCard key={`${item.type}-${item.id}`} item={item} compact onOpenMovie={item.type === 'TV Shows' ? onOpenTvShow : onOpenMovie} />
-        ))}
-      </div>
+      {activeTab === 'Actors' ? (
+        <div className="favorite-actors-grid">
+          {favoriteActorsState.actors.map((actor) => <FavoriteActorCard key={actor.id} actor={actor} onOpenPerson={onOpenPerson} />)}
+        </div>
+      ) : (
+        <div className="watchlist-grid-mobile">
+          {filteredItems.map((item) => (
+            <WatchlistCard key={`${item.type}-${item.id}`} item={item} compact onOpenMovie={item.type === 'TV Shows' ? onOpenTvShow : onOpenMovie} />
+          ))}
+        </div>
+      )}
 
       {watchlistState.status === 'loading' ? <SectionMessage message="Loading your watchlist..." /> : null}
       {watchlistState.status === 'error' ? <SectionMessage message={watchlistState.error} tone="error" /> : null}
-      {watchlistState.status !== 'loading' && watchlistState.status !== 'error' && filteredItems.length === 0
+      {activeTab === 'Actors' && favoriteActorsState.status === 'loading' ? <SectionMessage message="Loading favorite actors..." /> : null}
+      {activeTab === 'Actors' && favoriteActorsState.status === 'error' ? <SectionMessage message={favoriteActorsState.error} tone="error" /> : null}
+      {activeTab === 'Actors' && favoriteActorsState.status !== 'loading' && favoriteActorsState.status !== 'error' && favoriteActorsState.actors.length === 0
+        ? <SectionMessage message="Favorite actors will appear here." />
+        : null}
+      {activeTab !== 'Actors' && watchlistState.status !== 'loading' && watchlistState.status !== 'error' && filteredItems.length === 0
         ? <SectionMessage message="No watchlist titles match this section yet." />
         : null}
     </section>
+  )
+}
+
+function FavoriteActorCard({ actor, onOpenPerson }) {
+  const [imageUnavailable, setImageUnavailable] = useState(false)
+  const showImage = Boolean(actor.profileUrl) && !imageUnavailable
+
+  return (
+    <button type="button" className="favorite-actor-card" onClick={() => onOpenPerson(actor)} aria-label={`Open ${actor.name}`}>
+      <div className={`favorite-actor-portrait${showImage ? ' has-image' : ''}`}>
+        {showImage ? <img src={actor.profileUrl} alt={`${actor.name} portrait`} loading="lazy" onError={() => setImageUnavailable(true)} /> : <span>{getMovieCreditInitials(actor.name)}</span>}
+      </div>
+      <div><h2>{actor.name}</h2><p>{actor.role || 'Actor'}</p></div>
+    </button>
   )
 }
 
@@ -4007,7 +4362,7 @@ function MoviePosterFrame({ movie }) {
   )
 }
 
-function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOpenPerson }) {
+function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOpenPerson, isSignedIn, favoriteActorIds, onToggleFavorite }) {
   const filmographyPageSize = 5
   const [visibleFilmographyCount, setVisibleFilmographyCount] = useState(filmographyPageSize)
   const personId = personDetailState.person?.id
@@ -4042,6 +4397,7 @@ function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOp
   }
 
   const { person, knownFor, coStars, facts } = personDetailState
+  const isFavorite = favoriteActorIds.has(Number(person.id))
   const visibleFilmography = filmography.slice(0, visibleFilmographyCount)
   const hasMoreFilmography = filmography.length > visibleFilmography.length
   const heroStyle = person.heroBackdropUrl
@@ -4093,9 +4449,9 @@ function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOp
               <PlusIcon />
               <span>Follow</span>
             </button>
-            <button type="button" className="secondary-button movie-detail-secondary">
+            <button type="button" className="secondary-button movie-detail-secondary" onClick={() => onToggleFavorite(person)}>
               <StarOutlineIcon />
-              <span>Favorite</span>
+              <span>{isFavorite ? 'Favorited' : isSignedIn ? 'Favorite' : 'Sign in to Favorite'}</span>
             </button>
             <button type="button" className="secondary-button movie-detail-secondary ghost">
               <ShareIcon />
@@ -4402,17 +4758,18 @@ function ContentSection({ title, action, onAction, compact = false, children }) 
   )
 }
 
-function ProgressCard({ item }) {
+function ProgressCard({ item, onOpenTvShow }) {
+  const [posterUnavailable, setPosterUnavailable] = useState(false)
+  const showPosterImage = Boolean(item.backdropUrl || item.posterUrl) && !posterUnavailable
+
   return (
-    <article className="media-card progress-card">
-      <div className={`media-poster wide ${item.theme}`}>
-        <button type="button" className="poster-menu" aria-label={`More options for ${item.title}`}>
-          <MoreIcon />
-        </button>
+    <button type="button" className="media-card progress-card movie-card-button" onClick={() => onOpenTvShow?.(item)} aria-label={`Open ${item.title}`}>
+      <div className={`media-poster wide ${showPosterImage ? 'has-image theme-catalog' : 'theme-catalog'}`}>
+        {showPosterImage ? <img src={item.backdropUrl || item.posterUrl} alt={`${item.title} artwork`} className="movie-card-poster-image" loading="lazy" onError={() => setPosterUnavailable(true)} /> : null}
       </div>
       <div className="media-copy">
         <h3>{item.title}</h3>
-        <p>{item.meta}</p>
+        <p>{item.latestWatchedEpisodeLabel} · {item.watchedEpisodeCount} of {item.airedEpisodeCount} episodes</p>
         <div className="progress-row">
           <div className="progress-track">
             <span style={{ width: `${item.progress}%` }} />
@@ -4420,7 +4777,7 @@ function ProgressCard({ item }) {
           <span className="progress-value">{item.progress}%</span>
         </div>
       </div>
-    </article>
+    </button>
   )
 }
 
@@ -4962,6 +5319,38 @@ function mapTvWatchlistShowPayload(show, index = 0) {
   }
 }
 
+function mapContinueWatchingTvShowPayload(show) {
+  return {
+    id: show.id,
+    title: show.title,
+    posterUrl: show.posterUrl || null,
+    backdropUrl: show.backdropUrl || null,
+    watchedEpisodeCount: Number(show.watchedEpisodeCount) || 0,
+    airedEpisodeCount: Number(show.airedEpisodeCount) || 0,
+    progress: Number(show.progress) || 0,
+    latestWatchedEpisodeLabel: show.latestWatchedEpisodeLabel || 'Latest episode',
+  }
+}
+
+function mapLatestEpisodeTvShowPayload(show) {
+  const episode = show.latestEpisode ?? {}
+  const seasonNumber = Number(episode.seasonNumber)
+  const episodeNumber = Number(episode.episodeNumber)
+  const episodeLabel = Number.isInteger(seasonNumber) && Number.isInteger(episodeNumber) ? `S${seasonNumber} E${episodeNumber}` : 'Latest episode'
+
+  return {
+    id: show.id,
+    title: show.title,
+    year: episode.airDate ? formatLongDate(episode.airDate) : 'Recently aired',
+    rating: typeof show.popularity === 'number' ? Math.round(show.popularity) : 0,
+    meta: episodeLabel,
+    seasonMeta: episode.title ? `${episodeLabel} · ${episode.title}` : episodeLabel,
+    posterUrl: show.posterUrl || null,
+    backdropUrl: show.backdropUrl || null,
+    theme: 'theme-catalog',
+  }
+}
+
 function mapWatchedMoviePayload(movie) {
   return {
     id: movie.id,
@@ -5007,6 +5396,16 @@ function mapTvRowToCard(show) {
     backdropUrl: resolveMovieBackdropUrl(show.backdrop_path),
     railMeta: formatTvRailMeta(show),
     theme: 'theme-catalog',
+  }
+}
+
+function mapSearchActorPayload(actor) {
+  return {
+    id: actor.tmdb_person_id,
+    name: actor.name,
+    profileUrl: resolveMoviePosterUrl(actor.profile_path),
+    role: actor.known_for_department || 'Actor',
+    popularity: typeof actor.popularity === 'number' ? actor.popularity : 0,
   }
 }
 
@@ -5462,7 +5861,11 @@ function getMovieCreditInitials(name) {
     .join('')
 }
 
-function readAppRoute(pathname = window.location.pathname) {
+function readAppRoute(pathname = window.location.pathname, search = window.location.search) {
+  if (/^\/search\/?$/.test(pathname)) {
+    return { kind: routeKinds.search, query: new URLSearchParams(search).get('q')?.trim() || '' }
+  }
+
   const tvDetailMatch = pathname.match(/^\/tv\/(\d+)\/?$/)
   const personDetailMatch = pathname.match(/^\/people\/(\d+)\/?$/)
   const detailMatch = pathname.match(/^\/movies\/(\d+)\/?$/)
@@ -5486,6 +5889,10 @@ function readAppRoute(pathname = window.location.pathname) {
   }
 
   return { kind: routeKinds.home }
+}
+
+function buildSearchPath(query) {
+  return `/search?q=${encodeURIComponent(query)}`
 }
 
 function buildMovieDetailPath(movieId) {
@@ -5669,14 +6076,6 @@ function formatMinutesAsHoursAndMinutes(minutes) {
   const remainingMinutes = minutes % 60
 
   return `${hours}h ${remainingMinutes}m`
-}
-
-function buildHomeStats({ stats, watchlistCount }) {
-  return [
-    { label: 'Movies Watched', value: String(stats.moviesWatched), tone: 'violet', icon: TicketIcon },
-    { label: 'Time Watched', value: formatMinutesAsHoursAndMinutes(stats.timeWatchedMinutes), tone: 'blue', icon: ClockIcon },
-    { label: 'In Watchlist', value: String(watchlistCount), tone: 'gold', icon: BookmarkStackIcon },
-  ]
 }
 
 function buildMoviesPageStats({ stats }) {
@@ -5901,15 +6300,6 @@ function SparklesIcon() {
   return (
     <IconBase>
       <path d="M12 4.5 13.9 10 19.5 12l-5.6 2-1.9 5.5-1.9-5.5L4.5 12l5.6-2L12 4.5Z" />
-    </IconBase>
-  )
-}
-
-function TicketIcon() {
-  return (
-    <IconBase>
-      <path d="M6 7h12a1 1 0 0 1 1 1v2.2a1.8 1.8 0 0 0 0 3.6V16a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-2.2a1.8 1.8 0 0 0 0-3.6V8a1 1 0 0 1 1-1Z" />
-      <path d="M12 7v10" />
     </IconBase>
   )
 }

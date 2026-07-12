@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createApp } from '../app.js'
-import { countMovies, countStoredDataBytes, ensureMoviesTable, listGenres, listMovies, listRecentlyReleasedMovies, listSimilarMovies, listTopRatedMovies, listTvShows, listTvWatchlistShowsForUser, listUpcomingMovies, updateTvEpisodeWatchStateForUser } from '../database.js'
+import { countMovies, countStoredDataBytes, ensureMoviesTable, listContinueWatchingTvShowsForUser, listGenres, listLatestEpisodeTvShows, listMovies, listRecentlyReleasedMovies, listSimilarMovies, listTopRatedMovies, listTvShows, listTvWatchlistShowsForUser, listUpcomingMovies, searchActors, searchMovies, searchTvShows, updateTvEpisodeWatchStateForUser } from '../database.js'
 
 function isSchemaSetupQuery(sql) {
   return (
@@ -75,6 +75,30 @@ test('listMovies applies a case-insensitive genre filter when provided', async (
   assert.match(executedSql, /WHERE EXISTS/i)
   assert.match(executedSql, /LOWER\(selected_genres\.name\) = LOWER\(\$3\)/i)
   assert.deepEqual(executedParams, [30, 0, 'action'])
+})
+
+test('local search queries use literal case-insensitive substring matching with stable result ordering', async () => {
+  const queries = []
+  const pool = {
+    async query(sql, params) {
+      queries.push({ sql, params })
+      return { rows: [] }
+    },
+  }
+
+  await Promise.all([
+    searchMovies(pool, 'Dune'),
+    searchTvShows(pool, 'Dune'),
+    searchActors(pool, 'Dune'),
+  ])
+
+  assert.equal(queries.length, 3)
+  for (const { sql, params } of queries) {
+    assert.match(sql, /POSITION\(LOWER\(\$1\) IN LOWER\(/i)
+    assert.match(sql, /ORDER BY (?:movies\.|tv_shows\.)?popularity DESC NULLS LAST/i)
+    assert.match(sql, /LIMIT \$2/i)
+    assert.deepEqual(params, ['Dune', 30])
+  }
 })
 
 test('listGenres returns only used genres ordered alphabetically', async () => {
@@ -1392,6 +1416,116 @@ test('GET /api/genres returns database-backed genres ordered alphabetically', as
       { id: 18, name: 'Drama', movieCount: 7 },
     ])
   } finally {
+    await closeServer(server)
+  }
+})
+
+test('GET /api/search validates the query and returns grouped local matches', async () => {
+  const pool = {
+    async query(sql, params) {
+      if (isSchemaSetupQuery(sql)) return { rowCount: null }
+
+      if (sql.includes('FROM movies') && sql.includes('POSITION')) {
+        assert.deepEqual(params, ['Dune', 30])
+        return { rows: [{ tmdb_id: 1, title: 'Dune', popularity: 100 }] }
+      }
+
+      if (sql.includes('FROM tv_shows') && sql.includes('POSITION')) {
+        assert.deepEqual(params, ['Dune', 30])
+        return { rows: [{ tmdb_id: 2, name: 'Dune: Prophecy', popularity: 90 }] }
+      }
+
+      if (sql.includes('FROM cast_members') && sql.includes('POSITION')) {
+        assert.deepEqual(params, ['Dune', 30])
+        return { rows: [{ tmdb_person_id: 3, name: 'Dune Actor', popularity: 80 }] }
+      }
+
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+
+  const app = await createApp(pool)
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const missingResponse = await fetch(`http://127.0.0.1:${address.port}/api/search?q=%20%20`)
+    assert.equal(missingResponse.status, 400)
+    assert.deepEqual(await missingResponse.json(), { error: 'q is required' })
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/search?q=%20Dune%20`)
+    const payload = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.equal(payload.query, 'Dune')
+    assert.deepEqual(payload.movies.map((movie) => movie.title), ['Dune'])
+    assert.deepEqual(payload.shows.map((show) => show.name), ['Dune: Prophecy'])
+    assert.deepEqual(payload.actors.map((actor) => actor.name), ['Dune Actor'])
+  } finally {
+    await closeServer(server)
+  }
+})
+
+test('GET /api/search/tmdb returns normalized TMDB title cards without database writes', async () => {
+  const nonSchemaQueries = []
+  const pool = {
+    async query(sql) {
+      if (isSchemaSetupQuery(sql)) return { rowCount: null }
+      nonSchemaQueries.push(sql)
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+  const originalFetch = global.fetch
+  const tmdbRequests = []
+  global.fetch = async (url, options) => {
+    if (!String(url).startsWith('https://example.test')) return originalFetch(url, options)
+    tmdbRequests.push({ url: String(url), options })
+    if (String(url).includes('/search/movie')) {
+      return {
+        ok: true,
+        async json() {
+          return { results: Array.from({ length: 21 }, (_value, index) => ({ id: index + 1, title: `Movie ${index + 1}`, release_date: '2026-01-02', vote_average: 7.4, poster_path: '/movie.jpg' })) }
+        },
+      }
+    }
+    return {
+      ok: true,
+      async json() {
+        return { results: [{ id: 50, name: 'Dune: Prophecy', first_air_date: '2024-11-17', vote_average: 8.1, vote_count: 12, overview: 'A TV story.', poster_path: '/show.jpg', backdrop_path: '/backdrop.jpg' }] }
+      },
+    }
+  }
+
+  const app = await createApp(pool, {
+    loadRuntimeConfig: () => ({ tmdbBearerToken: 'token', tmdbBaseUrl: 'https://example.test' }),
+  })
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const baseUrl = `http://127.0.0.1:${address.port}/api/search/tmdb`
+    const missingResponse = await originalFetch(`${baseUrl}?q=%20%20`)
+    assert.equal(missingResponse.status, 400)
+    assert.deepEqual(await missingResponse.json(), { error: 'q is required' })
+
+    const response = await originalFetch(`${baseUrl}?q=%20Dune%20`)
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.query, 'Dune')
+    assert.equal(payload.movies.length, 20)
+    assert.deepEqual(payload.movies[0], {
+      id: 1, title: 'Movie 1', year: '2026', rating: '7.4', meta: 'Movie', releaseDate: '2026-01-02', posterUrl: 'https://image.tmdb.org/t/p/w500/movie.jpg', theme: 'theme-catalog',
+    })
+    assert.deepEqual(payload.shows[0], {
+      id: 50, title: 'Dune: Prophecy', year: '2024', rating: '8.1', meta: 'TV Series', seasonMeta: 'TV Series', genreLabel: 'Genre TBA', maturityRating: 'TV Series', audience: '12 votes', description: 'A TV story.', posterUrl: 'https://image.tmdb.org/t/p/w500/show.jpg', backdropUrl: 'https://image.tmdb.org/t/p/w1280/backdrop.jpg', theme: 'theme-catalog',
+    })
+    assert.equal(tmdbRequests.length, 2)
+    assert.ok(tmdbRequests.some((request) => request.url.endsWith('/search/movie?query=Dune&page=1')))
+    assert.ok(tmdbRequests.some((request) => request.url.endsWith('/search/tv?query=Dune&page=1')))
+    assert.ok(tmdbRequests.every((request) => request.options.headers.Authorization === 'Bearer token'))
+    assert.deepEqual(nonSchemaQueries, [])
+  } finally {
+    global.fetch = originalFetch
     await closeServer(server)
   }
 })
@@ -3456,6 +3590,49 @@ test('listTvWatchlistShowsForUser returns a user’s saved shows in most-recent 
   assert.deepEqual(executedParams, ['florind'])
 })
 
+test('listContinueWatchingTvShowsForUser selects the five most recently watched in-progress shows', async () => {
+  let executedSql = ''
+  let executedParams = []
+  const rows = [{ tmdb_id: 91, name: 'In Progress', watched_episode_count: 3, aired_episode_count: 8 }]
+  const pool = {
+    async query(sql, params) {
+      executedSql = sql
+      executedParams = params
+      return { rows }
+    },
+  }
+
+  const shows = await listContinueWatchingTvShowsForUser(pool, 'florind')
+
+  assert.deepEqual(shows, rows)
+  assert.match(executedSql, /HAVING COUNT\(watched_tv_episodes\.id\) > 0/i)
+  assert.match(executedSql, /COUNT\(watched_tv_episodes\.id\) < COUNT\(\*\)/i)
+  assert.match(executedSql, /MAX\(watched_tv_episodes\.watched_at\) AS last_watched_at/i)
+  assert.match(executedSql, /ORDER BY episode_progress\.last_watched_at DESC, tv_shows\.tmdb_id ASC/i)
+  assert.match(executedSql, /LIMIT 5/i)
+  assert.deepEqual(executedParams, ['florind'])
+})
+
+test('listLatestEpisodeTvShows selects one aired episode per show and prioritizes date then popularity', async () => {
+  let executedSql = ''
+  const rows = [{ tmdb_id: 99, name: 'Fresh Episode', season_number: 2, episode_number: 3, air_date: '2026-07-12' }]
+  const pool = {
+    async query(sql) {
+      executedSql = sql
+      return { rows }
+    },
+  }
+
+  const shows = await listLatestEpisodeTvShows(pool)
+
+  assert.deepEqual(shows, rows)
+  assert.match(executedSql, /SELECT DISTINCT ON \(tv_seasons\.tv_show_id\)/i)
+  assert.match(executedSql, /tv_episodes\.air_date IS NOT NULL/i)
+  assert.match(executedSql, /tv_episodes\.air_date <= CURRENT_DATE/i)
+  assert.match(executedSql, /ORDER BY latest_episodes\.air_date DESC, tv_shows\.popularity DESC NULLS LAST, tv_shows\.tmdb_id ASC/i)
+  assert.match(executedSql, /LIMIT 10/i)
+})
+
 test('GET /api/tv/library returns saved TV show cards only for the authenticated user', async () => {
   const savedShow = {
     tmdb_id: 88,
@@ -3482,6 +3659,9 @@ test('GET /api/tv/library returns saved TV show cards only for the authenticated
       if (sql.includes('FROM tv_watchlist_items') && sql.includes('watchlisted_at')) {
         return { rows: params[0] === 'florind' ? [savedShow] : [] }
       }
+      if (sql.includes('WITH episode_progress AS')) {
+        return { rows: [] }
+      }
       throw new Error(`Unexpected query: ${sql}`)
     },
   }
@@ -3506,6 +3686,90 @@ test('GET /api/tv/library returns saved TV show cards only for the authenticated
       backdropUrl: 'https://image.tmdb.org/t/p/w1280/saved-backdrop.jpg',
       watchlistedAt: '2026-07-10T12:00:00.000Z',
     }])
+    assert.deepEqual(payload.continueWatchingShows, [])
+  } finally {
+    await closeServer(server)
+  }
+})
+
+test('GET /api/tv/library returns mapped in-progress TV shows for Continue Watching', async () => {
+  const continueWatchingShow = {
+    tmdb_id: 91,
+    name: 'In Progress',
+    poster_path: '/progress.jpg',
+    backdrop_path: '/progress-backdrop.jpg',
+    watched_episode_count: 3,
+    aired_episode_count: 8,
+    latest_watched_season_number: 2,
+    latest_watched_episode_number: 4,
+    last_watched_at: '2026-07-12T10:00:00.000Z',
+  }
+  const pool = {
+    async query(sql, params) {
+      if (isSchemaSetupQuery(sql)) return { rowCount: null }
+      if (sql.includes('FROM users') && sql.includes('full_name') && sql.includes('WHERE username = $1')) return { rows: [{ id: 1, username: 'florind', full_name: 'Florind' }] }
+      if (sql.includes('COALESCE(ARRAY(SELECT tv_shows.tmdb_id FROM watched_tv_shows')) return { rows: [{ watched_ids: [], watchlist_ids: [] }] }
+      if (sql.includes('watched_totals AS')) return { rows: [{ has_user: true, shows_watched: 0, episodes_watched: 3, time_watched_minutes: 120, watchlist_count: 0 }] }
+      if (sql.includes('FROM tv_watchlist_items') && sql.includes('watchlisted_at')) return { rows: [] }
+      if (sql.includes('WITH episode_progress AS')) return { rows: params[0] === 'florind' ? [continueWatchingShow] : [] }
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+  const app = await createApp(pool)
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/tv/library`, { headers: { 'x-watchvault-username': 'florind' } })
+    const payload = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.deepEqual(payload.continueWatchingShows, [{
+      id: 91,
+      title: 'In Progress',
+      posterUrl: 'https://image.tmdb.org/t/p/w500/progress.jpg',
+      backdropUrl: 'https://image.tmdb.org/t/p/w1280/progress-backdrop.jpg',
+      watchedEpisodeCount: 3,
+      airedEpisodeCount: 8,
+      progress: 38,
+      latestWatchedEpisodeLabel: 'S2 E4',
+      lastWatchedAt: '2026-07-12T10:00:00.000Z',
+    }])
+  } finally {
+    await closeServer(server)
+  }
+})
+
+test('GET /api/tv/latest-episodes returns mapped latest episode cards', async () => {
+  const pool = {
+    async query(sql) {
+      if (isSchemaSetupQuery(sql)) return { rowCount: null }
+      if (sql.includes('WITH latest_episodes AS')) {
+        return { rows: [{ tmdb_id: 99, name: 'Fresh Episode', poster_path: '/fresh.jpg', backdrop_path: '/fresh-backdrop.jpg', popularity: 83.4, season_number: 2, episode_number: 3, episode_name: 'The Signal', air_date: '2026-07-12' }] }
+      }
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+  const app = await createApp(pool)
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/tv/latest-episodes`)
+    const payload = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.deepEqual(payload, {
+      count: 1,
+      shows: [{
+        id: 99,
+        title: 'Fresh Episode',
+        posterUrl: 'https://image.tmdb.org/t/p/w500/fresh.jpg',
+        backdropUrl: 'https://image.tmdb.org/t/p/w1280/fresh-backdrop.jpg',
+        popularity: 83.4,
+        latestEpisode: { seasonNumber: 2, episodeNumber: 3, title: 'The Signal', airDate: '2026-07-12' },
+      }],
+    })
   } finally {
     await closeServer(server)
   }

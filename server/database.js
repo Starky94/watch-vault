@@ -935,6 +935,46 @@ export async function listMovies(pool, options = {}) {
   return result.rows
 }
 
+export async function searchMovies(pool, query, limit = 30) {
+  const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 30
+
+  const result = await pool.query(
+    `
+    SELECT
+      movies.tmdb_id,
+      movies.title,
+      movies.original_title,
+      movies.overview,
+      movies.release_date,
+      movies.original_language,
+      movies.poster_path,
+      movies.backdrop_path,
+      movies.popularity,
+      movies.vote_average,
+      movies.vote_count,
+      movies.genre_ids,
+      COALESCE(
+        ARRAY_REMOVE(ARRAY_AGG(genres.name ORDER BY genre_ids.ordinality), NULL),
+        '{}'
+      ) AS genre_names,
+      movies.detail_payload,
+      movies.raw_payload,
+      movies.import_rank,
+      movies.imported_at
+    FROM movies
+    LEFT JOIN LATERAL UNNEST(movies.genre_ids) WITH ORDINALITY AS genre_ids(tmdb_genre_id, ordinality) ON TRUE
+    LEFT JOIN genres ON genres.tmdb_genre_id = genre_ids.tmdb_genre_id
+    WHERE POSITION(LOWER($1) IN LOWER(movies.title)) > 0
+    GROUP BY movies.id
+    ORDER BY movies.popularity DESC NULLS LAST, movies.title ASC, movies.tmdb_id ASC
+    LIMIT $2
+  `,
+    [query, normalizedLimit]
+  )
+
+  return result.rows
+}
+
 export async function listGenres(pool) {
   const result = await pool.query(`
     SELECT
@@ -1400,6 +1440,67 @@ export async function listTvShows(pool, options = {}) {
   return result.rows
 }
 
+export async function searchTvShows(pool, query, limit = 30) {
+  const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 30
+
+  const result = await pool.query(
+    `
+    SELECT
+      tv_shows.tmdb_id,
+      tv_shows.name,
+      tv_shows.original_name,
+      tv_shows.overview,
+      tv_shows.first_air_date,
+      tv_shows.original_language,
+      tv_shows.poster_path,
+      tv_shows.backdrop_path,
+      tv_shows.popularity,
+      tv_shows.vote_average,
+      tv_shows.vote_count,
+      tv_shows.genre_ids,
+      COALESCE(
+        ARRAY_REMOVE(ARRAY_AGG(tv_genres.name ORDER BY genre_ids.ordinality), NULL),
+        '{}'
+      ) AS genre_names,
+      tv_shows.detail_payload,
+      tv_shows.raw_payload,
+      tv_shows.import_rank,
+      tv_shows.imported_at
+    FROM tv_shows
+    LEFT JOIN LATERAL UNNEST(tv_shows.genre_ids) WITH ORDINALITY AS genre_ids(tmdb_genre_id, ordinality) ON TRUE
+    LEFT JOIN tv_genres ON tv_genres.tmdb_genre_id = genre_ids.tmdb_genre_id
+    WHERE POSITION(LOWER($1) IN LOWER(tv_shows.name)) > 0
+    GROUP BY tv_shows.id
+    ORDER BY tv_shows.popularity DESC NULLS LAST, tv_shows.name ASC, tv_shows.tmdb_id ASC
+    LIMIT $2
+  `,
+    [query, normalizedLimit]
+  )
+
+  return result.rows
+}
+
+export async function searchActors(pool, query, limit = 30) {
+  const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 30
+  const result = await pool.query(
+    `
+    SELECT
+      tmdb_person_id,
+      name,
+      profile_path,
+      known_for_department,
+      popularity
+    FROM cast_members
+    WHERE POSITION(LOWER($1) IN LOWER(name)) > 0
+    ORDER BY popularity DESC NULLS LAST, name ASC, tmdb_person_id ASC
+    LIMIT $2
+  `,
+    [query, normalizedLimit]
+  )
+
+  return result.rows
+}
+
 export async function listRecentlyAiredTvShows(pool, options = {}) {
   const { limit = 30, page = 1 } = options
   const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 30
@@ -1440,6 +1541,42 @@ export async function listRecentlyAiredTvShows(pool, options = {}) {
     OFFSET $2
   `,
     [normalizedLimit, offset]
+  )
+
+  return result.rows
+}
+
+export async function listLatestEpisodeTvShows(pool) {
+  const result = await pool.query(
+    `
+      WITH latest_episodes AS (
+        SELECT DISTINCT ON (tv_seasons.tv_show_id)
+          tv_seasons.tv_show_id,
+          tv_seasons.season_number,
+          tv_episodes.episode_number,
+          tv_episodes.name AS episode_name,
+          tv_episodes.air_date
+        FROM tv_episodes
+        JOIN tv_seasons ON tv_seasons.id = tv_episodes.tv_season_id
+        WHERE tv_episodes.air_date IS NOT NULL
+          AND tv_episodes.air_date <= CURRENT_DATE
+        ORDER BY tv_seasons.tv_show_id, tv_episodes.air_date DESC, tv_seasons.season_number DESC, tv_episodes.episode_number DESC
+      )
+      SELECT
+        tv_shows.tmdb_id,
+        tv_shows.name,
+        tv_shows.poster_path,
+        tv_shows.backdrop_path,
+        tv_shows.popularity,
+        latest_episodes.season_number,
+        latest_episodes.episode_number,
+        latest_episodes.episode_name,
+        latest_episodes.air_date
+      FROM latest_episodes
+      JOIN tv_shows ON tv_shows.id = latest_episodes.tv_show_id
+      ORDER BY latest_episodes.air_date DESC, tv_shows.popularity DESC NULLS LAST, tv_shows.tmdb_id ASC
+      LIMIT 10
+    `
   )
 
   return result.rows
@@ -1854,6 +1991,81 @@ export async function listCoStarsForPerson(pool, tmdbPersonId, options = {}) {
   )
 
   return result.rows
+}
+
+export async function ensureFavoriteActorsTable(pool) {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS favorite_actors (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      cast_member_id BIGINT NOT NULL REFERENCES cast_members(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (user_id, cast_member_id)
+    )
+  `)
+}
+
+export async function listFavoriteActorsForUser(pool, username) {
+  const result = await pool.query(
+    `
+      SELECT
+        cast_members.tmdb_person_id,
+        cast_members.name,
+        cast_members.profile_path,
+        cast_members.known_for_department,
+        cast_members.popularity,
+        favorite_actors.created_at AS favorited_at
+      FROM favorite_actors
+      JOIN users ON users.id = favorite_actors.user_id
+      JOIN cast_members ON cast_members.id = favorite_actors.cast_member_id
+      WHERE users.username = $1
+      ORDER BY favorite_actors.created_at DESC, cast_members.name ASC
+    `,
+    [username]
+  )
+
+  return result.rows
+}
+
+export async function toggleFavoriteActorForUser(pool, { username, personId }) {
+  const result = await pool.query(
+    `
+      WITH selected_user AS (
+        SELECT id FROM users WHERE username = $1 LIMIT 1
+      ),
+      selected_actor AS (
+        SELECT id FROM cast_members WHERE tmdb_person_id = $2 LIMIT 1
+      ),
+      existing_favorite AS (
+        SELECT favorite_actors.id
+        FROM favorite_actors
+        JOIN selected_user ON selected_user.id = favorite_actors.user_id
+        JOIN selected_actor ON selected_actor.id = favorite_actors.cast_member_id
+      ),
+      removed_favorite AS (
+        DELETE FROM favorite_actors
+        WHERE id IN (SELECT id FROM existing_favorite)
+        RETURNING id
+      ),
+      inserted_favorite AS (
+        INSERT INTO favorite_actors (user_id, cast_member_id)
+        SELECT selected_user.id, selected_actor.id
+        FROM selected_user CROSS JOIN selected_actor
+        WHERE NOT EXISTS (SELECT 1 FROM existing_favorite)
+        RETURNING id
+      )
+      SELECT
+        EXISTS (SELECT 1 FROM selected_user) AS has_user,
+        EXISTS (SELECT 1 FROM selected_actor) AS has_actor,
+        EXISTS (SELECT 1 FROM inserted_favorite) AS favorited
+    `,
+    [username, personId]
+  )
+
+  const row = result.rows[0] ?? {}
+  if (!row.has_user) return { status: 'missing_user' }
+  if (!row.has_actor) return { status: 'missing_actor' }
+  return { status: 'ok', favorited: Boolean(row.favorited) }
 }
 
 export async function listWatchlistMoviesForUser(pool, username) {
@@ -2298,6 +2510,60 @@ export async function listTvWatchlistShowsForUser(pool, username) {
       WHERE users.username = $1
       GROUP BY tv_shows.id, tv_watchlist_items.created_at
       ORDER BY tv_watchlist_items.created_at DESC, tv_shows.tmdb_id ASC
+    `,
+    [username]
+  )
+
+  return result.rows
+}
+
+export async function listContinueWatchingTvShowsForUser(pool, username) {
+  const result = await pool.query(
+    `
+      WITH episode_progress AS (
+        SELECT
+          tv_seasons.tv_show_id,
+          COUNT(*)::INTEGER AS aired_episode_count,
+          COUNT(watched_tv_episodes.id)::INTEGER AS watched_episode_count,
+          MAX(watched_tv_episodes.watched_at) AS last_watched_at
+        FROM tv_episodes
+        JOIN tv_seasons ON tv_seasons.id = tv_episodes.tv_season_id
+        LEFT JOIN watched_tv_episodes
+          ON watched_tv_episodes.tv_episode_id = tv_episodes.id
+          AND watched_tv_episodes.user_id = (SELECT id FROM users WHERE username = $1 LIMIT 1)
+        WHERE tv_episodes.air_date IS NULL OR tv_episodes.air_date <= CURRENT_DATE
+        GROUP BY tv_seasons.tv_show_id
+        HAVING COUNT(watched_tv_episodes.id) > 0
+          AND COUNT(watched_tv_episodes.id) < COUNT(*)
+      ),
+      latest_watched_episodes AS (
+        SELECT DISTINCT ON (tv_seasons.tv_show_id)
+          tv_seasons.tv_show_id,
+          tv_seasons.season_number,
+          tv_episodes.episode_number,
+          watched_tv_episodes.watched_at
+        FROM watched_tv_episodes
+        JOIN tv_episodes ON tv_episodes.id = watched_tv_episodes.tv_episode_id
+        JOIN tv_seasons ON tv_seasons.id = tv_episodes.tv_season_id
+        JOIN users ON users.id = watched_tv_episodes.user_id
+        WHERE users.username = $1
+        ORDER BY tv_seasons.tv_show_id, watched_tv_episodes.watched_at DESC, watched_tv_episodes.id DESC
+      )
+      SELECT
+        tv_shows.tmdb_id,
+        tv_shows.name,
+        tv_shows.poster_path,
+        tv_shows.backdrop_path,
+        episode_progress.watched_episode_count,
+        episode_progress.aired_episode_count,
+        episode_progress.last_watched_at,
+        latest_watched_episodes.season_number AS latest_watched_season_number,
+        latest_watched_episodes.episode_number AS latest_watched_episode_number
+      FROM episode_progress
+      JOIN tv_shows ON tv_shows.id = episode_progress.tv_show_id
+      JOIN latest_watched_episodes ON latest_watched_episodes.tv_show_id = episode_progress.tv_show_id
+      ORDER BY episode_progress.last_watched_at DESC, tv_shows.tmdb_id ASC
+      LIMIT 5
     `,
     [username]
   )

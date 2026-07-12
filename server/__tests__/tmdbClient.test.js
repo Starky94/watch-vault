@@ -10,6 +10,8 @@ import {
   fetchPersonDetails,
   fetchPopularMoviesPage,
   fetchPopularTvShowsPage,
+  searchMovies,
+  searchTvShows,
   fetchTvDetails,
   fetchUpcomingMoviesPage,
   getTmdbRateLimitConfig,
@@ -62,6 +64,23 @@ test('fetchUpcomingMoviesPage requests the TMDB upcoming endpoint', async () => 
   })
 
   assert.match(requestedUrl, /\/movie\/upcoming\?page=2$/)
+})
+
+test('TMDB title searches request first-page movie and TV matches', async () => {
+  resetTmdbRateLimiterForTests()
+  const requestedUrls = []
+  const fetchImpl = async (url) => {
+    requestedUrls.push(String(url))
+    return { ok: true, async json() { return { results: [] } } }
+  }
+
+  await Promise.all([
+    searchMovies(fetchImpl, { token: 'token', baseUrl: 'https://api.themoviedb.org/3', query: 'Dune' }),
+    searchTvShows(fetchImpl, { token: 'token', baseUrl: 'https://api.themoviedb.org/3', query: 'Dune' }),
+  ])
+
+  assert.ok(requestedUrls.some((url) => /\/search\/movie\?query=Dune&page=1$/.test(url)))
+  assert.ok(requestedUrls.some((url) => /\/search\/tv\?query=Dune&page=1$/.test(url)))
 })
 
 test('fetchPopularTvShowsPage requests the TMDB popular TV endpoint', async () => {

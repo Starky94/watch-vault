@@ -98,6 +98,28 @@ export async function fetchPopularMoviesPage(fetchImpl, options) {
   })
 }
 
+export async function searchMovies(fetchImpl, options) {
+  const { token, baseUrl, query } = options
+
+  return tmdbRequest(fetchImpl, {
+    token,
+    baseUrl,
+    path: 'search/movie',
+    searchParams: { query, page: 1 },
+  })
+}
+
+export async function searchTvShows(fetchImpl, options) {
+  const { token, baseUrl, query } = options
+
+  return tmdbRequest(fetchImpl, {
+    token,
+    baseUrl,
+    path: 'search/tv',
+    searchParams: { query, page: 1 },
+  })
+}
+
 export async function fetchPopularTvShowsPage(fetchImpl, options) {
   const { token, page, baseUrl } = options
 
