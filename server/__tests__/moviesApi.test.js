@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createApp } from '../app.js'
-import { countMovies, countStoredDataBytes, ensureMoviesTable, listContinueWatchingTvShowsForUser, listGenres, listLatestEpisodeTvShows, listMovies, listRecentlyReleasedMovies, listSimilarMovies, listTopRatedMovies, listTvShows, listTvWatchlistShowsForUser, listUpcomingMovies, searchActors, searchMovies, searchTvShows, updateTvEpisodeWatchStateForUser } from '../database.js'
+import { buildStatsInsights, countMovies, countStoredDataBytes, ensureMoviesTable, getMostWatchedActorsForUser, getMovieStatsForUser, getStatsInsightsForUser, getStreamingPlatformsForUser, getTopRatedThisMonthForUser, listContinueWatchingTvShowsForUser, listGenres, listLatestEpisodeTvShows, listMovies, listRecentlyReleasedMovies, listSimilarMovies, listTopRatedMovies, listTvShows, listTvWatchlistShowsForUser, listUpcomingMovies, searchActors, searchMovies, searchTvShows, updateTvEpisodeWatchStateForUser, upsertTvEpisodeRatingForUser } from '../database.js'
 
 function isSchemaSetupQuery(sql) {
   return (
@@ -19,9 +19,19 @@ function isSchemaSetupQuery(sql) {
     sql.includes('INSERT INTO users') ||
     sql.includes('CREATE TABLE IF NOT EXISTS watchlist_items') ||
     sql.includes('CREATE TABLE IF NOT EXISTS watched_movies') ||
+    sql.includes('ALTER TABLE watched_movies') ||
     sql.includes('CREATE TABLE IF NOT EXISTS movie_ratings') ||
     sql.includes('CREATE TABLE IF NOT EXISTS tv_watchlist_items') ||
-    sql.includes('CREATE TABLE IF NOT EXISTS watched_tv_shows')
+    sql.includes('CREATE TABLE IF NOT EXISTS watched_tv_shows') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS tv_seasons') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS tv_episodes') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS tv_show_credits') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS tv_recommendations') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS tv_trailers') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS watched_tv_episodes') ||
+    sql.includes('ALTER TABLE watched_tv_episodes') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS tv_episode_ratings') ||
+    sql.includes('ALTER TABLE tv_shows')
   )
 }
 
@@ -893,6 +903,176 @@ test('GET /api/watched rejects unauthenticated requests', async () => {
   }
 })
 
+test('GET /api/stats/insights requires authentication and validates period and timezone', async () => {
+  const pool = {
+    async query(sql) {
+      if (isSchemaSetupQuery(sql)) return { rowCount: null }
+      if (sql.includes('combined_ratings')) return { rows: [{ title: 'Movie A', poster_path: '/movie-a.jpg', media_type: 'movie', score: 5, episode_count: 0 }] }
+      if (sql.includes('events AS') || sql.includes('SELECT score::DOUBLE PRECISION score')) return { rows: [] }
+      if (sql.includes('SELECT') && sql.includes('FROM users') && sql.includes('WHERE username = $1')) {
+        return { rows: [{ id: 1, username: 'florind', full_name: 'Florin Druta' }] }
+      }
+      if (sql.includes('stats_insight_events')) return { rows: [] }
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+  const app = await createApp(pool)
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const baseUrl = `http://127.0.0.1:${address.port}/api/stats/insights`
+
+    let response = await fetch(baseUrl)
+    assert.equal(response.status, 401)
+
+    response = await fetch(`${baseUrl}?period=decade`, { headers: { 'x-watchvault-username': 'florind' } })
+    assert.equal(response.status, 400)
+    assert.deepEqual(await response.json(), { error: 'period must be one of: week, month, year' })
+
+    response = await fetch(`${baseUrl}?period=year&timeZone=Not/A_Real_Zone`, { headers: { 'x-watchvault-username': 'florind' } })
+    assert.equal(response.status, 400)
+    assert.deepEqual(await response.json(), { error: 'timeZone must be a valid IANA timezone' })
+
+    response = await fetch(`${baseUrl}?period=year&timeZone=UTC`, { headers: { 'x-watchvault-username': 'florind' } })
+    assert.equal(response.status, 200)
+    assert.deepEqual((await response.json()).topRatedThisMonth, [{ title: 'Movie A', posterPath: '/movie-a.jpg', mediaType: 'movie', score: 5, episodeCount: 0 }])
+  } finally {
+    await closeServer(server)
+  }
+})
+
+test('movie stats include the user rating average for ratings created or updated in the selected period', async () => {
+  const calls = []
+  const pool = {
+    async query(sql, params) {
+      calls.push({ sql, params })
+      return {
+        rows: [{
+          has_user: true,
+          movies_watched: 2,
+          time_watched_minutes: 250,
+          watchlist_count: 1,
+          average_rating: 4.25,
+        }],
+      }
+    },
+  }
+
+  const stats = await getMovieStatsForUser(pool, 'florind', 'week')
+
+  assert.deepEqual(stats, {
+    status: 'ok',
+    moviesWatched: 2,
+    timeWatchedMinutes: 250,
+    watchlistCount: 1,
+    averageRating: 4.25,
+  })
+  assert.deepEqual(calls[0].params, ['florind', 'week'])
+  assert.match(calls[0].sql, /AVG\(movie_ratings\.score\)::DOUBLE PRECISION AS average_rating/i)
+  assert.match(calls[0].sql, /GREATEST\(movie_ratings\.created_at, movie_ratings\.updated_at\)/i)
+  assert.match(calls[0].sql, /date_trunc\(\$2, NOW\(\) AT TIME ZONE 'UTC'\)/i)
+})
+
+test('movie stats expose a null rating average when the selected period has no ratings', async () => {
+  const pool = {
+    async query() {
+      return {
+        rows: [{
+          has_user: true,
+          movies_watched: 0,
+          time_watched_minutes: 0,
+          watchlist_count: 0,
+          average_rating: null,
+        }],
+      }
+    },
+  }
+
+  const stats = await getMovieStatsForUser(pool, 'florind', 'year')
+
+  assert.equal(stats.averageRating, null)
+})
+
+test('stats insights aggregate watch activity, media events, full genre runtime, and browser-local habits', () => {
+  const insights = buildStatsInsights([
+    { media_type: 'movie', watched_at: '2026-07-13T01:30:00.000Z', runtime_minutes: 120, genre_names: ['Action', 'Drama'] },
+    { media_type: 'tv', watched_at: '2026-07-13T22:15:00.000Z', runtime_minutes: 45, genre_names: ['Drama'] },
+  ], {
+    period: 'week',
+    timeZone: 'Europe/Bucharest',
+    now: new Date('2026-07-13T12:00:00.000Z'),
+  })
+
+  assert.equal(insights.activity.buckets.length, 7)
+  assert.deepEqual(insights.activity.buckets.map(({ label, totalMinutes }) => ({ label, totalMinutes })), [
+    { label: 'Mon', totalMinutes: 165 }, { label: 'Tue', totalMinutes: 0 }, { label: 'Wed', totalMinutes: 0 },
+    { label: 'Thu', totalMinutes: 0 }, { label: 'Fri', totalMinutes: 0 }, { label: 'Sat', totalMinutes: 0 }, { label: 'Sun', totalMinutes: 0 },
+  ])
+  assert.deepEqual(insights.mediaSplit, { movieEvents: 1, tvEpisodeEvents: 1 })
+  assert.deepEqual(insights.genres, [{ name: 'Drama', minutes: 165 }, { name: 'Action', minutes: 120 }])
+  assert.equal(insights.habits.bestWeekdayIndex, 0)
+  assert.deepEqual(insights.habits.peakWindow, { startHour: 2, endHour: 5, minutes: 120 })
+})
+
+test('stats insights produce period-specific activity buckets and query both movie and TV events', async () => {
+  const calls = []
+  const pool = {
+    async query(sql, params) {
+      calls.push({ sql, params })
+      return { rows: [] }
+    },
+  }
+
+  const insights = await getStatsInsightsForUser(pool, 'florind', { period: 'year', timeZone: 'UTC' })
+  const insightQuery = calls.find(({ sql }) => sql.includes('stats_insight_events'))
+
+  assert.equal(insights.activity.buckets.length, 12)
+  assert.deepEqual(insightQuery.params, ['florind', 'year'])
+  assert.match(insightQuery.sql, /FROM watched_movies/i)
+  assert.match(insightQuery.sql, /FROM watched_tv_episodes/i)
+})
+
+test('top rated this month combines movie ratings with grouped TV episode ratings', async () => {
+  let executedSql = ''
+  const pool = {
+    async query(sql) {
+      executedSql = sql
+      return { rows: [
+        { title: 'Movie A', poster_path: '/movie-a.jpg', media_type: 'movie', score: '5', episode_count: 0 },
+        { title: 'Show B', poster_path: '/show-b.jpg', media_type: 'tv', score: '4.5', episode_count: '3' },
+      ] }
+    },
+  }
+
+  assert.deepEqual(await getTopRatedThisMonthForUser(pool, 'florind'), [
+    { title: 'Movie A', posterPath: '/movie-a.jpg', mediaType: 'movie', score: 5, episodeCount: 0 },
+    { title: 'Show B', posterPath: '/show-b.jpg', mediaType: 'tv', score: 4.5, episodeCount: 3 },
+  ])
+  assert.match(executedSql, /GREATEST\(movie_ratings\.created_at, movie_ratings\.updated_at\)/i)
+  assert.match(executedSql, /AVG\(tv_episode_ratings\.score\)/i)
+  assert.match(executedSql, /GROUP BY tv_shows\.id/i)
+  assert.match(executedSql, /ORDER BY score DESC, rated_at DESC, title ASC/i)
+  assert.match(executedSql, /LIMIT 4/i)
+})
+
+test('stats actor and streaming platform queries aggregate watched titles and tagged runtime', async () => {
+  const queries = []
+  const pool = {
+    async query(sql) {
+      queries.push(sql)
+      if (sql.includes('watched_titles')) return { rows: [{ person_key: '12', name: 'Actor A', profile_path: '/actor.jpg', title_count: '2' }] }
+      return { rows: [{ name: 'Netflix', minutes: '180' }, { name: 'Max', minutes: '60' }] }
+    },
+  }
+
+  assert.deepEqual(await getMostWatchedActorsForUser(pool, 'florind', 'month'), [{ personId: '12', name: 'Actor A', profilePath: '/actor.jpg', titleCount: 2 }])
+  assert.deepEqual(await getStreamingPlatformsForUser(pool, 'florind', 'month'), [{ name: 'Netflix', minutes: 180, percent: 75 }, { name: 'Max', minutes: 60, percent: 25 }])
+  assert.match(queries[0], /SELECT DISTINCT tv_seasons\.tv_show_id/i)
+  assert.match(queries[0], /tv_show_credits\.credit_type = 'actor'/i)
+  assert.match(queries[1], /watch_service IS NOT NULL/i)
+})
+
 test('watched endpoints toggle watched state, remove watchlist entries, and return stats', async () => {
   const movieRow = {
     tmdb_id: 42,
@@ -1088,6 +1268,7 @@ test('watched endpoints toggle watched state, remove watchlist entries, and retu
       moviesWatched: 1,
       timeWatchedMinutes: 166,
       watchlistCount: 0,
+      averageRating: null,
     })
     assert.equal(florindWatchedResponse.status, 200)
     assert.equal(florindWatchedPayload.count, 1)
@@ -1107,6 +1288,7 @@ test('watched endpoints toggle watched state, remove watchlist entries, and retu
       moviesWatched: 1,
       timeWatchedMinutes: 166,
       watchlistCount: 0,
+      averageRating: null,
     })
     assert.equal(alexWatchedResponse.status, 200)
     assert.equal(alexWatchedPayload.count, 0)
@@ -1114,6 +1296,7 @@ test('watched endpoints toggle watched state, remove watchlist entries, and retu
       moviesWatched: 0,
       timeWatchedMinutes: 0,
       watchlistCount: 0,
+      averageRating: null,
     })
     assert.equal(removeResponse.status, 200)
     assert.deepEqual(removePayload, {
@@ -1122,6 +1305,7 @@ test('watched endpoints toggle watched state, remove watchlist entries, and retu
         moviesWatched: 0,
         timeWatchedMinutes: 0,
         watchlistCount: 0,
+        averageRating: null,
       },
     })
   } finally {
@@ -3934,6 +4118,7 @@ test('GET /api/tv/:showId hydrates summary-only records once before returning de
         showLookupCount += 1
         return { rows: [showLookupCount === 1 ? summaryOnlyShow : hydratedShow] }
       }
+      if (sql.includes('community_average')) return { rows: [{ community_average: null, community_vote_count: 0, your_average: null, your_rating_count: 0 }] }
       if (sql.includes('FROM tv_seasons')) {
         return { rows: [{ id: 12, season_number: 1, name: 'Season 1', overview: null, air_date: '2025-01-01', poster_path: null, episodes: [{ id: 101, tmdb_id: 9901, episode_number: 1, name: 'Pilot', overview: null, air_date: '2025-01-01', runtime_minutes: 45, still_path: null, is_aired: true, watched: false }] }] }
       }
@@ -4505,7 +4690,7 @@ test('mark_through_episode marks only aired episodes through the selected episod
   assert.match(bulkInsert.sql, /e\.air_date IS NULL OR e\.air_date <= CURRENT_DATE/i)
   assert.match(bulkInsert.sql, /e\.episode_number <= \$4/i)
   assert.match(bulkInsert.sql, /ON CONFLICT DO NOTHING/i)
-  assert.deepEqual(bulkInsert.params, [11, 22, 2, 4])
+  assert.deepEqual(bulkInsert.params, [11, 22, 2, 4, null])
 })
 
 test('mark_season marks only aired episodes in the requested season', async () => {
@@ -4520,7 +4705,7 @@ test('mark_season marks only aired episodes in the requested season', async () =
   assert.ok(bulkInsert)
   assert.match(bulkInsert.sql, /e\.air_date IS NULL OR e\.air_date <= CURRENT_DATE/i)
   assert.match(bulkInsert.sql, /ON CONFLICT DO NOTHING/i)
-  assert.deepEqual(bulkInsert.params, [11, 71])
+  assert.deepEqual(bulkInsert.params, [11, 71, null])
 })
 
 test('individual episode watch actions are idempotent and synchronize whole-show completion', async () => {
@@ -4535,7 +4720,25 @@ test('individual episode watch actions are idempotent and synchronize whole-show
 
   assert.deepEqual(markResult, { status: 'ok', updatedCount: 2 })
   assert.deepEqual(unmarkResult, { status: 'ok', updatedCount: 2 })
-  assert.equal(calls.some(({ sql }) => sql.includes('VALUES ($1, $2) ON CONFLICT DO NOTHING')), true)
+  assert.equal(calls.some(({ sql }) => sql.includes('VALUES ($1, $2, $3) ON CONFLICT DO NOTHING')), true)
   assert.equal(calls.some(({ sql }) => sql.includes('DELETE FROM watched_tv_episodes WHERE user_id = $1 AND tv_episode_id = $2')), true)
   assert.equal(calls.filter(({ sql }) => sql.includes('DELETE FROM watched_tv_shows')).length, 2)
+})
+
+test('episode ratings upsert one score per user and validate the selected episode', async () => {
+  const calls = []
+  const pool = {
+    async query(sql, params) {
+      calls.push({ sql, params })
+      if (params[0] === 'missing') return { rows: [{ has_user: false, has_episode: false, score: null }] }
+      if (params[1] === 404) return { rows: [{ has_user: true, has_episode: false, score: null }] }
+      return { rows: [{ has_user: true, has_episode: true, score: params[2] }] }
+    },
+  }
+
+  assert.deepEqual(await upsertTvEpisodeRatingForUser(pool, { username: 'florind', episodeId: 301, score: 4.5 }), { status: 'ok', score: 4.5 })
+  assert.deepEqual(await upsertTvEpisodeRatingForUser(pool, { username: 'missing', episodeId: 301, score: 4 }), { status: 'missing_user' })
+  assert.deepEqual(await upsertTvEpisodeRatingForUser(pool, { username: 'florind', episodeId: 404, score: 4 }), { status: 'missing_episode' })
+  assert.match(calls[0].sql, /INSERT INTO tv_episode_ratings/i)
+  assert.match(calls[0].sql, /ON CONFLICT \(user_id, tv_episode_id\)/i)
 })

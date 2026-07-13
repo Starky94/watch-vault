@@ -13,6 +13,7 @@ import {
   findUserByCredentials,
   findUserByUsername,
   getMovieStatsForUser,
+  getStatsInsightsForUser,
   getMovieCommunityRating,
   getTvLibraryForUser,
   getTvDetailForUser,
@@ -43,6 +44,7 @@ import {
   syncPersonProfile,
   updateUserPassword,
   upsertMovieRatingForUser,
+  upsertTvEpisodeRatingForUser,
   toggleTvLibraryItemForUser,
   updateTvEpisodeWatchStateForUser,
   listUpcomingTvShows,
@@ -410,6 +412,23 @@ export async function createApp(pool, options = {}) {
     }
   })
 
+  app.get('/api/stats/insights', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+
+      const period = readStatsPeriod(request, response)
+      if (!period) return
+      const timeZone = readStatsTimeZone(request, response)
+      if (!timeZone) return
+
+      await ensureTvDetailTables(pool)
+      response.json(await getStatsInsightsForUser(pool, user.username, { period, timeZone }))
+    } catch (error) {
+      next(error)
+    }
+  })
+
   app.post('/api/watched', async (request, response, next) => {
     const movieId = Number.parseInt(request.body?.movieId, 10)
 
@@ -435,6 +454,7 @@ export async function createApp(pool, options = {}) {
       const result = await addMovieToWatchedForUser(pool, {
         username: user.username,
         movieId,
+        watchService: request.body?.watchService,
       })
 
       if (result.status === 'missing_movie') {
@@ -828,10 +848,28 @@ export async function createApp(pool, options = {}) {
     try {
       const user = await getAuthenticatedUser(pool, request)
       if (!user) return response.status(401).json({ error: 'Authentication required' })
-      const result = await updateTvEpisodeWatchStateForUser(pool, { username: user.username, showId, action, episodeId, seasonId })
+      const result = await updateTvEpisodeWatchStateForUser(pool, { username: user.username, showId, action, episodeId, seasonId, watchService: request.body?.watchService })
       if (result.status !== 'ok') return response.status(404).json({ error: action === 'mark_season' ? 'Season was not found' : 'Episode was not found' })
       const detail = await getTvDetailForUser(pool, { showId, username: user.username })
       response.json({ updatedCount: result.updatedCount, show: mapTvDetail(detail) })
+    } catch (error) { next(error) }
+  })
+
+  app.put('/api/tv/episodes/:episodeId/rating', async (request, response, next) => {
+    const episodeId = Number.parseInt(request.params.episodeId, 10)
+    const score = Number(request.body?.score)
+    if (!Number.isInteger(episodeId)) return response.status(400).json({ error: `Invalid episode id: ${request.params.episodeId}` })
+    if (!isValidMovieRating(score)) return response.status(400).json({ error: 'score must be between 1 and 5 in 0.5 increments' })
+    try {
+      await ensureTvDetailTables(pool)
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const savedRating = await upsertTvEpisodeRatingForUser(pool, { username: user.username, episodeId, score })
+      if (savedRating.status !== 'ok') return response.status(404).json({ error: 'Episode was not found' })
+      const result = await pool.query('SELECT tv_shows.tmdb_id FROM tv_episodes JOIN tv_seasons ON tv_seasons.id = tv_episodes.tv_season_id JOIN tv_shows ON tv_shows.id = tv_seasons.tv_show_id WHERE tv_episodes.id = $1 LIMIT 1', [episodeId])
+      const showId = result.rows[0]?.tmdb_id
+      const detail = Number.isInteger(showId) ? await getTvDetailForUser(pool, { showId, username: user.username }) : null
+      response.json({ score: savedRating.score, show: detail ? mapTvDetail(detail) : null })
     } catch (error) { next(error) }
   })
 
@@ -1120,7 +1158,7 @@ function mapFeaturedTvShow(show) {
 }
 
 function mapTvDetail(detail) {
-  const { show, seasons, credits, recommendations, trailers } = detail
+  const { show, seasons, credits, recommendations, trailers, communityRating, yourEpisodeRating } = detail
   const payload = show.detail_payload ?? {}
   return {
     id: show.tmdb_id,
@@ -1138,9 +1176,11 @@ function mapTvDetail(detail) {
     creators: Array.isArray(payload.created_by) ? payload.created_by.map((person) => person.name).filter(Boolean) : [],
     languages: Array.isArray(payload.spoken_languages) ? payload.spoken_languages.map((language) => language.english_name || language.name).filter(Boolean) : [],
     trailers: trailers.map((trailer) => ({ provider: trailer.provider, key: trailer.video_key, name: trailer.name })),
+    communityRating: { average: typeof communityRating?.average === 'number' ? communityRating.average : null, voteCount: Number(communityRating?.voteCount ?? 0) },
+    yourEpisodeRating: { average: typeof yourEpisodeRating?.average === 'number' ? yourEpisodeRating.average : null, ratingCount: Number(yourEpisodeRating?.ratingCount ?? 0) },
     seasons: seasons.map((season) => ({
       id: season.id, seasonNumber: season.season_number, name: season.name, overview: season.overview, airDate: season.air_date, posterPath: season.poster_path,
-      episodes: (season.episodes ?? []).map((episode) => ({ id: episode.id, tmdbId: episode.tmdb_id, episodeNumber: episode.episode_number, name: episode.name, overview: episode.overview, airDate: episode.air_date, runtimeMinutes: episode.runtime_minutes, stillPath: episode.still_path, isAired: Boolean(episode.is_aired), watched: Boolean(episode.watched) })),
+      episodes: (season.episodes ?? []).map((episode) => ({ id: episode.id, tmdbId: episode.tmdb_id, episodeNumber: episode.episode_number, name: episode.name, overview: episode.overview, airDate: episode.air_date, runtimeMinutes: episode.runtime_minutes, stillPath: episode.still_path, isAired: Boolean(episode.is_aired), watched: Boolean(episode.watched), yourScore: episode.your_score === null || episode.your_score === undefined ? null : Number(episode.your_score) })),
     })),
     credits: credits.map((credit) => ({ id: credit.tmdb_person_id, name: credit.name, profilePath: credit.profile_path, role: credit.character_name || credit.job || credit.credit_type })),
     recommendations: recommendations.map((item) => ({ id: item.recommended_tmdb_id, title: item.name, firstAirDate: item.first_air_date, posterPath: item.poster_path, rating: formatScore(item.vote_average) })),
@@ -1259,6 +1299,7 @@ function mapMovieStats(stats) {
     moviesWatched: stats?.moviesWatched ?? 0,
     timeWatchedMinutes: stats?.timeWatchedMinutes ?? 0,
     watchlistCount: stats?.watchlistCount ?? 0,
+    averageRating: stats?.averageRating ?? null,
   }
 }
 
@@ -1276,6 +1317,18 @@ function readStatsPeriod(request, response) {
   if (['week', 'month', 'year'].includes(period)) return period
   response.status(400).json({ error: 'period must be one of: week, month, year' })
   return null
+}
+
+function readStatsTimeZone(request, response) {
+  const timeZone = typeof request.query?.timeZone === 'string' && request.query.timeZone.trim() ? request.query.timeZone.trim() : 'UTC'
+
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone }).format()
+    return timeZone
+  } catch {
+    response.status(400).json({ error: 'timeZone must be a valid IANA timezone' })
+    return null
+  }
 }
 
 function normalizePersonProfile(person, credits) {

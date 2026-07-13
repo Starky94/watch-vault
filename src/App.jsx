@@ -6,6 +6,7 @@ const primaryViews = {
   movies: 'Movies',
   tvShows: 'TV Shows',
   watchlist: 'Watchlist',
+  stats: 'Stats',
 }
 
 const navItems = [
@@ -14,7 +15,7 @@ const navItems = [
   { label: 'TV Shows', icon: TvIcon, view: primaryViews.tvShows },
   { label: 'Watchlist', icon: BookmarkIcon, view: primaryViews.watchlist },
   { label: 'Calendar', icon: CalendarIcon },
-  { label: 'Stats', icon: BarsIcon },
+  { label: 'Stats', icon: BarsIcon, view: primaryViews.stats },
 ]
 
 const movieTabs = ['All Movies', 'Popular', 'Now Playing', 'Upcoming', 'Top Rated']
@@ -36,6 +37,7 @@ const appScreens = {
 
 const routeKinds = {
   home: 'home',
+  stats: 'stats',
   search: 'search',
   continueWatching: 'continueWatching',
   movieDetail: 'movieDetail',
@@ -59,18 +61,20 @@ const mobileNavItems = [
   { label: 'Home', icon: HomeIcon, view: primaryViews.home },
   { label: 'Search', icon: SearchIcon, view: primaryViews.movies },
   { label: 'Watchlist', icon: BookmarkIcon, view: primaryViews.watchlist },
-  { label: 'Stats', icon: BarsIcon },
+  { label: 'Stats', icon: BarsIcon, view: primaryViews.stats },
   { label: 'More', icon: MoreIcon },
 ]
 
 const watchlistTabs = ['All', 'Movies', 'TV Shows', 'Actors']
 const moviesPageSize = 30
 const genreAccentPalette = ['#ff6b7a', '#7c8dff', '#ffd86f', '#84b3ff', '#ff6cb6', '#67e8f9', '#9ae66e']
+const statsActorColors = ['#c99a75', '#8f5e48', '#5e7792', '#a47265']
 
 const emptyMovieStats = {
   moviesWatched: 0,
   timeWatchedMinutes: 0,
   watchlistCount: 0,
+  averageRating: null,
 }
 const emptyTvStats = {
   showsWatched: 0,
@@ -78,22 +82,61 @@ const emptyTvStats = {
   timeWatchedMinutes: 0,
   watchlistCount: 0,
 }
+const emptyStatsInsights = {
+  activity: { buckets: [] },
+  mediaSplit: { movieEvents: 0, tvEpisodeEvents: 0 },
+  genres: [],
+  habits: { weekdayMinutes: Array(7).fill(0), bestWeekdayIndex: null, peakWindow: null },
+  topRatedThisMonth: [],
+  mostWatchedActors: [],
+  streamingPlatforms: [],
+  recentHistory: [],
+  yearInReview: { titlesWatched: 0, minutes: 0, episodesWatched: 0, averageRating: null, topGenre: null, longestStreak: 0, mostWatchedMonth: null, newFavorites: 0 },
+}
 const emptyCommunityRating = {
   average: null,
   voteCount: 0,
   yourScore: null,
 }
 const movieRatingOptions = Array.from({ length: 9 }, (_value, index) => 1 + index * 0.5)
+const watchServiceOptions = ['Netflix', 'Prime Video', 'Disney+', 'Max', 'Apple TV+', 'Hulu', 'Paramount+', 'Peacock']
 const statsPeriods = [
   { value: 'week', label: 'This Week' },
   { value: 'month', label: 'This Month' },
   { value: 'year', label: 'This Year' },
 ]
 
+const statsMockData = {
+  metrics: [
+    { label: 'Titles Watched', value: '148', trend: '18%', tone: 'violet', icon: ClapperIcon },
+    { label: 'Hours Watched', value: '426h', trend: '22%', tone: 'blue', icon: ClockIcon },
+    { label: 'Episodes Watched', value: '312', trend: '15%', tone: 'teal', icon: TvIcon },
+    { label: 'Average Rating', value: '4.3', suffix: '/5', trend: '0.2', tone: 'gold', icon: StarOutlineIcon },
+  ],
+  activity: [38, 54, 49, 68, 36, 65, 62, 45, 86, 61, 47, 42],
+  genres: [
+    { label: 'Sci-Fi', value: '112h', percent: 92 }, { label: 'Drama', value: '86h', percent: 70 },
+    { label: 'Thriller', value: '74h', percent: 60 }, { label: 'Adventure', value: '63h', percent: 51 },
+    { label: 'Comedy', value: '41h', percent: 34 },
+  ],
+  achievements: [
+    { title: '7-Day Streak', detail: 'Watch something for 7 days in a row', value: 'Complete', icon: ShieldIcon, complete: true },
+    { title: 'Century Club', detail: 'Watch 100 movies', value: '100 / 100', icon: StarIcon, complete: true },
+    { title: 'Sci-Fi Master', detail: 'Watch 50 Sci-Fi titles', value: '36 / 50', icon: SparklesIcon, complete: false },
+  ],
+  history: [
+    { title: 'Oppenheimer', kind: 'Movie', time: '2h ago', theme: 'theme-ember' }, { title: 'Wonka', kind: 'Movie', time: 'Yesterday', theme: 'theme-arrival' },
+    { title: 'Interstellar', kind: 'Movie', time: '2 days ago', theme: 'theme-starfall' }, { title: 'Eclipse Point', kind: 'TV Show', time: '2 days ago', theme: 'theme-eclipse' },
+    { title: 'Neon City', kind: 'TV Show', time: '4 days ago', theme: 'theme-neon' },
+  ],
+}
+
 function App() {
   const [currentRoute, setCurrentRoute] = useState(() => readAppRoute())
   const [activeView, setActiveView] = useState(() =>
-    readAppRoute().kind === routeKinds.movieDetail || readAppRoute().kind === routeKinds.personDetail || readAppRoute().kind === routeKinds.tvDetail
+    readAppRoute().kind === routeKinds.stats
+      ? primaryViews.stats
+      : readAppRoute().kind === routeKinds.movieDetail || readAppRoute().kind === routeKinds.personDetail || readAppRoute().kind === routeKinds.tvDetail
       ? primaryViews.movies
       : primaryViews.home
   )
@@ -213,13 +256,15 @@ function App() {
     movieId: null,
     error: '',
   })
+  const [tvEpisodeRatingActionState, setTvEpisodeRatingActionState] = useState({ status: 'idle', episodeId: null, error: '' })
   const [movieStatsState, setMovieStatsState] = useState({
     status: 'idle',
     stats: emptyMovieStats,
     error: '',
   })
-  const [statsPeriod, setStatsPeriod] = useState('month')
+  const [statsPeriod, setStatsPeriod] = useState('year')
   const [tvStatsState, setTvStatsState] = useState({ status: 'idle', stats: emptyTvStats, error: '' })
+  const [statsInsightsState, setStatsInsightsState] = useState({ status: 'idle', insights: emptyStatsInsights, error: '' })
   const [continueWatchingState, setContinueWatchingState] = useState({ status: 'idle', shows: [], error: '' })
   const [continueWatchingPage, setContinueWatchingPage] = useState(1)
   const [continueWatchingPageState, setContinueWatchingPageState] = useState(() => createTvCollectionState())
@@ -234,7 +279,9 @@ function App() {
       setCurrentRoute(nextRoute)
       setCurrentScreen(appScreens.dashboard)
       setActiveView(
-        nextRoute.kind === routeKinds.movieDetail || nextRoute.kind === routeKinds.personDetail || nextRoute.kind === routeKinds.tvDetail
+        nextRoute.kind === routeKinds.stats
+          ? primaryViews.stats
+          : nextRoute.kind === routeKinds.movieDetail || nextRoute.kind === routeKinds.personDetail || nextRoute.kind === routeKinds.tvDetail
           ? primaryViews.movies
           : primaryViews.home
       )
@@ -546,6 +593,12 @@ function App() {
   }
 
   function handleMovieViewSelection(view) {
+    if (view === primaryViews.stats) {
+      handleNavigateToPath('/stats', { kind: routeKinds.stats }, view)
+      setSelectedGenre(null)
+      return
+    }
+
     setActiveView(view)
     if (currentRoute.kind === routeKinds.movieDetail || currentRoute.kind === routeKinds.personDetail || currentRoute.kind === routeKinds.tvDetail) {
       handleNavigateToPath('/', { kind: routeKinds.home }, view)
@@ -754,17 +807,42 @@ function App() {
 
   function handleToggleTvWatchlist(show) { return handleToggleTvLibrary(show, 'watchlist') }
 
-  async function handleUpdateTvEpisodes(showId, { action, episodeId, seasonId }) {
+  async function handleUpdateTvEpisodes(showId, { action, episodeId, seasonId, watchService = null }) {
     if (!user) return handleOpenLogin()
     const response = await fetch('/api/tv/episodes/watched', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...buildAuthHeaders(user) },
-      body: JSON.stringify({ showId, action, episodeId, seasonId }),
+      body: JSON.stringify({ showId, action, episodeId, seasonId, watchService }),
     })
     const payload = await response.json().catch(() => ({}))
     if (!response.ok) throw new Error(payload.error || 'Unable to update episode')
     setTvDetailState({ status: 'success', show: mapTvDetailPayload(payload.show), error: '' })
     await loadTvLibraryForUser(user)
+  }
+
+  async function handleSubmitTvEpisodeRating(episode, score) {
+    const episodeId = Number(episode?.id)
+    if (!Number.isInteger(episodeId)) return false
+    if (!user) {
+      handleOpenLogin()
+      return false
+    }
+    setTvEpisodeRatingActionState({ status: 'loading', episodeId, error: '' })
+    try {
+      const response = await fetch(`/api/tv/episodes/${episodeId}/rating`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...buildAuthHeaders(user) },
+        body: JSON.stringify({ score }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || 'Unable to save episode rating')
+      if (payload.show) setTvDetailState({ status: 'success', show: mapTvDetailPayload(payload.show), error: '' })
+      setTvEpisodeRatingActionState({ status: 'success', episodeId, error: '' })
+      return true
+    } catch (error) {
+      setTvEpisodeRatingActionState({ status: 'error', episodeId, error: error instanceof Error ? error.message : 'Unable to save episode rating.' })
+      return false
+    }
   }
 
   function handleOpenGenre(genre) {
@@ -1087,7 +1165,38 @@ function App() {
     loadFavoriteActorsForUser(user)
   }, [user, statsPeriod])
 
-  async function handleAddMovieToWatched(movie) {
+  useEffect(() => {
+    if (activeView !== primaryViews.stats || !user?.username) {
+      if (!user?.username) setStatsInsightsState({ status: 'idle', insights: emptyStatsInsights, error: '' })
+      return
+    }
+
+    let cancelled = false
+
+    async function loadStatsInsights() {
+      setStatsInsightsState((state) => ({ ...state, status: 'loading', error: '' }))
+
+      try {
+        const timeZone = resolveBrowserTimeZone()
+        const response = await fetch(`/api/stats/insights?period=${statsPeriod}&timeZone=${encodeURIComponent(timeZone)}`, {
+          headers: buildAuthHeaders(user),
+        })
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+        if (!cancelled) setStatsInsightsState({ status: 'success', insights: mapStatsInsightsPayload(payload), error: '' })
+      } catch (error) {
+        if (!cancelled) setStatsInsightsState({ status: 'error', insights: emptyStatsInsights, error: error instanceof Error ? error.message : 'Unable to load stats insights right now.' })
+      }
+    }
+
+    loadStatsInsights()
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeView, statsPeriod, user])
+
+  async function handleAddMovieToWatched(movie, watchService = null) {
     const normalizedMovieId = Number(movie?.id)
 
     if (!Number.isInteger(normalizedMovieId)) {
@@ -1114,6 +1223,7 @@ function App() {
         },
         body: JSON.stringify({
           movieId: normalizedMovieId,
+          watchService,
         }),
       })
       const payload = await response.json().catch(() => ({}))
@@ -1207,7 +1317,7 @@ function App() {
     }
   }
 
-  async function handleToggleMovieWatched(movie) {
+  async function handleToggleMovieWatched(movie, watchService = null) {
     const normalizedMovieId = Number(movie?.id)
 
     if (!Number.isInteger(normalizedMovieId)) {
@@ -1221,7 +1331,7 @@ function App() {
       return
     }
 
-    await handleAddMovieToWatched(movie)
+    await handleAddMovieToWatched(movie, watchService)
   }
 
   async function handleSubmitMovieRating(movie, score) {
@@ -2363,11 +2473,13 @@ function App() {
                 onBackToTv={() => handleMovieViewSelection(primaryViews.tvShows)}
                 onToggleWatchlist={handleToggleTvWatchlist}
                 onUpdateEpisodes={handleUpdateTvEpisodes}
+                onSubmitEpisodeRating={handleSubmitTvEpisodeRating}
                 onOpenTv={handleOpenTvDetail}
                 onOpenPerson={handleOpenPersonDetail}
                 onOpenLogin={handleOpenLogin}
                 isSignedIn={Boolean(user)}
                 watchlistIds={tvWatchlistIds}
+                tvEpisodeRatingActionState={tvEpisodeRatingActionState}
               />
             ) : currentRoute.kind === routeKinds.continueWatching ? (
               <ContinueWatchingPage
@@ -2376,6 +2488,19 @@ function App() {
                 onOpenLogin={handleOpenLogin}
                 onOpenTvShow={handleOpenTvDetail}
                 onPageChange={setContinueWatchingPage}
+              />
+            ) : activeView === primaryViews.stats ? (
+              <StatsScreen
+                movieStats={movieStatsState.stats}
+                movieStatsStatus={movieStatsState.status}
+                statsPeriod={statsPeriod}
+                tvStats={tvStatsState.stats}
+                tvStatsStatus={tvStatsState.status}
+                onStatsPeriodChange={setStatsPeriod}
+                insightsState={statsInsightsState}
+                onOpenMovie={handleOpenMovieDetail}
+                onOpenPerson={handleOpenPersonDetail}
+                onOpenTvShow={handleOpenTvDetail}
               />
             ) : activeView === primaryViews.home ? (
               <HomeScreen
@@ -3845,12 +3970,15 @@ function TvWatchlistPanel({ items, onOpenWatchlist, onSelectShow }) {
   )
 }
 
-function TvDetailPage({ tvDetailState, tvReviewsState, onBackToTv, onToggleWatchlist, onUpdateEpisodes, onOpenTv, onOpenPerson, onOpenLogin, isSignedIn, watchlistIds }) {
+function TvDetailPage({ tvDetailState, tvReviewsState, onBackToTv, onToggleWatchlist, onUpdateEpisodes, onSubmitEpisodeRating, onOpenTv, onOpenPerson, onOpenLogin, isSignedIn, watchlistIds, tvEpisodeRatingActionState }) {
   const [seasonNumber, setSeasonNumber] = useState(null)
   const [trailer, setTrailer] = useState(null)
   const [catchUpEpisode, setCatchUpEpisode] = useState(null)
+  const [pendingWatchRequest, setPendingWatchRequest] = useState(null)
+  const [ratingEpisode, setRatingEpisode] = useState(null)
+  const [selectedRating, setSelectedRating] = useState(5)
   const [isUpdatingEpisodes, setIsUpdatingEpisodes] = useState(false)
-  useEffect(() => { setSeasonNumber(null); setTrailer(null); setCatchUpEpisode(null); setIsUpdatingEpisodes(false) }, [tvDetailState.show?.id])
+  useEffect(() => { setSeasonNumber(null); setTrailer(null); setCatchUpEpisode(null); setPendingWatchRequest(null); setRatingEpisode(null); setIsUpdatingEpisodes(false) }, [tvDetailState.show?.id])
   if (tvDetailState.status === 'loading' || tvDetailState.status === 'idle') return <section className="movie-detail-page"><SectionMessage message="Loading TV series detail..." /></section>
   if (tvDetailState.status === 'error' || !tvDetailState.show) return <section className="movie-detail-page"><SectionMessage tone="error" message={tvDetailState.error || 'TV series detail is not available.'} /></section>
   const show = tvDetailState.show
@@ -3863,15 +3991,25 @@ function TvDetailPage({ tvDetailState, tvReviewsState, onBackToTv, onToggleWatch
   const backdropStyle = show.backdropUrl ? { backgroundImage: `linear-gradient(90deg, rgba(7, 10, 18, .96), rgba(7, 10, 18, .46)), url(${show.backdropUrl})` } : undefined
   const seasonAiredEpisodes = episodes.filter((episode) => episode.isAired)
   const isSeasonWatched = seasonAiredEpisodes.length > 0 && seasonAiredEpisodes.every((episode) => episode.watched)
+  const communityRating = show.communityRating ?? { average: null, voteCount: 0 }
+  const yourEpisodeRating = show.yourEpisodeRating ?? { average: null, ratingCount: 0 }
 
-  async function updateEpisodes(request) {
+  async function updateEpisodes(request, episodeToRate = null) {
     setIsUpdatingEpisodes(true)
     try {
       await onUpdateEpisodes(show.id, request)
       setCatchUpEpisode(null)
+      if (episodeToRate) {
+        setSelectedRating(episodeToRate.yourScore ?? 5)
+        setRatingEpisode(episodeToRate)
+      }
     } finally {
       setIsUpdatingEpisodes(false)
     }
+  }
+
+  function requestEpisodeWatch(request, episodeToRate = null) {
+    setPendingWatchRequest({ request, episodeToRate })
   }
 
   function handleEpisodeToggle(episode) {
@@ -3887,13 +4025,18 @@ function TvDetailPage({ tvDetailState, tvReviewsState, onBackToTv, onToggleWatch
       setCatchUpEpisode({ episode, earlierCount: earlierUnwatchedEpisodes.length })
       return
     }
-    void updateEpisodes({ action: 'mark_episode', episodeId: episode.id })
+    requestEpisodeWatch({ action: 'mark_episode', episodeId: episode.id }, episode)
   }
 
   function handleMarkSeasonWatched() {
     if (!isSignedIn) return onOpenLogin()
     if (!season || isSeasonWatched) return
-    void updateEpisodes({ action: 'mark_season', seasonId: season.id })
+    requestEpisodeWatch({ action: 'mark_season', seasonId: season.id })
+  }
+  function handleOpenEpisodeRating(episode) {
+    if (!isSignedIn) return onOpenLogin()
+    setSelectedRating(episode.yourScore ?? 5)
+    setRatingEpisode(episode)
   }
   return <section className="movie-detail-page tv-detail-page">
     <button type="button" className="movie-detail-back" onClick={onBackToTv} aria-label="Back to TV shows"><ChevronLeftIcon /></button>
@@ -3901,10 +4044,10 @@ function TvDetailPage({ tvDetailState, tvReviewsState, onBackToTv, onToggleWatch
       <div className="movie-detail-hero-overlay" />
       <div className="movie-detail-poster-wrap"><div className="movie-detail-poster">{show.posterUrl ? <img className="movie-detail-poster-image" src={show.posterUrl} alt={`${show.title} poster`} /> : null}</div></div>
       <div className="movie-detail-main"><h1>{show.title}</h1><div className="movie-detail-meta"><span>{show.year}</span><span>{show.genresLabel}</span><span>{show.maturityRating}</span><span>{show.seasons.length} Seasons</span></div>
-        <div className="movie-detail-score-row"><MetricBadge icon={StarIcon} value={show.voteAverage} label="TMDB" tone="gold" /><MetricBadge icon={TomatoIcon} value={show.voteCount} label="Votes" tone="tomato" /><MetricBadge icon={ProgressIcon} value={`${watchedCount}/${totalEpisodes}`} label="Episodes watched" tone="violet" /></div>
+        <div className="movie-detail-score-row"><MetricBadge icon={StarIcon} value={show.voteAverage} label="TMDB" tone="gold" /><MetricBadge icon={TomatoIcon} value={show.voteCount} label="Votes" tone="tomato" /><MetricBadge icon={UserRatingIcon} value={formatCommunityRating(communityRating.average)} label={`${communityRating.voteCount} ${communityRating.voteCount === 1 ? 'episode rating' : 'episode ratings'}`} tone="violet" /><MetricBadge icon={ProgressIcon} value={`${watchedCount}/${totalEpisodes}`} label="Episodes watched" tone="violet" /></div>
         <p className="movie-detail-summary">{show.overview}</p><div className="movie-detail-actions"><button type="button" className={`primary-button movie-detail-primary${isWatchlist ? ' is-active' : ''}`} onClick={() => onToggleWatchlist(show)}><PlusIcon /><span>{isWatchlist ? 'In Watchlist' : 'Add to Watchlist'}</span></button>{show.trailer ? <button type="button" className="secondary-button movie-detail-secondary ghost" onClick={() => setTrailer(show.trailer)}><PlayIcon /><span>Trailer</span></button> : null}</div>
       </div>
-      <aside className="movie-detail-status desktop-only"><h2>Your Status</h2><div className="movie-detail-status-list"><div className="movie-detail-status-item"><span className="movie-detail-status-icon"><BookmarkStatusIcon /></span><div><span>Watchlist</span><strong>{isWatchlist ? 'Saved' : 'Not yet'}</strong></div></div><div className="movie-detail-status-item"><span className="movie-detail-status-icon"><ProgressIcon /></span><div><span>Progress</span><strong>{watchedCount} of {totalEpisodes}</strong></div></div><div className="movie-detail-status-item"><span className="movie-detail-status-icon"><CalendarIcon /></span><div><span>First air date</span><strong>{show.firstAirDateLabel}</strong></div></div><div className="movie-detail-status-item"><span className="movie-detail-status-icon"><TvIcon /></span><div><span>Network</span><strong>{show.network || 'TBA'}</strong></div></div></div></aside>
+      <aside className="movie-detail-status desktop-only"><h2>Your Status</h2><div className="movie-detail-status-list"><div className="movie-detail-status-item"><span className="movie-detail-status-icon"><BookmarkStatusIcon /></span><div><span>Watchlist</span><strong>{isWatchlist ? 'Saved' : 'Not yet'}</strong></div></div><div className="movie-detail-status-item"><span className="movie-detail-status-icon"><ProgressIcon /></span><div><span>Progress</span><strong>{watchedCount} of {totalEpisodes}</strong></div></div><div className="movie-detail-status-item movie-detail-status-item-rating"><span className="movie-detail-status-icon"><StarOutlineIcon /></span><div><span>Your episode average</span><strong>{formatCommunityRating(yourEpisodeRating.average)}{yourEpisodeRating.ratingCount ? ` · ${yourEpisodeRating.ratingCount}` : ''}</strong></div></div><div className="movie-detail-status-item"><span className="movie-detail-status-icon"><CalendarIcon /></span><div><span>First air date</span><strong>{show.firstAirDateLabel}</strong></div></div><div className="movie-detail-status-item"><span className="movie-detail-status-icon"><TvIcon /></span><div><span>Network</span><strong>{show.network || 'TBA'}</strong></div></div></div></aside>
     </article>
     <section className="content-section movie-detail-panel tv-episodes-panel">
       <div className="section-header tv-episodes-header">
@@ -3914,11 +4057,13 @@ function TvDetailPage({ tvDetailState, tvReviewsState, onBackToTv, onToggleWatch
         </button>
       </div>
       <div className="tv-season-tabs">{show.seasons.map((item) => <button type="button" key={item.id} className={`filter-pill${item.seasonNumber === season?.seasonNumber ? ' active' : ''}`} onClick={() => setSeasonNumber(item.seasonNumber)}>{item.name}</button>)}</div>
-      <div className="tv-episode-list">{episodes.map((episode) => <article className="tv-episode-row" key={episode.id}><div className="tv-episode-still">{episode.stillUrl ? <img src={episode.stillUrl} alt="" /> : null}</div><div className="tv-episode-copy"><span>S{season?.seasonNumber} E{episode.episodeNumber} · {episode.airDateLabel} · {episode.runtimeLabel}</span><h3>{episode.name}</h3><p>{episode.overview || 'Episode overview is not available.'}</p></div><button type="button" disabled={!episode.isAired || isUpdatingEpisodes} className={`tv-episode-toggle${episode.watched ? ' watched' : ''}`} aria-label={episode.isAired ? `${episode.watched ? 'Mark unwatched' : 'Mark watched'} ${episode.name}` : `${episode.name} has not aired yet`} onClick={() => handleEpisodeToggle(episode)}><CheckIcon /></button></article>)}</div>
+      <div className="tv-episode-list">{episodes.map((episode) => <article className="tv-episode-row" key={episode.id}><div className="tv-episode-still">{episode.stillUrl ? <img src={episode.stillUrl} alt="" /> : null}</div><div className="tv-episode-copy"><span>S{season?.seasonNumber} E{episode.episodeNumber} · {episode.airDateLabel} · {episode.runtimeLabel}</span><h3>{episode.name}</h3><p>{episode.overview || 'Episode overview is not available.'}</p></div>{episode.watched ? <button type="button" className="tv-episode-rate" onClick={() => handleOpenEpisodeRating(episode)} aria-label={`${episode.yourScore === null ? 'Rate' : 'Update rating for'} ${episode.name}`}><StarOutlineIcon /></button> : null}<button type="button" disabled={!episode.isAired || isUpdatingEpisodes} className={`tv-episode-toggle${episode.watched ? ' watched' : ''}`} aria-label={episode.isAired ? `${episode.watched ? 'Mark unwatched' : 'Mark watched'} ${episode.name}` : `${episode.name} has not aired yet`} onClick={() => handleEpisodeToggle(episode)}><CheckIcon /></button></article>)}</div>
     </section>
     <div className="movie-detail-grid"><section className="content-section movie-detail-panel"><div className="section-header"><h2>Cast &amp; Crew</h2></div><div className="movie-detail-cast">{show.credits.map((member) => <button type="button" className="movie-detail-cast-card movie-detail-cast-card-button" key={`${member.id}-${member.role}`} aria-label={`Open ${member.name}`} onClick={() => onOpenPerson?.(member)} disabled={!Number.isInteger(Number(member.id))}><div className="movie-detail-cast-avatar" style={buildMovieCreditAvatarStyle(member.profileUrl)} aria-label={member.name}>{!member.profileUrl ? getMovieCreditInitials(member.name) : null}</div><h3>{member.name}</h3><p>{member.role}</p></button>)}</div></section><section className="content-section movie-detail-panel movie-detail-activity"><div className="section-header"><h2>Your Activity</h2></div><div className="movie-detail-activity-grid"><div className="movie-detail-activity-item"><ProgressIcon /><div><span>Completion</span><div className="movie-detail-progress"><span style={{ width: totalEpisodes ? `${(watchedCount / totalEpisodes) * 100}%` : '0%' }} /></div></div><strong>{totalEpisodes ? Math.round((watchedCount / totalEpisodes) * 100) : 0}%</strong></div><div className="movie-detail-activity-item"><CheckIcon /><div><span>Episodes watched</span><strong>{watchedCount} of {totalEpisodes}</strong></div></div></div></section><section className="content-section movie-detail-panel"><div className="section-header"><h2>More Like This</h2></div><div className="tv-recommendations">{show.recommendations.map((item) => <button key={item.id} type="button" onClick={() => onOpenTv(item)} className="tv-recommendation"><img src={item.posterUrl} alt="" /><span>{item.title}</span><small>{item.rating}</small></button>)}</div></section><section className="content-section movie-detail-panel movie-detail-facts"><div className="movie-detail-facts-list"><DetailFactRow icon={DirectorIcon} label="Created by" value={show.creatorsLabel} /><DetailFactRow icon={LanguageIcon} label="Language" value={show.languagesLabel} /><DetailFactRow icon={TvIcon} label="Status" value={show.status} /></div></section><section className="content-section movie-detail-panel movie-detail-reviews"><div className="section-header"><h2>Community Reviews</h2></div>{tvReviewsState.status === 'loading' ? <SectionMessage message="Loading live community reviews..." /> : tvReviewsState.status === 'error' ? <SectionMessage tone="error" message={tvReviewsState.error} /> : tvReviewsState.reviews.length ? <div className="movie-detail-review-grid">{tvReviewsState.reviews.map((review) => <article key={review.id} className="movie-detail-review-card"><strong>{review.author}</strong><span className="movie-detail-stars">{review.rating ? `★ ${review.rating}` : 'No score'}</span><p>{review.copy}</p><small>{review.date}</small></article>)}</div> : <SectionMessage message="No community reviews available right now." />}</section></div>
     {trailer ? <MovieTrailerDialog movie={{ title: show.title }} trailer={trailer} onClose={() => setTrailer(null)} /> : null}
-    {catchUpEpisode ? <TvEpisodeCatchUpDialog episode={catchUpEpisode.episode} earlierCount={catchUpEpisode.earlierCount} isSaving={isUpdatingEpisodes} onCancel={() => setCatchUpEpisode(null)} onMarkCurrent={() => { void updateEpisodes({ action: 'mark_episode', episodeId: catchUpEpisode.episode.id }) }} onMarkEarlier={() => { void updateEpisodes({ action: 'mark_through_episode', episodeId: catchUpEpisode.episode.id }) }} /> : null}
+    {catchUpEpisode ? <TvEpisodeCatchUpDialog episode={catchUpEpisode.episode} earlierCount={catchUpEpisode.earlierCount} isSaving={isUpdatingEpisodes} onCancel={() => setCatchUpEpisode(null)} onMarkCurrent={() => { setCatchUpEpisode(null); requestEpisodeWatch({ action: 'mark_episode', episodeId: catchUpEpisode.episode.id }, catchUpEpisode.episode) }} onMarkEarlier={() => { setCatchUpEpisode(null); requestEpisodeWatch({ action: 'mark_through_episode', episodeId: catchUpEpisode.episode.id }, catchUpEpisode.episode) }} /> : null}
+    {pendingWatchRequest ? <WatchServiceDialog title={pendingWatchRequest.episodeToRate?.name || show.title} onCancel={() => setPendingWatchRequest(null)} onSelect={(watchService) => { const pending = pendingWatchRequest; setPendingWatchRequest(null); void updateEpisodes({ ...pending.request, watchService }, pending.episodeToRate) }} /> : null}
+    {ratingEpisode ? <MovieRatingDialog movie={{ title: ratingEpisode.name }} selectedRating={selectedRating} onSelectRating={setSelectedRating} onCancel={() => setRatingEpisode(null)} onSubmit={async () => { if (await onSubmitEpisodeRating(ratingEpisode, selectedRating)) setRatingEpisode(null) }} isSaving={tvEpisodeRatingActionState.status === 'loading' && Number(tvEpisodeRatingActionState.episodeId) === Number(ratingEpisode.id)} error={tvEpisodeRatingActionState.status === 'error' && Number(tvEpisodeRatingActionState.episodeId) === Number(ratingEpisode.id) ? tvEpisodeRatingActionState.error : ''} kicker="Your Episode Rating" cancelLabel="Skip" /> : null}
   </section>
 }
 
@@ -3994,11 +4139,13 @@ function MovieDetailPage({
   movieRatingActionState,
 }) {
   const [isRatingDialogOpen, setIsRatingDialogOpen] = useState(false)
+  const [isWatchServiceDialogOpen, setIsWatchServiceDialogOpen] = useState(false)
   const [selectedRating, setSelectedRating] = useState(5)
   const [trailerState, setTrailerState] = useState({ status: 'idle', trailer: null, error: '' })
 
   useEffect(() => {
     setTrailerState({ status: 'idle', trailer: null, error: '' })
+    setIsWatchServiceDialogOpen(false)
   }, [movieDetailState.movie?.id])
 
   if (movieDetailState.status === 'loading' || movieDetailState.status === 'idle') {
@@ -4126,7 +4273,7 @@ function MovieDetailPage({
             <button
               type="button"
               className={`secondary-button movie-detail-secondary${isWatched ? ' is-active' : ''}`}
-              onClick={() => onToggleWatched(movie)}
+              onClick={() => isWatched ? onToggleWatched(movie) : setIsWatchServiceDialogOpen(true)}
               disabled={isWatchedUpdating}
             >
               <CheckIcon />
@@ -4218,6 +4365,8 @@ function MovieDetailPage({
           error={movieRatingActionState.status === 'error' && Number(movieRatingActionState.movieId) === Number(movie.id) ? movieRatingActionState.error : ''}
         />
       ) : null}
+
+      {isWatchServiceDialogOpen ? <WatchServiceDialog title={movie.title} onCancel={() => setIsWatchServiceDialogOpen(false)} onSelect={(watchService) => { setIsWatchServiceDialogOpen(false); void onToggleWatched(movie, watchService) }} /> : null}
 
       {trailerState.status === 'success' && trailerState.trailer ? (
         <MovieTrailerDialog movie={movie} trailer={trailerState.trailer} onClose={closeTrailer} />
@@ -4403,11 +4552,30 @@ function TvEpisodeCatchUpDialog({ episode, earlierCount, isSaving, onCancel, onM
   )
 }
 
-function MovieRatingDialog({ movie, selectedRating, onSelectRating, onCancel, onSubmit, isSaving, error }) {
+function WatchServiceDialog({ title, onCancel, onSelect }) {
+  const [service, setService] = useState('')
+  const [isOther, setIsOther] = useState(false)
+
+  return <div className="movie-rating-dialog-backdrop" role="presentation" onMouseDown={onCancel}>
+    <section className="movie-rating-dialog" role="dialog" aria-modal="true" aria-labelledby="watch-service-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
+      <p className="movie-rating-dialog-kicker">Watch service</p>
+      <h2 id="watch-service-dialog-title">Where did you watch {title}?</h2>
+      <p>This is optional and helps build your streaming stats.</p>
+      <div className="movie-rating-options" role="radiogroup" aria-label="Watch service">
+        {watchServiceOptions.map((option) => <button key={option} type="button" className={`movie-rating-option${service === option && !isOther ? ' selected' : ''}`} role="radio" aria-checked={service === option && !isOther} onClick={() => { setService(option); setIsOther(false) }}>{option}</button>)}
+        <button type="button" className={`movie-rating-option${isOther ? ' selected' : ''}`} role="radio" aria-checked={isOther} onClick={() => { setService(''); setIsOther(true) }}>Other</button>
+      </div>
+      {isOther ? <input className="watch-service-other-input" autoFocus value={service} maxLength={80} placeholder="Service name" onChange={(event) => setService(event.target.value)} /> : null}
+      <div className="movie-rating-dialog-actions"><button type="button" className="secondary-button" onClick={onCancel}>Cancel</button><button type="button" className="secondary-button" onClick={() => onSelect(null)}>Skip</button><button type="button" className="primary-button" onClick={() => onSelect(service)} disabled={!service.trim()}><CheckIcon /><span>Mark watched</span></button></div>
+    </section>
+  </div>
+}
+
+function MovieRatingDialog({ movie, selectedRating, onSelectRating, onCancel, onSubmit, isSaving, error, kicker = 'Your WatchVault Rating', cancelLabel = 'Cancel' }) {
   return (
     <div className="movie-rating-dialog-backdrop" role="presentation" onMouseDown={isSaving ? undefined : onCancel}>
       <section className="movie-rating-dialog" role="dialog" aria-modal="true" aria-labelledby="movie-rating-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
-        <p className="movie-rating-dialog-kicker">Your WatchVault Rating</p>
+        <p className="movie-rating-dialog-kicker">{kicker}</p>
         <h2 id="movie-rating-dialog-title">Rate {movie.title}</h2>
         <p>Select a score from 1 to 5.</p>
         <div className="movie-rating-options" role="radiogroup" aria-label="Rating score">
@@ -4428,7 +4596,7 @@ function MovieRatingDialog({ movie, selectedRating, onSelectRating, onCancel, on
         </div>
         {error ? <p className="movie-rating-dialog-error" role="alert">{error}</p> : null}
         <div className="movie-rating-dialog-actions">
-          <button type="button" className="secondary-button" onClick={onCancel} disabled={isSaving}>Cancel</button>
+          <button type="button" className="secondary-button" onClick={onCancel} disabled={isSaving}>{cancelLabel}</button>
           <button type="button" className="primary-button" onClick={onSubmit} disabled={isSaving}>
             <StarIcon />
             <span>{isSaving ? 'Saving...' : 'Save Rating'}</span>
@@ -4701,6 +4869,104 @@ function DetailFactRow({ icon: Icon, label, value }) {
       <ChevronRight />
     </div>
   )
+}
+
+function StatsScreen({ movieStats, movieStatsStatus, statsPeriod, tvStats, tvStatsStatus, onStatsPeriodChange, insightsState, onOpenMovie, onOpenPerson, onOpenTvShow }) {
+  const [activeTab, setActiveTab] = useState('Overview')
+  const [periodOpen, setPeriodOpen] = useState(false)
+  const tabs = ['Overview', 'Movies', 'TV Shows', 'Genres', 'History']
+  const period = statsPeriods.find((option) => option.value === statsPeriod) ?? statsPeriods[1]
+  const metricCards = buildStatsDashboardMetrics({ movieStats, tvStats })
+  const isLoading = movieStatsStatus === 'loading' || tvStatsStatus === 'loading'
+  const insights = insightsState.insights
+  const activityBuckets = insights.activity.buckets
+  const activityMaxMinutes = Math.max(...activityBuckets.map((bucket) => bucket.totalMinutes), 0)
+  const activityAxisLabels = buildActivityAxisLabels(activityMaxMinutes)
+  const mediaEventTotal = insights.mediaSplit.movieEvents + insights.mediaSplit.tvEpisodeEvents
+  const movieShare = mediaEventTotal ? Math.round((insights.mediaSplit.movieEvents / mediaEventTotal) * 100) : null
+  const topGenreMinutes = Math.max(...insights.genres.map((genre) => genre.minutes), 0)
+  const weekdayLabels = ['M', 'T', 'W', 'T', 'F', 'S', 'S']
+  const weekdayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+
+  return (
+    <section className="stats-page">
+      <div className="stats-page-heading">
+        <div>
+          <h1>Stats</h1>
+          <p>Track your watching habits, trends, and milestones.</p>
+        </div>
+        <div className="stats-page-period">
+          <button type="button" className="stats-period-button" aria-haspopup="menu" aria-expanded={periodOpen} onClick={() => setPeriodOpen((open) => !open)}>
+            {period.label}<CalendarIcon />
+          </button>
+          {periodOpen ? (
+            <div className="stats-page-period-menu" role="menu">
+              {statsPeriods.map((option) => <button key={option.value} type="button" role="menuitemradio" aria-checked={option.value === period.value} className={option.value === period.value ? 'active' : ''} onClick={() => { onStatsPeriodChange(option.value); setPeriodOpen(false) }}>{option.label}</button>)}
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="stats-tabs" role="tablist" aria-label="Stats categories">
+        {tabs.map((tab) => <button key={tab} type="button" role="tab" aria-selected={tab === activeTab} className={tab === activeTab ? 'active' : ''} onClick={() => setActiveTab(tab)}>{tab}</button>)}
+      </div>
+
+      <div className="stats-metric-grid">
+        {metricCards.map(({ icon: Icon, label, value, suffix, tone }) => (
+          <article key={label} className={`stats-metric-card ${tone}`}>
+            <div className="stats-metric-icon"><Icon /></div>
+            <div><span>{label}</span><strong>{value}<small>{suffix}</small></strong>{isLoading ? <p>Loading stats...</p> : null}</div>
+          </article>
+        ))}
+      </div>
+
+      <div className="stats-insights-grid">
+        <section className="stats-surface stats-activity-card">
+          <StatsSectionTitle title="Watching Activity" />
+          {insightsState.status === 'loading' ? <SectionMessage message="Loading watching activity..." /> : insightsState.status === 'error' ? <SectionMessage tone="error" message={insightsState.error} /> : activityMaxMinutes === 0 ? <SectionMessage message="No watch activity in this period yet." /> : <><div className="stats-chart-axis">{activityAxisLabels.map((label) => <span key={label}>{label}</span>)}</div><div className="stats-activity-bars" style={{ '--bar-count': activityBuckets.length }}>{activityBuckets.map((bucket) => <div key={bucket.label} className="stats-activity-bar-wrap"><span style={{ height: `${Math.max(3, (bucket.totalMinutes / activityMaxMinutes) * 100)}%` }} title={`${bucket.label}: ${formatMinutesAsHoursAndMinutes(bucket.totalMinutes)}`} /><small>{bucket.label}</small></div>)}</div></>}
+        </section>
+
+        <section className="stats-surface stats-donut-card">
+          <StatsSectionTitle title="Movies vs TV Shows" />
+          {insightsState.status === 'loading' ? <SectionMessage message="Loading media split..." /> : insightsState.status === 'error' ? <SectionMessage tone="error" message={insightsState.error} /> : <><div className={`stats-donut${mediaEventTotal ? '' : ' empty'}`} aria-label={mediaEventTotal ? `${movieShare} percent movies, ${100 - movieShare} percent TV episodes` : 'No watch events in this period'} style={mediaEventTotal ? { '--movie-share': `${movieShare}%` } : undefined}><span>{movieShare === null ? '—' : `${movieShare}%`}</span></div><div className="stats-donut-legend"><span><i className="movies" />Movies <b>{insights.mediaSplit.movieEvents}</b></span><span><i className="shows" />TV Episodes <b>{insights.mediaSplit.tvEpisodeEvents}</b></span></div></>}
+        </section>
+
+        <section className="stats-surface stats-genres-card">
+          <StatsSectionTitle title="Top Genres" />
+          {insightsState.status === 'loading' ? <SectionMessage message="Loading genres..." /> : insightsState.status === 'error' ? <SectionMessage tone="error" message={insightsState.error} /> : insights.genres.length === 0 ? <SectionMessage message="No genre data in this period yet." /> : <div className="stats-genre-list">{insights.genres.map((genre) => <div key={genre.name}><span>{genre.name}</span><div><i style={{ width: `${(genre.minutes / topGenreMinutes) * 100}%` }} /></div><b>{formatCompactMinutes(genre.minutes)}</b></div>)}</div>}
+        </section>
+
+        <section className="stats-surface stats-habits-card">
+          <StatsSectionTitle title="Weekly Habits" />
+          {insightsState.status === 'loading' ? <SectionMessage message="Loading watch habits..." /> : insightsState.status === 'error' ? <SectionMessage tone="error" message={insightsState.error} /> : insights.habits.bestWeekdayIndex === null ? <SectionMessage message="No watch habits in this period yet." /> : <><p className="stats-label-copy">Best Days</p><div className="stats-weekdays">{weekdayLabels.map((day, index) => <span key={`${day}-${index}`} className={index === insights.habits.bestWeekdayIndex ? 'active' : ''}>{day}</span>)}</div><p className="stats-highlight-copy">{weekdayNames[insights.habits.bestWeekdayIndex]} is your top day!</p><p className="stats-label-copy">Peak Watch Time</p><strong className="stats-peak-time"><ClockIcon />{formatPeakWatchWindow(insights.habits.peakWindow)}</strong><p className="stats-small-copy">That’s your prime time.</p></>}
+        </section>
+      </div>
+
+      <div className="stats-detail-grid">
+        <section className="stats-surface stats-rated-card">
+          <StatsSectionTitle title="Top Rated This Month" />
+          {insightsState.status === 'loading' ? <SectionMessage message="Loading your top-rated titles..." /> : insightsState.status === 'error' ? <SectionMessage tone="error" message={insightsState.error} /> : insights.topRatedThisMonth.length === 0 ? <SectionMessage message="No ratings this month yet." /> : <div className="stats-rated-list">{insights.topRatedThisMonth.map((item) => <StatsTitleRow key={`${item.mediaType}-${item.id}`} item={item} onOpenMovie={onOpenMovie} onOpenTvShow={onOpenTvShow} />)}</div>}
+        </section>
+        <section className="stats-surface stats-actors-card"><StatsSectionTitle title="Most Watched Actors" />{insightsState.status === 'loading' ? <SectionMessage message="Loading watched actors..." /> : insightsState.status === 'error' ? <SectionMessage tone="error" message={insightsState.error} /> : insights.mostWatchedActors.length === 0 ? <SectionMessage message="No watched cast data in this period yet." /> : <div className="stats-actors-list">{insights.mostWatchedActors.map((actor, index) => <button type="button" className="stats-actor-row" key={actor.personId} onClick={() => onOpenPerson(actor)} aria-label={`Open ${actor.name}`}><span className={`stats-actor-avatar${actor.profileUrl ? ' has-image' : ''}`} style={actor.profileUrl ? { backgroundImage: `url(${actor.profileUrl})` } : { '--avatar-color': statsActorColors[index % statsActorColors.length] }}>{!actor.profileUrl ? actor.name.split(' ').map((name) => name[0]).join('').slice(0, 2) : null}</span><p><b>{actor.name}</b><small>{actor.titleCount} {actor.titleCount === 1 ? 'title' : 'titles'}</small></p><em>#{index + 1}</em></button>)}</div>}</section>
+        <section className="stats-surface stats-platforms-card"><StatsSectionTitle title="Streaming Platforms" />{insightsState.status === 'loading' ? <SectionMessage message="Loading streaming platforms..." /> : insightsState.status === 'error' ? <SectionMessage tone="error" message={insightsState.error} /> : insights.streamingPlatforms.length === 0 ? <SectionMessage message="No watch services recorded in this period yet." /> : <div className="stats-platform-list">{insights.streamingPlatforms.map((platform) => <div key={platform.name}><span className="stats-platform-mark">{platform.name.slice(0, 1).toUpperCase()}</span><p><b>{platform.name}</b><i><span style={{ width: `${platform.percent}%` }} /></i></p><strong>{formatMinutesAsHoursAndMinutes(platform.minutes)}<small>{platform.percent}%</small></strong></div>)}</div>}</section>
+        <section className="stats-surface stats-achievements-card"><StatsSectionTitle title="Achievements" action="View all" /><div className="stats-achievement-list">{statsMockData.achievements.map(({ icon: Icon, ...achievement }) => <div key={achievement.title}><span className="stats-achievement-icon"><Icon /></span><p><b>{achievement.title}</b><small>{achievement.detail}</small></p><strong>{achievement.value}</strong>{achievement.complete ? <CheckIcon /> : null}</div>)}</div></section>
+      </div>
+
+      <div className="stats-bottom-grid">
+        <section className="stats-surface stats-history-card"><StatsSectionTitle title="Recent History" action="View all" />{insightsState.status === 'loading' ? <SectionMessage message="Loading recent history..." /> : insightsState.status === 'error' ? <SectionMessage tone="error" message={insightsState.error} /> : insights.recentHistory.length === 0 ? <SectionMessage message="No watch history yet." /> : <div className="stats-history-list">{insights.recentHistory.map((item) => <button type="button" className="stats-history-item" key={`${item.mediaType}-${item.id}-${item.watchedAt}`} onClick={() => item.mediaType === 'tv' ? onOpenTvShow(item) : onOpenMovie(item)} aria-label={`Open ${item.title}`}><div className="stats-title-art">{item.posterUrl ? <img src={item.posterUrl} alt={`${item.title} poster`} loading="lazy" /> : null}</div><b>{item.title}</b><small>{item.mediaType === 'tv' ? `TV Episode · S${item.seasonNumber} E${item.episodeNumber}` : 'Movie'}</small><em>{formatRelativeTime(item.watchedAt)}</em></button>)}</div>}</section>
+        <section className="stats-surface stats-review-card"><StatsSectionTitle title="Year in Review" />{insightsState.status === 'loading' ? <SectionMessage message="Loading your year in review..." /> : insightsState.status === 'error' ? <SectionMessage tone="error" message={insightsState.error} /> : <><div className="stats-review-metrics"><span>Titles Watched<b>{insights.yearInReview.titlesWatched}</b></span><span>Hours Watched<b>{formatCompactMinutes(insights.yearInReview.minutes)}</b></span><span>Episodes Watched<b>{insights.yearInReview.episodesWatched}</b></span><span>Avg Rating<b>{insights.yearInReview.averageRating?.toFixed(1) ?? '—'} <small>/5</small></b></span></div><div className="stats-review-highlights"><span>Top Genre<b>{insights.yearInReview.topGenre || '—'}</b></span><span>Longest Streak<b>{insights.yearInReview.longestStreak ? `${insights.yearInReview.longestStreak} days` : '—'}</b></span><span>Most Watched Month<b>{insights.yearInReview.mostWatchedMonth || '—'}</b></span><span>New Favorites<b>{insights.yearInReview.newFavorites}</b></span></div><p>{insights.yearInReview.titlesWatched ? 'Keep watching, you’re building an amazing year.' : 'Start watching to build your year in review.'}</p></>}</section>
+      </div>
+    </section>
+  )
+}
+
+function StatsSectionTitle({ title, action }) {
+  return <div className="stats-section-title"><h2>{title}</h2>{action ? <button type="button">{action}</button> : null}</div>
+}
+
+function StatsTitleRow({ item, onOpenMovie, onOpenTvShow }) {
+  const kind = item.mediaType === 'tv' ? `TV Show · ${item.episodeCount} ${item.episodeCount === 1 ? 'episode' : 'episodes'} rated` : 'Movie'
+  return <button type="button" className="stats-title-row" onClick={() => item.mediaType === 'tv' ? onOpenTvShow(item) : onOpenMovie(item)} aria-label={`Open ${item.title}`}><div className={`stats-title-art${item.posterUrl ? ' has-image' : ''}`} style={item.posterUrl ? { backgroundImage: `url(${item.posterUrl})` } : undefined} /><p><b>{item.title}</b><small>{kind}</small></p><span><StarIcon />{item.score.toFixed(1)}</span></button>
 }
 
 function MobileNav({ activeView, setActiveView }) {
@@ -5350,6 +5616,17 @@ function buildTvStats(stats) {
   ]
 }
 
+function buildStatsDashboardMetrics({ movieStats, tvStats }) {
+  const averageRating = typeof movieStats.averageRating === 'number' ? movieStats.averageRating.toFixed(1) : '—'
+
+  return [
+    { label: 'Titles Watched', value: String(movieStats.moviesWatched), tone: 'violet', icon: ClapperIcon },
+    { label: 'Hours Watched', value: formatMinutesAsHoursAndMinutes(movieStats.timeWatchedMinutes + tvStats.timeWatchedMinutes), tone: 'blue', icon: ClockIcon },
+    { label: 'Episodes Watched', value: String(tvStats.episodesWatched), tone: 'teal', icon: TvIcon },
+    { label: 'Average Rating', value: averageRating, suffix: '/5', tone: 'gold', icon: StarOutlineIcon },
+  ]
+}
+
 function buildAuthHeaders(user) {
   if (!user?.username) {
     return {}
@@ -5365,6 +5642,7 @@ function mapMovieStatsPayload(stats) {
     moviesWatched: typeof stats?.moviesWatched === 'number' ? stats.moviesWatched : 0,
     timeWatchedMinutes: typeof stats?.timeWatchedMinutes === 'number' ? stats.timeWatchedMinutes : 0,
     watchlistCount: typeof stats?.watchlistCount === 'number' ? stats.watchlistCount : 0,
+    averageRating: typeof stats?.averageRating === 'number' ? stats.averageRating : null,
   }
 }
 
@@ -5375,6 +5653,97 @@ function mapTvStatsPayload(stats) {
     timeWatchedMinutes: typeof stats?.timeWatchedMinutes === 'number' ? stats.timeWatchedMinutes : 0,
     watchlistCount: typeof stats?.watchlistCount === 'number' ? stats.watchlistCount : 0,
   }
+}
+
+function mapStatsInsightsPayload(payload) {
+  return {
+    activity: {
+      buckets: Array.isArray(payload?.activity?.buckets) ? payload.activity.buckets.map((bucket) => ({
+        label: typeof bucket?.label === 'string' ? bucket.label : '',
+        movieMinutes: typeof bucket?.movieMinutes === 'number' ? bucket.movieMinutes : 0,
+        tvMinutes: typeof bucket?.tvMinutes === 'number' ? bucket.tvMinutes : 0,
+        totalMinutes: typeof bucket?.totalMinutes === 'number' ? bucket.totalMinutes : 0,
+      })) : [],
+    },
+    mediaSplit: {
+      movieEvents: typeof payload?.mediaSplit?.movieEvents === 'number' ? payload.mediaSplit.movieEvents : 0,
+      tvEpisodeEvents: typeof payload?.mediaSplit?.tvEpisodeEvents === 'number' ? payload.mediaSplit.tvEpisodeEvents : 0,
+    },
+    genres: Array.isArray(payload?.genres) ? payload.genres.filter((genre) => typeof genre?.name === 'string' && typeof genre?.minutes === 'number') : [],
+    habits: {
+      weekdayMinutes: Array.isArray(payload?.habits?.weekdayMinutes) ? payload.habits.weekdayMinutes.slice(0, 7).map((minutes) => typeof minutes === 'number' ? minutes : 0) : Array(7).fill(0),
+      bestWeekdayIndex: Number.isInteger(payload?.habits?.bestWeekdayIndex) ? payload.habits.bestWeekdayIndex : null,
+      peakWindow: Number.isInteger(payload?.habits?.peakWindow?.startHour) && Number.isInteger(payload?.habits?.peakWindow?.endHour) ? payload.habits.peakWindow : null,
+    },
+    topRatedThisMonth: Array.isArray(payload?.topRatedThisMonth) ? payload.topRatedThisMonth
+      .filter((item) => typeof item?.title === 'string' && (item?.mediaType === 'movie' || item?.mediaType === 'tv') && Number.isFinite(item?.score))
+      .slice(0, 4)
+      .map((item) => ({
+        id: Number.isInteger(item.id) ? item.id : null,
+        title: item.title,
+        mediaType: item.mediaType,
+        score: item.score,
+        posterUrl: resolveMoviePosterUrl(item.posterPath),
+        episodeCount: item.mediaType === 'tv' && Number.isInteger(item.episodeCount) && item.episodeCount > 0 ? item.episodeCount : 0,
+      })) : [],
+    mostWatchedActors: Array.isArray(payload?.mostWatchedActors) ? payload.mostWatchedActors
+      .filter((actor) => typeof actor?.personId === 'string' && typeof actor?.name === 'string' && Number.isInteger(actor?.titleCount) && actor.titleCount > 0)
+      .slice(0, 4)
+      .map((actor) => ({ ...actor, id: Number(actor.personId), profileUrl: resolveMoviePosterUrl(actor.profilePath) })) : [],
+    streamingPlatforms: Array.isArray(payload?.streamingPlatforms) ? payload.streamingPlatforms
+      .filter((platform) => typeof platform?.name === 'string' && Number.isFinite(platform?.minutes) && Number.isFinite(platform?.percent))
+      .slice(0, 5) : [],
+    recentHistory: Array.isArray(payload?.recentHistory) ? payload.recentHistory.filter((item) => Number.isInteger(item?.id) && typeof item?.title === 'string' && typeof item?.watchedAt === 'string').slice(0, 5).map((item) => ({ ...item, posterUrl: resolveMoviePosterUrl(item.posterPath) })) : [],
+    yearInReview: {
+      titlesWatched: Number.isInteger(payload?.yearInReview?.titlesWatched) ? payload.yearInReview.titlesWatched : 0,
+      minutes: Number.isFinite(payload?.yearInReview?.minutes) ? payload.yearInReview.minutes : 0,
+      episodesWatched: Number.isInteger(payload?.yearInReview?.episodesWatched) ? payload.yearInReview.episodesWatched : 0,
+      averageRating: Number.isFinite(payload?.yearInReview?.averageRating) ? payload.yearInReview.averageRating : null,
+      topGenre: typeof payload?.yearInReview?.topGenre === 'string' ? payload.yearInReview.topGenre : null,
+      longestStreak: Number.isInteger(payload?.yearInReview?.longestStreak) ? payload.yearInReview.longestStreak : 0,
+      mostWatchedMonth: typeof payload?.yearInReview?.mostWatchedMonth === 'string' ? payload.yearInReview.mostWatchedMonth : null,
+      newFavorites: Number.isInteger(payload?.yearInReview?.newFavorites) ? payload.yearInReview.newFavorites : 0,
+    },
+  }
+}
+
+function formatRelativeTime(value) {
+  const date = new Date(value); const minutes = Math.floor((Date.now() - date.valueOf()) / 60000)
+  if (Number.isNaN(date.valueOf()) || minutes < 0) return 'Recently'
+  if (minutes < 60) return `${Math.max(1, minutes)}m ago`
+  if (minutes < 1440) return `${Math.floor(minutes / 60)}h ago`
+  if (minutes < 2880) return 'Yesterday'
+  return `${Math.floor(minutes / 1440)} days ago`
+}
+
+function resolveBrowserTimeZone() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+  } catch {
+    return 'UTC'
+  }
+}
+
+function buildActivityAxisLabels(maxMinutes) {
+  return [maxMinutes, maxMinutes * 0.75, maxMinutes * 0.5, maxMinutes * 0.25].map((minutes) => formatCompactMinutes(minutes))
+}
+
+function formatCompactMinutes(minutes) {
+  if (!Number.isFinite(minutes) || minutes <= 0) return '0h'
+  const hours = minutes / 60
+  return hours >= 10 ? `${Math.round(hours)}h` : `${hours.toFixed(hours % 1 ? 1 : 0)}h`
+}
+
+function formatPeakWatchWindow(peakWindow) {
+  if (!peakWindow) return '—'
+  return `${formatStatsHour(peakWindow.startHour)} – ${formatStatsHour(peakWindow.endHour)}`
+}
+
+function formatStatsHour(hour) {
+  const normalizedHour = ((hour % 24) + 24) % 24
+  const suffix = normalizedHour >= 12 ? 'PM' : 'AM'
+  const displayHour = normalizedHour % 12 || 12
+  return `${displayHour}:00 ${suffix}`
 }
 
 function mapGenrePayload(genre, index = 0) {
@@ -5520,8 +5889,16 @@ function mapTvDetailPayload(show) {
     status: show.status || 'Unknown', network: show.network,
     creatorsLabel: Array.isArray(show.creators) && show.creators.length ? show.creators.join(', ') : 'TBA',
     languagesLabel: Array.isArray(show.languages) && show.languages.length ? show.languages.join(', ') : 'TBA',
+    communityRating: {
+      average: typeof show.communityRating?.average === 'number' ? show.communityRating.average : null,
+      voteCount: Number.isInteger(show.communityRating?.voteCount) ? show.communityRating.voteCount : 0,
+    },
+    yourEpisodeRating: {
+      average: typeof show.yourEpisodeRating?.average === 'number' ? show.yourEpisodeRating.average : null,
+      ratingCount: Number.isInteger(show.yourEpisodeRating?.ratingCount) ? show.yourEpisodeRating.ratingCount : 0,
+    },
     trailer: Array.isArray(show.trailers) ? show.trailers[0] ?? null : null,
-    seasons: (Array.isArray(show.seasons) ? show.seasons : []).map((season) => ({ ...season, episodes: (season.episodes ?? []).map((episode) => ({ ...episode, isAired: Boolean(episode.isAired), stillUrl: resolveMovieBackdropUrl(episode.stillPath), airDateLabel: episode.airDate ? formatLongDate(episode.airDate) : 'TBA', runtimeLabel: episode.runtimeMinutes ? `${episode.runtimeMinutes}m` : 'Runtime TBA' })) })),
+    seasons: (Array.isArray(show.seasons) ? show.seasons : []).map((season) => ({ ...season, episodes: (season.episodes ?? []).map((episode) => ({ ...episode, isAired: Boolean(episode.isAired), yourScore: typeof episode.yourScore === 'number' ? episode.yourScore : null, stillUrl: resolveMovieBackdropUrl(episode.stillPath), airDateLabel: episode.airDate ? formatLongDate(episode.airDate) : 'TBA', runtimeLabel: episode.runtimeMinutes ? `${episode.runtimeMinutes}m` : 'Runtime TBA' })) })),
     credits: Array.isArray(show.credits) ? show.credits.map((credit) => ({ ...credit, profileUrl: resolveMoviePosterUrl(credit.profilePath) })) : [],
     recommendations: Array.isArray(show.recommendations) ? show.recommendations.map((item) => ({ ...item, posterUrl: resolveMoviePosterUrl(item.posterPath) })) : [],
   }
@@ -5957,6 +6334,10 @@ function getMovieCreditInitials(name) {
 }
 
 function readAppRoute(pathname = window.location.pathname, search = window.location.search) {
+  if (/^\/stats\/?$/.test(pathname)) {
+    return { kind: routeKinds.stats }
+  }
+
   if (/^\/search\/?$/.test(pathname)) {
     return { kind: routeKinds.search, query: new URLSearchParams(search).get('q')?.trim() || '' }
   }

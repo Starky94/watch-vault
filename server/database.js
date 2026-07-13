@@ -225,6 +225,11 @@ export async function ensureMoviesTable(pool) {
   `)
 
   await pool.query(`
+    ALTER TABLE watched_movies
+    ADD COLUMN IF NOT EXISTS watch_service TEXT
+  `)
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS movie_ratings (
       id BIGSERIAL PRIMARY KEY,
       user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -344,6 +349,21 @@ export async function ensureTvDetailTables(pool) {
       user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       tv_episode_id BIGINT NOT NULL REFERENCES tv_episodes(id) ON DELETE CASCADE,
       watched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (user_id, tv_episode_id)
+    )
+  `)
+  await pool.query(`
+    ALTER TABLE watched_tv_episodes
+    ADD COLUMN IF NOT EXISTS watch_service TEXT
+  `)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS tv_episode_ratings (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      tv_episode_id BIGINT NOT NULL REFERENCES tv_episodes(id) ON DELETE CASCADE,
+      score NUMERIC(2, 1) NOT NULL CHECK (score >= 1.0 AND score <= 5.0 AND MOD(score * 2, 1) = 0),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       UNIQUE (user_id, tv_episode_id)
     )
   `)
@@ -1745,16 +1765,44 @@ export async function replaceTvDetailRelations(pool, tmdbId, detail = {}) {
 export async function getTvDetailForUser(pool, { showId, username = null }) {
   const show = await getTvShowByTmdbId(pool, showId)
   if (!show) return null
-  const [seasons, credits, recommendations, trailers] = await Promise.all([
-    pool.query(`SELECT s.*, COALESCE(json_agg(json_build_object('id', e.id, 'tmdb_id', e.tmdb_id, 'episode_number', e.episode_number, 'name', e.name, 'overview', e.overview, 'air_date', e.air_date, 'runtime_minutes', e.runtime_minutes, 'still_path', e.still_path, 'is_aired', e.air_date IS NULL OR e.air_date <= CURRENT_DATE, 'watched', w.id IS NOT NULL) ORDER BY e.episode_number) FILTER (WHERE e.id IS NOT NULL), '[]') AS episodes FROM tv_seasons s LEFT JOIN tv_episodes e ON e.tv_season_id=s.id LEFT JOIN watched_tv_episodes w ON w.tv_episode_id=e.id AND w.user_id=(SELECT id FROM users WHERE username=$2) WHERE s.tv_show_id=$1 GROUP BY s.id ORDER BY s.season_number`, [show.id, username]),
+  const [seasons, credits, recommendations, trailers, ratingSummary] = await Promise.all([
+    pool.query(`SELECT s.*, COALESCE(json_agg(json_build_object('id', e.id, 'tmdb_id', e.tmdb_id, 'episode_number', e.episode_number, 'name', e.name, 'overview', e.overview, 'air_date', e.air_date, 'runtime_minutes', e.runtime_minutes, 'still_path', e.still_path, 'is_aired', e.air_date IS NULL OR e.air_date <= CURRENT_DATE, 'watched', w.id IS NOT NULL, 'your_score', r.score) ORDER BY e.episode_number) FILTER (WHERE e.id IS NOT NULL), '[]') AS episodes FROM tv_seasons s LEFT JOIN tv_episodes e ON e.tv_season_id=s.id LEFT JOIN watched_tv_episodes w ON w.tv_episode_id=e.id AND w.user_id=(SELECT id FROM users WHERE username=$2) LEFT JOIN tv_episode_ratings r ON r.tv_episode_id=e.id AND r.user_id=(SELECT id FROM users WHERE username=$2) WHERE s.tv_show_id=$1 GROUP BY s.id ORDER BY s.season_number`, [show.id, username]),
     pool.query('SELECT * FROM tv_show_credits WHERE tv_show_id = $1 ORDER BY credit_type, billing_order NULLS LAST LIMIT 12', [show.id]),
     pool.query('SELECT * FROM tv_recommendations WHERE tv_show_id = $1 ORDER BY display_order LIMIT 10', [show.id]),
     pool.query('SELECT * FROM tv_trailers WHERE tv_show_id = $1 ORDER BY is_official DESC LIMIT 5', [show.id]),
+    pool.query(`SELECT AVG(r.score)::DOUBLE PRECISION AS community_average, COUNT(r.id)::INTEGER AS community_vote_count, AVG(r.score) FILTER (WHERE r.user_id = (SELECT id FROM users WHERE username = $2))::DOUBLE PRECISION AS your_average, COUNT(r.id) FILTER (WHERE r.user_id = (SELECT id FROM users WHERE username = $2))::INTEGER AS your_rating_count FROM tv_episodes e JOIN tv_seasons s ON s.id = e.tv_season_id LEFT JOIN tv_episode_ratings r ON r.tv_episode_id = e.id WHERE s.tv_show_id = $1`, [show.id, username]),
   ])
-  return { show, seasons: seasons.rows, credits: credits.rows, recommendations: recommendations.rows, trailers: trailers.rows }
+  const ratings = ratingSummary.rows[0] ?? {}
+  return {
+    show,
+    seasons: seasons.rows,
+    credits: credits.rows,
+    recommendations: recommendations.rows,
+    trailers: trailers.rows,
+    communityRating: { average: ratings.community_average === null || ratings.community_average === undefined ? null : Number(ratings.community_average), voteCount: Number(ratings.community_vote_count ?? 0) },
+    yourEpisodeRating: { average: ratings.your_average === null || ratings.your_average === undefined ? null : Number(ratings.your_average), ratingCount: Number(ratings.your_rating_count ?? 0) },
+  }
 }
 
-export async function updateTvEpisodeWatchStateForUser(pool, { username, showId, action, episodeId = null, seasonId = null }) {
+export async function upsertTvEpisodeRatingForUser(pool, { username, episodeId, score }) {
+  const result = await pool.query(
+    `WITH selected_user AS (SELECT id FROM users WHERE username = $1 LIMIT 1), selected_episode AS (SELECT id FROM tv_episodes WHERE id = $2 LIMIT 1), saved_rating AS (INSERT INTO tv_episode_ratings (user_id, tv_episode_id, score, created_at, updated_at) SELECT selected_user.id, selected_episode.id, $3, NOW(), NOW() FROM selected_user CROSS JOIN selected_episode ON CONFLICT (user_id, tv_episode_id) DO UPDATE SET score = EXCLUDED.score, updated_at = NOW() RETURNING score) SELECT EXISTS(SELECT 1 FROM selected_user) AS has_user, EXISTS(SELECT 1 FROM selected_episode) AS has_episode, (SELECT score::DOUBLE PRECISION FROM saved_rating) AS score`,
+    [username, episodeId, score]
+  )
+  const row = result.rows[0] ?? null
+  if (!row?.has_user) return { status: 'missing_user' }
+  if (!row.has_episode) return { status: 'missing_episode' }
+  return { status: 'ok', score: Number(row.score) }
+}
+
+export function normalizeWatchService(value) {
+  if (typeof value !== 'string') return null
+  const normalized = value.trim().replace(/\s+/g, ' ')
+  return normalized ? normalized.slice(0, 80) : null
+}
+
+export async function updateTvEpisodeWatchStateForUser(pool, { username, showId, action, episodeId = null, seasonId = null, watchService = null }) {
+  const normalizedWatchService = normalizeWatchService(watchService)
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
@@ -1795,20 +1843,20 @@ export async function updateTvEpisodeWatchStateForUser(pool, { username, showId,
         )
       } else if (action === 'mark_episode') {
         result = await client.query(
-          'INSERT INTO watched_tv_episodes (user_id, tv_episode_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
-          [context.user_id, episode.id]
+          'INSERT INTO watched_tv_episodes (user_id, tv_episode_id, watch_service) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
+          [context.user_id, episode.id, normalizedWatchService]
         )
       } else {
         result = await client.query(
-          `INSERT INTO watched_tv_episodes (user_id, tv_episode_id)
-           SELECT $1, e.id
+          `INSERT INTO watched_tv_episodes (user_id, tv_episode_id, watch_service)
+           SELECT $1, e.id, $5
            FROM tv_episodes e
            JOIN tv_seasons s ON s.id = e.tv_season_id
            WHERE s.tv_show_id = $2
              AND (e.air_date IS NULL OR e.air_date <= CURRENT_DATE)
              AND (s.season_number < $3 OR (s.season_number = $3 AND e.episode_number <= $4))
            ON CONFLICT DO NOTHING`,
-          [context.user_id, context.show_id, episode.season_number, episode.episode_number]
+          [context.user_id, context.show_id, episode.season_number, episode.episode_number, normalizedWatchService]
         )
       }
       updatedCount = result.rowCount ?? 0
@@ -1823,12 +1871,12 @@ export async function updateTvEpisodeWatchStateForUser(pool, { username, showId,
         return { status: 'missing_season' }
       }
       const result = await client.query(
-        `INSERT INTO watched_tv_episodes (user_id, tv_episode_id)
-         SELECT $1, e.id
+        `INSERT INTO watched_tv_episodes (user_id, tv_episode_id, watch_service)
+         SELECT $1, e.id, $3
          FROM tv_episodes e
          WHERE e.tv_season_id = $2 AND (e.air_date IS NULL OR e.air_date <= CURRENT_DATE)
          ON CONFLICT DO NOTHING`,
-        [context.user_id, season.id]
+        [context.user_id, season.id, normalizedWatchService]
       )
       updatedCount = result.rowCount ?? 0
     } else {
@@ -2295,7 +2343,7 @@ export async function listWatchedMoviesForUser(pool, username) {
   return result.rows
 }
 
-export async function addMovieToWatchedForUser(pool, { username, movieId }) {
+export async function addMovieToWatchedForUser(pool, { username, movieId, watchService = null }) {
   const result = await pool.query(
     `
       WITH selected_user AS (
@@ -2328,11 +2376,13 @@ export async function addMovieToWatchedForUser(pool, { username, movieId }) {
         INSERT INTO watched_movies (
           user_id,
           movie_id,
+          watch_service,
           created_at
         )
         SELECT
           selected_user.id,
           selected_movie.id,
+          $3,
           NOW()
         FROM selected_user
         CROSS JOIN selected_movie
@@ -2348,7 +2398,7 @@ export async function addMovieToWatchedForUser(pool, { username, movieId }) {
           (SELECT created_at FROM existing_watched)
         ) AS created_at
     `,
-    [username, movieId]
+    [username, movieId, normalizeWatchService(watchService)]
   )
 
   const row = result.rows[0] ?? null
@@ -2445,12 +2495,19 @@ export async function getMovieStatsForUser(pool, username, period = 'month') {
         FROM watchlist_items
         WHERE watchlist_items.user_id IN (SELECT id FROM selected_user)
           AND watchlist_items.created_at >= date_trunc($2, NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+      ),
+      rating_totals AS (
+        SELECT AVG(movie_ratings.score)::DOUBLE PRECISION AS average_rating
+        FROM movie_ratings
+        WHERE movie_ratings.user_id IN (SELECT id FROM selected_user)
+          AND GREATEST(movie_ratings.created_at, movie_ratings.updated_at) >= date_trunc($2, NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
       )
       SELECT
         EXISTS(SELECT 1 FROM selected_user) AS has_user,
         COALESCE((SELECT movies_watched FROM watched_totals), 0) AS movies_watched,
         COALESCE((SELECT time_watched_minutes FROM watched_totals), 0) AS time_watched_minutes,
-        COALESCE((SELECT watchlist_count FROM watchlist_totals), 0) AS watchlist_count
+        COALESCE((SELECT watchlist_count FROM watchlist_totals), 0) AS watchlist_count,
+        (SELECT average_rating FROM rating_totals) AS average_rating
     `,
     [username, period]
   )
@@ -2468,7 +2525,359 @@ export async function getMovieStatsForUser(pool, username, period = 'month') {
     moviesWatched: Number(row.movies_watched ?? 0),
     timeWatchedMinutes: Number(row.time_watched_minutes ?? 0),
     watchlistCount: Number(row.watchlist_count ?? 0),
+    averageRating: row.average_rating === null || row.average_rating === undefined ? null : Number(row.average_rating),
   }
+}
+
+export async function getStatsInsightsForUser(pool, username, { period = 'year', timeZone = 'UTC' } = {}) {
+  const [result, topRatedThisMonth, mostWatchedActors, streamingPlatforms, recentHistory, yearInReview] = await Promise.all([
+    pool.query(
+    `
+      WITH selected_user AS (
+        SELECT id
+        FROM users
+        WHERE username = $1
+        LIMIT 1
+      ),
+      stats_insight_events AS (
+        SELECT
+          'movie'::TEXT AS media_type,
+          watched_movies.created_at AS watched_at,
+          COALESCE(movies.runtime_minutes, 0)::INTEGER AS runtime_minutes,
+          COALESCE(ARRAY_REMOVE(ARRAY_AGG(genres.name), NULL), '{}') AS genre_names
+        FROM watched_movies
+        JOIN movies ON movies.id = watched_movies.movie_id
+        LEFT JOIN LATERAL UNNEST(movies.genre_ids) AS selected_genre(tmdb_genre_id) ON TRUE
+        LEFT JOIN genres ON genres.tmdb_genre_id = selected_genre.tmdb_genre_id
+        WHERE watched_movies.user_id IN (SELECT id FROM selected_user)
+          AND watched_movies.created_at >= date_trunc($2, NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+        GROUP BY watched_movies.id, watched_movies.created_at, movies.runtime_minutes
+
+        UNION ALL
+
+        SELECT
+          'tv'::TEXT AS media_type,
+          watched_tv_episodes.watched_at AS watched_at,
+          COALESCE(tv_episodes.runtime_minutes, 0)::INTEGER AS runtime_minutes,
+          COALESCE(ARRAY_REMOVE(ARRAY_AGG(tv_genres.name), NULL), '{}') AS genre_names
+        FROM watched_tv_episodes
+        JOIN tv_episodes ON tv_episodes.id = watched_tv_episodes.tv_episode_id
+        JOIN tv_seasons ON tv_seasons.id = tv_episodes.tv_season_id
+        JOIN tv_shows ON tv_shows.id = tv_seasons.tv_show_id
+        LEFT JOIN LATERAL UNNEST(tv_shows.genre_ids) AS selected_genre(tmdb_genre_id) ON TRUE
+        LEFT JOIN tv_genres ON tv_genres.tmdb_genre_id = selected_genre.tmdb_genre_id
+        WHERE watched_tv_episodes.user_id IN (SELECT id FROM selected_user)
+          AND watched_tv_episodes.watched_at >= date_trunc($2, NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+        GROUP BY watched_tv_episodes.id, watched_tv_episodes.watched_at, tv_episodes.runtime_minutes
+      )
+      SELECT media_type, watched_at, runtime_minutes, genre_names
+      FROM stats_insight_events
+      ORDER BY watched_at ASC
+    `,
+      [username, period]
+    ),
+    getTopRatedThisMonthForUser(pool, username),
+    getMostWatchedActorsForUser(pool, username, period),
+    getStreamingPlatformsForUser(pool, username, period),
+    getRecentHistoryForUser(pool, username),
+    getYearInReviewForUser(pool, username),
+  ])
+
+  return { ...buildStatsInsights(result.rows, { period, timeZone }), topRatedThisMonth, mostWatchedActors, streamingPlatforms, recentHistory, yearInReview }
+}
+
+export async function getRecentHistoryForUser(pool, username) {
+  const result = await pool.query(`WITH selected_user AS (SELECT id FROM users WHERE username=$1 LIMIT 1), events AS (
+    SELECT movies.tmdb_id, movies.title, movies.poster_path, 'movie'::TEXT AS media_type, NULL::INTEGER AS season_number, NULL::INTEGER AS episode_number, watched_movies.created_at AS watched_at FROM watched_movies JOIN movies ON movies.id=watched_movies.movie_id WHERE watched_movies.user_id IN (SELECT id FROM selected_user)
+    UNION ALL
+    SELECT tv_shows.tmdb_id, tv_shows.name AS title, tv_shows.poster_path, 'tv'::TEXT AS media_type, tv_seasons.season_number, tv_episodes.episode_number, watched_tv_episodes.watched_at FROM watched_tv_episodes JOIN tv_episodes ON tv_episodes.id=watched_tv_episodes.tv_episode_id JOIN tv_seasons ON tv_seasons.id=tv_episodes.tv_season_id JOIN tv_shows ON tv_shows.id=tv_seasons.tv_show_id WHERE watched_tv_episodes.user_id IN (SELECT id FROM selected_user)
+  ) SELECT * FROM events ORDER BY watched_at DESC LIMIT 5`, [username])
+  return result.rows.map((row) => ({ ...(Number.isInteger(Number(row.tmdb_id)) ? { id: Number(row.tmdb_id) } : {}), title: row.title, posterPath: row.poster_path ?? null, mediaType: row.media_type === 'tv' ? 'tv' : 'movie', seasonNumber: row.season_number === null ? null : Number(row.season_number), episodeNumber: row.episode_number === null ? null : Number(row.episode_number), watchedAt: row.watched_at }))
+}
+
+export async function getYearInReviewForUser(pool, username) {
+  const [eventsResult, ratingsResult] = await Promise.all([
+    pool.query(`WITH selected_user AS (SELECT id FROM users WHERE username=$1 LIMIT 1), events AS (
+      SELECT 'movie'::TEXT media_type, movies.id::TEXT title_key, watched_movies.created_at watched_at, COALESCE(movies.runtime_minutes,0)::INTEGER runtime_minutes, COALESCE(ARRAY_REMOVE(ARRAY_AGG(genres.name),NULL),'{}') genre_names FROM watched_movies JOIN movies ON movies.id=watched_movies.movie_id LEFT JOIN LATERAL UNNEST(movies.genre_ids) selected_genre(tmdb_genre_id) ON TRUE LEFT JOIN genres ON genres.tmdb_genre_id=selected_genre.tmdb_genre_id WHERE watched_movies.user_id IN (SELECT id FROM selected_user) AND watched_movies.created_at >= date_trunc('year', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' GROUP BY watched_movies.id,movies.id
+      UNION ALL
+      SELECT 'tv'::TEXT, tv_seasons.tv_show_id::TEXT, watched_tv_episodes.watched_at, COALESCE(tv_episodes.runtime_minutes,0)::INTEGER, COALESCE(ARRAY_REMOVE(ARRAY_AGG(tv_genres.name),NULL),'{}') FROM watched_tv_episodes JOIN tv_episodes ON tv_episodes.id=watched_tv_episodes.tv_episode_id JOIN tv_seasons ON tv_seasons.id=tv_episodes.tv_season_id JOIN tv_shows ON tv_shows.id=tv_seasons.tv_show_id LEFT JOIN LATERAL UNNEST(tv_shows.genre_ids) selected_genre(tmdb_genre_id) ON TRUE LEFT JOIN tv_genres ON tv_genres.tmdb_genre_id=selected_genre.tmdb_genre_id WHERE watched_tv_episodes.user_id IN (SELECT id FROM selected_user) AND watched_tv_episodes.watched_at >= date_trunc('year', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' GROUP BY watched_tv_episodes.id,tv_seasons.tv_show_id,tv_episodes.runtime_minutes
+    ) SELECT * FROM events`, [username]),
+    pool.query(`WITH selected_user AS (SELECT id FROM users WHERE username=$1 LIMIT 1) SELECT score::DOUBLE PRECISION score, GREATEST(created_at,updated_at) rated_at FROM movie_ratings WHERE user_id IN (SELECT id FROM selected_user) AND GREATEST(created_at,updated_at) >= date_trunc('year', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' UNION ALL SELECT score::DOUBLE PRECISION, GREATEST(created_at,updated_at) FROM tv_episode_ratings WHERE user_id IN (SELECT id FROM selected_user) AND GREATEST(created_at,updated_at) >= date_trunc('year', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`, [username]),
+  ])
+  return buildYearInReview(eventsResult.rows, ratingsResult.rows)
+}
+
+export function buildYearInReview(events = [], ratings = []) {
+  const titleKeys = new Set(); const genreMinutes = new Map(); const monthMinutes = Array(12).fill(0); const dates = new Set(); let minutes = 0; let episodes = 0
+  for (const event of events) { const date = new Date(event.watched_at); if (Number.isNaN(date.valueOf())) continue; minutes += Number(event.runtime_minutes) || 0; if (event.media_type === 'tv') episodes += 1; titleKeys.add(`${event.media_type}-${event.title_key}`); dates.add(date.toISOString().slice(0,10)); monthMinutes[date.getUTCMonth()] += Number(event.runtime_minutes) || 0; for (const genre of event.genre_names ?? []) genreMinutes.set(genre,(genreMinutes.get(genre) ?? 0)+(Number(event.runtime_minutes)||0)) }
+  const scores = ratings.map((rating) => Number(rating.score)).filter(Number.isFinite); const topGenre = [...genreMinutes].sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0]))[0]?.[0] ?? null; const maxMonth = Math.max(...monthMinutes); const mostWatchedMonth = maxMonth ? new Intl.DateTimeFormat('en-US',{month:'long',timeZone:'UTC'}).format(new Date(Date.UTC(new Date().getUTCFullYear(),monthMinutes.indexOf(maxMonth),1))) : null
+  const orderedDates = [...dates].sort(); let longest = 0; let streak = 0; let previous = null; for (const value of orderedDates) { const current = new Date(`${value}T00:00:00Z`); streak = previous && current - previous === 86400000 ? streak + 1 : 1; longest = Math.max(longest, streak); previous = current }
+  return { titlesWatched:titleKeys.size, minutes, episodesWatched:episodes, averageRating:scores.length ? scores.reduce((a,b)=>a+b,0)/scores.length : null, topGenre, longestStreak:longest, mostWatchedMonth, newFavorites:scores.filter((score)=>score>=4.5).length }
+}
+
+export async function getMostWatchedActorsForUser(pool, username, period) {
+  const result = await pool.query(
+    `
+      WITH selected_user AS (SELECT id FROM users WHERE username = $1 LIMIT 1),
+      watched_titles AS (
+        SELECT cast_members.tmdb_person_id::TEXT AS person_key, cast_members.name, cast_members.profile_path, 'movie-' || movies.id::TEXT AS title_key
+        FROM watched_movies
+        JOIN movies ON movies.id = watched_movies.movie_id
+        JOIN movie_cast ON movie_cast.movie_id = movies.id AND movie_cast.credit_type = 'actor'
+        JOIN cast_members ON cast_members.id = movie_cast.cast_member_id
+        WHERE watched_movies.user_id IN (SELECT id FROM selected_user)
+          AND watched_movies.created_at >= date_trunc($2, NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+
+        UNION ALL
+
+        SELECT tv_show_credits.tmdb_person_id::TEXT AS person_key, tv_show_credits.name, tv_show_credits.profile_path, 'tv-' || tv_shows.id::TEXT AS title_key
+        FROM (
+          SELECT DISTINCT tv_seasons.tv_show_id
+          FROM watched_tv_episodes
+          JOIN tv_episodes ON tv_episodes.id = watched_tv_episodes.tv_episode_id
+          JOIN tv_seasons ON tv_seasons.id = tv_episodes.tv_season_id
+          WHERE watched_tv_episodes.user_id IN (SELECT id FROM selected_user)
+            AND watched_tv_episodes.watched_at >= date_trunc($2, NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+        ) AS watched_tv_shows
+        JOIN tv_shows ON tv_shows.id = watched_tv_shows.tv_show_id
+        JOIN tv_show_credits ON tv_show_credits.tv_show_id = tv_shows.id AND tv_show_credits.credit_type = 'actor'
+      )
+      SELECT person_key, name, MAX(profile_path) AS profile_path, COUNT(DISTINCT title_key)::INTEGER AS title_count
+      FROM watched_titles
+      GROUP BY person_key, name
+      ORDER BY title_count DESC, name ASC
+      LIMIT 4
+    `,
+    [username, period]
+  )
+  return result.rows.map((row) => ({ personId: row.person_key, name: row.name, profilePath: row.profile_path ?? null, titleCount: Number(row.title_count) }))
+}
+
+export async function getStreamingPlatformsForUser(pool, username, period) {
+  const result = await pool.query(
+    `
+      WITH selected_user AS (SELECT id FROM users WHERE username = $1 LIMIT 1),
+      service_minutes AS (
+        SELECT watched_movies.watch_service AS name, COALESCE(movies.runtime_minutes, 0)::INTEGER AS minutes
+        FROM watched_movies
+        JOIN movies ON movies.id = watched_movies.movie_id
+        WHERE watched_movies.user_id IN (SELECT id FROM selected_user)
+          AND watched_movies.created_at >= date_trunc($2, NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+          AND watched_movies.watch_service IS NOT NULL
+
+        UNION ALL
+
+        SELECT watched_tv_episodes.watch_service AS name, COALESCE(tv_episodes.runtime_minutes, 0)::INTEGER AS minutes
+        FROM watched_tv_episodes
+        JOIN tv_episodes ON tv_episodes.id = watched_tv_episodes.tv_episode_id
+        WHERE watched_tv_episodes.user_id IN (SELECT id FROM selected_user)
+          AND watched_tv_episodes.watched_at >= date_trunc($2, NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+          AND watched_tv_episodes.watch_service IS NOT NULL
+      )
+      SELECT name, SUM(minutes)::INTEGER AS minutes
+      FROM service_minutes
+      GROUP BY name
+      ORDER BY minutes DESC, name ASC
+    `,
+    [username, period]
+  )
+  const platforms = result.rows.map((row) => ({ name: row.name, minutes: Number(row.minutes) }))
+  const totalMinutes = platforms.reduce((total, platform) => total + platform.minutes, 0)
+  return platforms.slice(0, 5).map((platform) => ({ ...platform, percent: totalMinutes ? Math.round((platform.minutes / totalMinutes) * 100) : 0 }))
+}
+
+export async function getTopRatedThisMonthForUser(pool, username) {
+  const result = await pool.query(
+    `
+      WITH selected_user AS (
+        SELECT id FROM users WHERE username = $1 LIMIT 1
+      ),
+      movie_ratings_this_month AS (
+        SELECT
+          movies.tmdb_id,
+          movies.title,
+          movies.poster_path,
+          movie_ratings.score::DOUBLE PRECISION AS score,
+          GREATEST(movie_ratings.created_at, movie_ratings.updated_at) AS rated_at
+        FROM movie_ratings
+        JOIN movies ON movies.id = movie_ratings.movie_id
+        WHERE movie_ratings.user_id IN (SELECT id FROM selected_user)
+          AND GREATEST(movie_ratings.created_at, movie_ratings.updated_at) >= date_trunc('month', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+      ),
+      tv_ratings_this_month AS (
+        SELECT
+          tv_shows.tmdb_id,
+          tv_shows.name AS title,
+          tv_shows.poster_path,
+          AVG(tv_episode_ratings.score)::DOUBLE PRECISION AS score,
+          COUNT(tv_episode_ratings.id)::INTEGER AS episode_count,
+          MAX(GREATEST(tv_episode_ratings.created_at, tv_episode_ratings.updated_at)) AS rated_at
+        FROM tv_episode_ratings
+        JOIN tv_episodes ON tv_episodes.id = tv_episode_ratings.tv_episode_id
+        JOIN tv_seasons ON tv_seasons.id = tv_episodes.tv_season_id
+        JOIN tv_shows ON tv_shows.id = tv_seasons.tv_show_id
+        WHERE tv_episode_ratings.user_id IN (SELECT id FROM selected_user)
+          AND GREATEST(tv_episode_ratings.created_at, tv_episode_ratings.updated_at) >= date_trunc('month', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+        GROUP BY tv_shows.id, tv_shows.tmdb_id, tv_shows.name, tv_shows.poster_path
+      ),
+      combined_ratings AS (
+        SELECT tmdb_id, title, poster_path, 'movie'::TEXT AS media_type, score, 0::INTEGER AS episode_count, rated_at FROM movie_ratings_this_month
+        UNION ALL
+        SELECT tmdb_id, title, poster_path, 'tv'::TEXT AS media_type, score, episode_count, rated_at FROM tv_ratings_this_month
+      )
+      SELECT tmdb_id, title, poster_path, media_type, score, episode_count
+      FROM combined_ratings
+      ORDER BY score DESC, rated_at DESC, title ASC
+      LIMIT 4
+    `,
+    [username]
+  )
+
+  return result.rows.map((row) => ({
+    ...(Number.isInteger(Number(row.tmdb_id)) ? { id: Number(row.tmdb_id) } : {}),
+    title: row.title,
+    posterPath: row.poster_path ?? null,
+    mediaType: row.media_type === 'tv' ? 'tv' : 'movie',
+    score: Number(row.score),
+    episodeCount: Number(row.episode_count ?? 0),
+  }))
+}
+
+export function buildStatsInsights(events = [], { period = 'year', timeZone = 'UTC', now = new Date() } = {}) {
+  const normalizedEvents = events.map((event) => ({
+    mediaType: event.media_type === 'tv' ? 'tv' : 'movie',
+    watchedAt: new Date(event.watched_at),
+    runtimeMinutes: Math.max(0, Number(event.runtime_minutes) || 0),
+    genreNames: Array.isArray(event.genre_names) ? event.genre_names.filter(Boolean) : [],
+  })).filter((event) => !Number.isNaN(event.watchedAt.valueOf()))
+  const activityBuckets = createStatsActivityBuckets(period, now)
+  const activityByKey = new Map(activityBuckets.map((bucket) => [bucket.key, bucket]))
+  const genreMinutes = new Map()
+  const weekdayMinutes = Array(7).fill(0)
+  const hourMinutes = Array(24).fill(0)
+  const timePartsFormatter = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    weekday: 'short',
+    hour: '2-digit',
+    hourCycle: 'h23',
+  })
+  let movieEvents = 0
+  let tvEpisodeEvents = 0
+
+  normalizedEvents.forEach((event) => {
+    if (event.mediaType === 'tv') tvEpisodeEvents += 1
+    else movieEvents += 1
+
+    const bucket = activityByKey.get(getStatsActivityBucketKey(event.watchedAt, period, activityBuckets))
+    if (bucket) {
+      bucket.totalMinutes += event.runtimeMinutes
+      if (event.mediaType === 'tv') bucket.tvMinutes += event.runtimeMinutes
+      else bucket.movieMinutes += event.runtimeMinutes
+    }
+
+    event.genreNames.forEach((genreName) => {
+      genreMinutes.set(genreName, (genreMinutes.get(genreName) ?? 0) + event.runtimeMinutes)
+    })
+
+    const parts = Object.fromEntries(timePartsFormatter.formatToParts(event.watchedAt).map((part) => [part.type, part.value]))
+    const weekdayIndex = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].indexOf(parts.weekday)
+    const hour = Number(parts.hour)
+    if (weekdayIndex >= 0) weekdayMinutes[weekdayIndex] += event.runtimeMinutes
+    if (Number.isInteger(hour) && hour >= 0 && hour < 24) hourMinutes[hour] += event.runtimeMinutes
+  })
+
+  const bestWeekdayMinutes = Math.max(...weekdayMinutes)
+  const bestWeekdayIndex = bestWeekdayMinutes > 0 ? weekdayMinutes.indexOf(bestWeekdayMinutes) : null
+  const peakWindow = getPeakWatchWindow(hourMinutes)
+
+  return {
+    activity: {
+      buckets: activityBuckets.map(({ key: _key, ...bucket }) => bucket),
+    },
+    mediaSplit: { movieEvents, tvEpisodeEvents },
+    genres: Array.from(genreMinutes, ([name, minutes]) => ({ name, minutes }))
+      .sort((left, right) => right.minutes - left.minutes || left.name.localeCompare(right.name))
+      .slice(0, 5),
+    habits: { weekdayMinutes, bestWeekdayIndex, peakWindow },
+  }
+}
+
+function createStatsActivityBuckets(period, now) {
+  const start = getStatsPeriodStart(period, now)
+  const buckets = []
+
+  if (period === 'week') {
+    for (let day = 0; day < 7; day += 1) {
+      const bucketStart = addUtcDays(start, day)
+      buckets.push(createStatsActivityBucket(formatUtcDate(bucketStart), formatUtcLabel(bucketStart, { weekday: 'short' }), bucketStart, addUtcDays(bucketStart, 1)))
+    }
+    return buckets
+  }
+
+  if (period === 'month') {
+    const monthEnd = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 1))
+    let bucketStart = start
+    while (bucketStart < monthEnd) {
+      const daysUntilMonday = (8 - bucketStart.getUTCDay()) % 7 || 7
+      const bucketEnd = new Date(Math.min(addUtcDays(bucketStart, daysUntilMonday).valueOf(), monthEnd.valueOf()))
+      buckets.push(createStatsActivityBucket(formatUtcDate(bucketStart), formatStatsWeekLabel(bucketStart, bucketEnd), bucketStart, bucketEnd))
+      bucketStart = bucketEnd
+    }
+    return buckets
+  }
+
+  for (let month = 0; month < 12; month += 1) {
+    const bucketStart = new Date(Date.UTC(start.getUTCFullYear(), month, 1))
+    buckets.push(createStatsActivityBucket(formatUtcDate(bucketStart), formatUtcLabel(bucketStart, { month: 'short' }), bucketStart, new Date(Date.UTC(start.getUTCFullYear(), month + 1, 1))))
+  }
+  return buckets
+}
+
+function createStatsActivityBucket(key, label, start, end) {
+  return { key, label, start, end, movieMinutes: 0, tvMinutes: 0, totalMinutes: 0 }
+}
+
+function getStatsActivityBucketKey(date, _period, buckets) {
+  const timestamp = date.valueOf()
+  return buckets.find((bucket) => timestamp >= bucket.start.valueOf() && timestamp < bucket.end.valueOf())?.key
+}
+
+function getStatsPeriodStart(period, now) {
+  const current = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
+  if (period === 'week') return addUtcDays(current, -((current.getUTCDay() + 6) % 7))
+  if (period === 'month') return new Date(Date.UTC(current.getUTCFullYear(), current.getUTCMonth(), 1))
+  return new Date(Date.UTC(current.getUTCFullYear(), 0, 1))
+}
+
+function getPeakWatchWindow(hourMinutes) {
+  let startHour = 0
+  let minutes = 0
+  for (let hour = 0; hour < 24; hour += 1) {
+    const windowMinutes = hourMinutes[hour] + hourMinutes[(hour + 1) % 24] + hourMinutes[(hour + 2) % 24]
+    if (windowMinutes > minutes) {
+      startHour = hour
+      minutes = windowMinutes
+    }
+  }
+  return minutes > 0 ? { startHour, endHour: (startHour + 3) % 24, minutes } : null
+}
+
+function addUtcDays(date, days) {
+  return new Date(date.valueOf() + days * 24 * 60 * 60 * 1000)
+}
+
+function formatUtcDate(date) {
+  return date.toISOString().slice(0, 10)
+}
+
+function formatUtcLabel(date, options) {
+  return new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', ...options }).format(date)
+}
+
+function formatStatsWeekLabel(start, end) {
+  const finalDay = addUtcDays(end, -1)
+  const month = formatUtcLabel(start, { month: 'short' })
+  return `${month} ${start.getUTCDate()}–${finalDay.getUTCDate()}`
 }
 
 export async function getTvLibraryForUser(pool, username) {
