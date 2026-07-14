@@ -40,6 +40,7 @@ import {
   listTopRatedMovies,
   listTvShows,
   listContinueWatchingTvShowsForUser,
+  listWatchedTvEpisodesForUser,
   listTvWatchlistShowsForUser,
   syncPersonProfile,
   updateUserPassword,
@@ -574,6 +575,19 @@ export async function createApp(pool, options = {}) {
         shows: pagedShows.map(mapContinueWatchingTvShow),
         pagination: buildPaginationPayload(pagination, shows.length > pagination.limit),
       })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/tv/watched-history', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+
+      await ensureTvDetailTables(pool)
+      const episodes = await listWatchedTvEpisodesForUser(pool, user.username)
+      response.json({ count: episodes.length, episodes: episodes.map(mapWatchedTvEpisode) })
     } catch (error) {
       next(error)
     }
@@ -1749,6 +1763,19 @@ function mapContinueWatchingTvShow(show) {
     progress: airedEpisodeCount > 0 ? Math.round((watchedEpisodeCount / airedEpisodeCount) * 100) : 0,
     latestWatchedEpisodeLabel: `S${show.latest_watched_season_number} E${show.latest_watched_episode_number}`,
     lastWatchedAt: show.last_watched_at ?? null,
+  }
+}
+
+function mapWatchedTvEpisode(episode) {
+  return {
+    showId: Number(episode.show_id),
+    showTitle: episode.show_name,
+    showPosterUrl: resolvePosterPath(episode.show_poster_path),
+    episodeId: Number(episode.episode_id),
+    episodeTitle: episode.episode_name || `Episode ${episode.episode_number}`,
+    seasonNumber: Number(episode.season_number),
+    episodeNumber: Number(episode.episode_number),
+    watchedAt: episode.watched_at ?? null,
   }
 }
 

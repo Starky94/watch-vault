@@ -67,6 +67,7 @@ const mobileNavItems = [
 
 const watchlistTabs = ['All', 'Movies', 'TV Shows', 'Actors']
 const moviesPageSize = 30
+const statsWatchedMoviesPageSize = 30
 const genreAccentPalette = ['#ff6b7a', '#7c8dff', '#ffd86f', '#84b3ff', '#ff6cb6', '#67e8f9', '#9ae66e']
 const statsActorColors = ['#c99a75', '#8f5e48', '#5e7792', '#a47265']
 
@@ -264,6 +265,7 @@ function App() {
   })
   const [statsPeriod, setStatsPeriod] = useState('year')
   const [tvStatsState, setTvStatsState] = useState({ status: 'idle', stats: emptyTvStats, error: '' })
+  const [tvWatchedHistoryState, setTvWatchedHistoryState] = useState({ status: 'idle', episodes: [], error: '' })
   const [statsInsightsState, setStatsInsightsState] = useState({ status: 'idle', insights: emptyStatsInsights, error: '' })
   const [continueWatchingState, setContinueWatchingState] = useState({ status: 'idle', shows: [], error: '' })
   const [continueWatchingPage, setContinueWatchingPage] = useState(1)
@@ -817,7 +819,7 @@ function App() {
     const payload = await response.json().catch(() => ({}))
     if (!response.ok) throw new Error(payload.error || 'Unable to update episode')
     setTvDetailState({ status: 'success', show: mapTvDetailPayload(payload.show), error: '' })
-    await loadTvLibraryForUser(user)
+    await Promise.all([loadTvLibraryForUser(user), loadTvWatchedHistoryForUser(user)])
   }
 
   async function handleSubmitTvEpisodeRating(episode, score) {
@@ -1025,6 +1027,23 @@ function App() {
     }
   }
 
+  async function loadTvWatchedHistoryForUser(nextUser) {
+    if (!nextUser?.username) {
+      setTvWatchedHistoryState({ status: 'idle', episodes: [], error: '' })
+      return
+    }
+
+    setTvWatchedHistoryState((state) => ({ ...state, status: 'loading', error: '' }))
+    try {
+      const response = await fetch('/api/tv/watched-history', { headers: buildAuthHeaders(nextUser) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+      setTvWatchedHistoryState({ status: 'success', episodes: Array.isArray(payload.episodes) ? payload.episodes.map(mapWatchedTvEpisodePayload) : [], error: '' })
+    } catch (error) {
+      setTvWatchedHistoryState({ status: 'error', episodes: [], error: error instanceof Error ? error.message : 'Unable to load watched episode history right now.' })
+    }
+  }
+
   async function handleAddMovieToWatchlist(movie) {
     const normalizedMovieId = Number(movie?.id)
 
@@ -1164,6 +1183,10 @@ function App() {
     loadTvLibraryForUser(user)
     loadFavoriteActorsForUser(user)
   }, [user, statsPeriod])
+
+  useEffect(() => {
+    loadTvWatchedHistoryForUser(user)
+  }, [user])
 
   useEffect(() => {
     if (activeView !== primaryViews.stats || !user?.username) {
@@ -2493,6 +2516,9 @@ function App() {
               <StatsScreen
                 movieStats={movieStatsState.stats}
                 movieStatsStatus={movieStatsState.status}
+                watchedState={watchedState}
+                tvWatchedHistoryState={tvWatchedHistoryState}
+                isSignedIn={Boolean(user)}
                 statsPeriod={statsPeriod}
                 tvStats={tvStatsState.stats}
                 tvStatsStatus={tvStatsState.status}
@@ -4871,9 +4897,11 @@ function DetailFactRow({ icon: Icon, label, value }) {
   )
 }
 
-function StatsScreen({ movieStats, movieStatsStatus, statsPeriod, tvStats, tvStatsStatus, onStatsPeriodChange, insightsState, onOpenMovie, onOpenPerson, onOpenTvShow }) {
+function StatsScreen({ movieStats, movieStatsStatus, watchedState, tvWatchedHistoryState, isSignedIn, statsPeriod, tvStats, tvStatsStatus, onStatsPeriodChange, insightsState, onOpenMovie, onOpenPerson, onOpenTvShow }) {
   const [activeTab, setActiveTab] = useState('Overview')
   const [periodOpen, setPeriodOpen] = useState(false)
+  const [movieHistoryPage, setMovieHistoryPage] = useState(1)
+  const [tvHistoryPage, setTvHistoryPage] = useState(1)
   const tabs = ['Overview', 'Movies', 'TV Shows', 'Genres', 'History']
   const period = statsPeriods.find((option) => option.value === statsPeriod) ?? statsPeriods[1]
   const metricCards = buildStatsDashboardMetrics({ movieStats, tvStats })
@@ -4887,6 +4915,31 @@ function StatsScreen({ movieStats, movieStatsStatus, statsPeriod, tvStats, tvSta
   const topGenreMinutes = Math.max(...insights.genres.map((genre) => genre.minutes), 0)
   const weekdayLabels = ['M', 'T', 'W', 'T', 'F', 'S', 'S']
   const weekdayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+  const watchedMovies = watchedState.movies
+  const movieHistoryPageCount = Math.max(1, Math.ceil(watchedMovies.length / statsWatchedMoviesPageSize))
+  const visibleWatchedMovies = watchedMovies.slice((movieHistoryPage - 1) * statsWatchedMoviesPageSize, movieHistoryPage * statsWatchedMoviesPageSize)
+  const movieHistoryPagination = {
+    page: movieHistoryPage,
+    pageSize: statsWatchedMoviesPageSize,
+    hasPreviousPage: movieHistoryPage > 1,
+    hasNextPage: movieHistoryPage < movieHistoryPageCount,
+  }
+  const tvHistoryPageCount = Math.max(1, Math.ceil(tvWatchedHistoryState.episodes.length / statsWatchedMoviesPageSize))
+  const visibleTvHistoryEpisodes = tvWatchedHistoryState.episodes.slice((tvHistoryPage - 1) * statsWatchedMoviesPageSize, tvHistoryPage * statsWatchedMoviesPageSize)
+  const tvHistoryPagination = {
+    page: tvHistoryPage,
+    pageSize: statsWatchedMoviesPageSize,
+    hasPreviousPage: tvHistoryPage > 1,
+    hasNextPage: tvHistoryPage < tvHistoryPageCount,
+  }
+
+  useEffect(() => {
+    setMovieHistoryPage((page) => Math.min(page, movieHistoryPageCount))
+  }, [movieHistoryPageCount])
+
+  useEffect(() => {
+    setTvHistoryPage((page) => Math.min(page, tvHistoryPageCount))
+  }, [tvHistoryPageCount])
 
   return (
     <section className="stats-page">
@@ -4908,9 +4961,49 @@ function StatsScreen({ movieStats, movieStatsStatus, statsPeriod, tvStats, tvSta
       </div>
 
       <div className="stats-tabs" role="tablist" aria-label="Stats categories">
-        {tabs.map((tab) => <button key={tab} type="button" role="tab" aria-selected={tab === activeTab} className={tab === activeTab ? 'active' : ''} onClick={() => setActiveTab(tab)}>{tab}</button>)}
+        {tabs.map((tab) => <button key={tab} type="button" role="tab" aria-selected={tab === activeTab} className={tab === activeTab ? 'active' : ''} onClick={() => { setActiveTab(tab); if (tab === 'Movies') setMovieHistoryPage(1); if (tab === 'TV Shows') setTvHistoryPage(1) }}>{tab}</button>)}
       </div>
 
+      {activeTab === 'Movies' ? (
+        <section className="stats-watched-movies">
+          <div className="stats-watched-movies-heading">
+            <div>
+              <h2>Watched Movies</h2>
+              <p>Every movie you have marked as watched, newest first.</p>
+            </div>
+            {watchedState.status === 'success' ? <span>{watchedMovies.length} {watchedMovies.length === 1 ? 'movie' : 'movies'}</span> : null}
+          </div>
+          {watchedState.status === 'loading' || watchedState.status === 'idle' ? <SectionMessage message="Loading watched movies..." /> : null}
+          {watchedState.status === 'error' ? <SectionMessage tone="error" message={watchedState.error || 'Unable to load your watched movies right now.'} /> : null}
+          {watchedState.status === 'success' && watchedMovies.length === 0 ? <SectionMessage message="You have not marked any movies as watched yet." /> : null}
+          {watchedState.status === 'success' && watchedMovies.length > 0 ? <>
+            <div className="popular-movies-catalog stats-watched-movies-grid">
+              {visibleWatchedMovies.map((movie) => <StatsWatchedMovieCard key={movie.id} movie={movie} onOpenMovie={onOpenMovie} />)}
+            </div>
+            <PaginationControls pagination={movieHistoryPagination} onPageChange={setMovieHistoryPage} />
+          </> : null}
+        </section>
+      ) : activeTab === 'TV Shows' ? (
+        <section className="stats-watched-tv">
+          <div className="stats-watched-movies-heading">
+            <div>
+              <h2>Watched Episodes</h2>
+              <p>Every episode you have marked as watched, newest first.</p>
+            </div>
+            {tvWatchedHistoryState.status === 'success' ? <span>{tvWatchedHistoryState.episodes.length} {tvWatchedHistoryState.episodes.length === 1 ? 'episode' : 'episodes'}</span> : null}
+          </div>
+          {!isSignedIn ? <SectionMessage message="Sign in to view your watched episode history." /> : null}
+          {isSignedIn && (tvWatchedHistoryState.status === 'loading' || tvWatchedHistoryState.status === 'idle') ? <SectionMessage message="Loading watched episodes..." /> : null}
+          {isSignedIn && tvWatchedHistoryState.status === 'error' ? <SectionMessage tone="error" message={tvWatchedHistoryState.error || 'Unable to load your watched episode history right now.'} /> : null}
+          {isSignedIn && tvWatchedHistoryState.status === 'success' && tvWatchedHistoryState.episodes.length === 0 ? <SectionMessage message="You have not marked any TV episodes as watched yet." /> : null}
+          {isSignedIn && tvWatchedHistoryState.status === 'success' && visibleTvHistoryEpisodes.length > 0 ? <>
+            <div className="stats-tv-history-list">
+              {visibleTvHistoryEpisodes.map((episode) => <StatsWatchedTvEpisode key={episode.episodeId} episode={episode} onOpenTvShow={onOpenTvShow} />)}
+            </div>
+            <PaginationControls pagination={tvHistoryPagination} onPageChange={setTvHistoryPage} />
+          </> : null}
+        </section>
+      ) : <>
       <div className="stats-metric-grid">
         {metricCards.map(({ icon: Icon, label, value, suffix, tone }) => (
           <article key={label} className={`stats-metric-card ${tone}`}>
@@ -4956,7 +5049,28 @@ function StatsScreen({ movieStats, movieStatsStatus, statsPeriod, tvStats, tvSta
         <section className="stats-surface stats-history-card"><StatsSectionTitle title="Recent History" action="View all" />{insightsState.status === 'loading' ? <SectionMessage message="Loading recent history..." /> : insightsState.status === 'error' ? <SectionMessage tone="error" message={insightsState.error} /> : insights.recentHistory.length === 0 ? <SectionMessage message="No watch history yet." /> : <div className="stats-history-list">{insights.recentHistory.map((item) => <button type="button" className="stats-history-item" key={`${item.mediaType}-${item.id}-${item.watchedAt}`} onClick={() => item.mediaType === 'tv' ? onOpenTvShow(item) : onOpenMovie(item)} aria-label={`Open ${item.title}`}><div className="stats-title-art">{item.posterUrl ? <img src={item.posterUrl} alt={`${item.title} poster`} loading="lazy" /> : null}</div><b>{item.title}</b><small>{item.mediaType === 'tv' ? `TV Episode · S${item.seasonNumber} E${item.episodeNumber}` : 'Movie'}</small><em>{formatRelativeTime(item.watchedAt)}</em></button>)}</div>}</section>
         <section className="stats-surface stats-review-card"><StatsSectionTitle title="Year in Review" />{insightsState.status === 'loading' ? <SectionMessage message="Loading your year in review..." /> : insightsState.status === 'error' ? <SectionMessage tone="error" message={insightsState.error} /> : <><div className="stats-review-metrics"><span>Titles Watched<b>{insights.yearInReview.titlesWatched}</b></span><span>Hours Watched<b>{formatCompactMinutes(insights.yearInReview.minutes)}</b></span><span>Episodes Watched<b>{insights.yearInReview.episodesWatched}</b></span><span>Avg Rating<b>{insights.yearInReview.averageRating?.toFixed(1) ?? '—'} <small>/5</small></b></span></div><div className="stats-review-highlights"><span>Top Genre<b>{insights.yearInReview.topGenre || '—'}</b></span><span>Longest Streak<b>{insights.yearInReview.longestStreak ? `${insights.yearInReview.longestStreak} days` : '—'}</b></span><span>Most Watched Month<b>{insights.yearInReview.mostWatchedMonth || '—'}</b></span><span>New Favorites<b>{insights.yearInReview.newFavorites}</b></span></div><p>{insights.yearInReview.titlesWatched ? 'Keep watching, you’re building an amazing year.' : 'Start watching to build your year in review.'}</p></>}</section>
       </div>
+      </>}
     </section>
+  )
+}
+
+function StatsWatchedMovieCard({ movie, onOpenMovie }) {
+  return (
+    <div className="stats-watched-movie-card">
+      <MovieCard movie={movie} onOpenMovie={onOpenMovie} isWatched />
+      <p>Watched on {formatLongDate(movie.watchedAt)}</p>
+    </div>
+  )
+}
+
+function StatsWatchedTvEpisode({ episode, onOpenTvShow }) {
+  const show = { id: episode.showId, title: episode.showTitle, posterUrl: episode.showPosterUrl }
+  return (
+    <button type="button" className="stats-tv-history-item" onClick={() => onOpenTvShow(show)} aria-label={`Open ${episode.showTitle}`}>
+      <span className={`stats-tv-history-poster${episode.showPosterUrl ? ' has-image' : ''}`} style={episode.showPosterUrl ? { backgroundImage: `url(${episode.showPosterUrl})` } : undefined} />
+      <span className="stats-tv-history-copy"><b>{episode.showTitle}</b><strong>{episode.episodeTitle}</strong><small>S{episode.seasonNumber} E{episode.episodeNumber}</small></span>
+      <time dateTime={episode.watchedAt}>{formatLongDate(episode.watchedAt)}</time>
+    </button>
   )
 }
 
@@ -5652,6 +5766,19 @@ function mapTvStatsPayload(stats) {
     episodesWatched: typeof stats?.episodesWatched === 'number' ? stats.episodesWatched : 0,
     timeWatchedMinutes: typeof stats?.timeWatchedMinutes === 'number' ? stats.timeWatchedMinutes : 0,
     watchlistCount: typeof stats?.watchlistCount === 'number' ? stats.watchlistCount : 0,
+  }
+}
+
+function mapWatchedTvEpisodePayload(episode) {
+  return {
+    showId: Number.isInteger(episode?.showId) ? episode.showId : null,
+    showTitle: typeof episode?.showTitle === 'string' ? episode.showTitle : 'TV Show',
+    showPosterUrl: typeof episode?.showPosterUrl === 'string' ? episode.showPosterUrl : null,
+    episodeId: Number.isInteger(episode?.episodeId) ? episode.episodeId : null,
+    episodeTitle: typeof episode?.episodeTitle === 'string' ? episode.episodeTitle : 'Episode',
+    seasonNumber: Number.isInteger(episode?.seasonNumber) ? episode.seasonNumber : 0,
+    episodeNumber: Number.isInteger(episode?.episodeNumber) ? episode.episodeNumber : 0,
+    watchedAt: typeof episode?.watchedAt === 'string' ? episode.watchedAt : null,
   }
 }
 

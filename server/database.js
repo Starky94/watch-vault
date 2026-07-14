@@ -2926,6 +2926,32 @@ export async function listTvWatchlistShowsForUser(pool, username) {
   return result.rows
 }
 
+export async function listWatchedTvEpisodesForUser(pool, username) {
+  const result = await pool.query(
+    `
+      SELECT
+        tv_shows.tmdb_id AS show_id,
+        tv_shows.name AS show_name,
+        tv_shows.poster_path AS show_poster_path,
+        tv_episodes.tmdb_id AS episode_id,
+        tv_episodes.name AS episode_name,
+        tv_seasons.season_number,
+        tv_episodes.episode_number,
+        watched_tv_episodes.watched_at
+      FROM watched_tv_episodes
+      JOIN users ON users.id = watched_tv_episodes.user_id
+      JOIN tv_episodes ON tv_episodes.id = watched_tv_episodes.tv_episode_id
+      JOIN tv_seasons ON tv_seasons.id = tv_episodes.tv_season_id
+      JOIN tv_shows ON tv_shows.id = tv_seasons.tv_show_id
+      WHERE users.username = $1
+      ORDER BY watched_tv_episodes.watched_at DESC, watched_tv_episodes.id DESC
+    `,
+    [username]
+  )
+
+  return result.rows
+}
+
 export async function listContinueWatchingTvShowsForUser(pool, username, options = {}) {
   const { limit = 5, page = 1 } = options
   const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 5

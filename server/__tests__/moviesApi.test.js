@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createApp } from '../app.js'
-import { buildStatsInsights, countMovies, countStoredDataBytes, ensureMoviesTable, getMostWatchedActorsForUser, getMovieStatsForUser, getStatsInsightsForUser, getStreamingPlatformsForUser, getTopRatedThisMonthForUser, listContinueWatchingTvShowsForUser, listGenres, listLatestEpisodeTvShows, listMovies, listRecentlyReleasedMovies, listSimilarMovies, listTopRatedMovies, listTvShows, listTvWatchlistShowsForUser, listUpcomingMovies, searchActors, searchMovies, searchTvShows, updateTvEpisodeWatchStateForUser, upsertTvEpisodeRatingForUser } from '../database.js'
+import { buildStatsInsights, countMovies, countStoredDataBytes, ensureMoviesTable, getMostWatchedActorsForUser, getMovieStatsForUser, getStatsInsightsForUser, getStreamingPlatformsForUser, listContinueWatchingTvShowsForUser, listGenres, listLatestEpisodeTvShows, listMovies, listRecentlyReleasedMovies, listSimilarMovies, listTopRatedMovies, listTvShows, listTvWatchlistShowsForUser, listUpcomingMovies, listWatchedTvEpisodesForUser, searchActors, searchMovies, searchTvShows, updateTvEpisodeWatchStateForUser, upsertTvEpisodeRatingForUser } from '../database.js'
 
 function isSchemaSetupQuery(sql) {
   return (
@@ -3796,6 +3796,44 @@ test('listContinueWatchingTvShowsForUser selects paginated, most recently watche
   assert.match(executedSql, /LIMIT \$2/i)
   assert.match(executedSql, /OFFSET \$3/i)
   assert.deepEqual(executedParams, ['florind', 30, 30])
+})
+
+test('listWatchedTvEpisodesForUser returns a user’s watched episodes newest first with show and episode details', async () => {
+  const calls = []
+  const pool = {
+    async query(sql, params) {
+      calls.push({ sql, params })
+      return {
+        rows: [{
+          show_id: 42,
+          show_name: 'Example Show',
+          show_poster_path: '/show.jpg',
+          episode_id: 8401,
+          episode_name: 'Finale',
+          season_number: 2,
+          episode_number: 8,
+          watched_at: '2026-07-14T12:00:00.000Z',
+        }],
+      }
+    },
+  }
+
+  const episodes = await listWatchedTvEpisodesForUser(pool, 'florind')
+
+  assert.equal(episodes.length, 1)
+  assert.deepEqual(episodes[0], {
+    show_id: 42,
+    show_name: 'Example Show',
+    show_poster_path: '/show.jpg',
+    episode_id: 8401,
+    episode_name: 'Finale',
+    season_number: 2,
+    episode_number: 8,
+    watched_at: '2026-07-14T12:00:00.000Z',
+  })
+  assert.equal(calls[0].params[0], 'florind')
+  assert.match(calls[0].sql, /FROM watched_tv_episodes/i)
+  assert.match(calls[0].sql, /ORDER BY watched_tv_episodes\.watched_at DESC/i)
 })
 
 test('listLatestEpisodeTvShows selects one aired episode per show and prioritizes date then popularity', async () => {
