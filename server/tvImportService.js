@@ -362,7 +362,7 @@ export async function hydrateTvShowByTmdbId(pool, options) {
   ])
   const seasons = await Promise.all(
     (Array.isArray(detailPayload?.seasons) ? detailPayload.seasons : [])
-      .filter((season) => Number.isInteger(season?.season_number) && season.season_number >= 0)
+      .filter((season) => Number.isInteger(season?.season_number) && season.season_number > 0)
       .map(async (season) => normalizeTvSeason(await fetchTvSeason(fetchImpl, { token, baseUrl, tvShowId, seasonNumber: season.season_number })))
   )
   await replaceTvDetailRelations(pool, tvShowId, {

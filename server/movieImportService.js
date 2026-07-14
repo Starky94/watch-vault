@@ -14,6 +14,7 @@ import {
   upsertGenres,
   upsertMovies,
 } from './database.js'
+import { createFavoriteActorAlertsForNewMovies } from './alertService.js'
 
 const CAST_LIMIT = 10
 
@@ -255,7 +256,8 @@ export async function hydrateMovieByTmdbId(pool, options) {
     },
     [hydratedMovie]
   )
-  await upsertMovies(pool, [hydratedMovie])
+  const importSummary = await upsertMovies(pool, [hydratedMovie])
+  await createFavoriteActorAlertsForNewMovies(pool, importSummary.insertedMovieIds)
 
   return hydratedMovie
 }
@@ -488,6 +490,7 @@ export async function importPopularMovies(pool, options) {
     movies
   )
   const importSummary = await upsertMovies(pool, enrichedMovies)
+  await createFavoriteActorAlertsForNewMovies(pool, importSummary.insertedMovieIds)
 
   return {
     fetchedCount: enrichedMovies.length,
@@ -525,6 +528,7 @@ export async function importNowPlayingMovies(pool, options) {
     movies
   )
   const importSummary = await upsertMovies(pool, enrichedMovies)
+  await createFavoriteActorAlertsForNewMovies(pool, importSummary.insertedMovieIds)
 
   return {
     fetchedCount: enrichedMovies.length,
@@ -562,6 +566,7 @@ export async function importUpcomingMovies(pool, options) {
     movies
   )
   const importSummary = await upsertMovies(pool, enrichedMovies)
+  await createFavoriteActorAlertsForNewMovies(pool, importSummary.insertedMovieIds)
 
   return {
     fetchedCount: enrichedMovies.length,

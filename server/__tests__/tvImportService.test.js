@@ -26,9 +26,15 @@ function isSchemaSetupQuery(sql) {
     sql.includes('INSERT INTO users') ||
     sql.includes('CREATE TABLE IF NOT EXISTS watchlist_items') ||
     sql.includes('CREATE TABLE IF NOT EXISTS watched_movies') ||
+    sql.includes('ALTER TABLE watched_movies') ||
     sql.includes('CREATE TABLE IF NOT EXISTS movie_ratings') ||
     sql.includes('CREATE TABLE IF NOT EXISTS tv_watchlist_items') ||
     sql.includes('CREATE TABLE IF NOT EXISTS watched_tv_shows')
+    || sql.includes('ALTER TABLE users')
+    || sql.includes('CREATE TABLE IF NOT EXISTS user_alerts')
+    || sql.includes('CREATE TABLE IF NOT EXISTS alert_feature_state')
+    || sql.includes('INSERT INTO alert_feature_state')
+    || sql.includes('CREATE TABLE IF NOT EXISTS favorite_actors')
   )
 }
 

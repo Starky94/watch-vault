@@ -6,6 +6,7 @@ const primaryViews = {
   movies: 'Movies',
   tvShows: 'TV Shows',
   watchlist: 'Watchlist',
+  calendar: 'Calendar',
   stats: 'Stats',
 }
 
@@ -14,7 +15,7 @@ const navItems = [
   { label: 'Movies', icon: ClapperIcon, view: primaryViews.movies },
   { label: 'TV Shows', icon: TvIcon, view: primaryViews.tvShows },
   { label: 'Watchlist', icon: BookmarkIcon, view: primaryViews.watchlist },
-  { label: 'Calendar', icon: CalendarIcon },
+  { label: 'Calendar', icon: CalendarIcon, view: primaryViews.calendar },
   { label: 'Stats', icon: BarsIcon, view: primaryViews.stats },
 ]
 
@@ -40,6 +41,7 @@ const routeKinds = {
   stats: 'stats',
   search: 'search',
   continueWatching: 'continueWatching',
+  calendar: 'calendar',
   movieDetail: 'movieDetail',
   tvDetail: 'tvDetail',
   personDetail: 'personDetail',
@@ -61,8 +63,8 @@ const mobileNavItems = [
   { label: 'Home', icon: HomeIcon, view: primaryViews.home },
   { label: 'Search', icon: SearchIcon, view: primaryViews.movies },
   { label: 'Watchlist', icon: BookmarkIcon, view: primaryViews.watchlist },
+  { label: 'Calendar', icon: CalendarIcon, view: primaryViews.calendar },
   { label: 'Stats', icon: BarsIcon, view: primaryViews.stats },
-  { label: 'More', icon: MoreIcon },
 ]
 
 const watchlistTabs = ['All', 'Movies', 'TV Shows', 'Actors']
@@ -137,6 +139,8 @@ function App() {
   const [activeView, setActiveView] = useState(() =>
     readAppRoute().kind === routeKinds.stats
       ? primaryViews.stats
+      : readAppRoute().kind === routeKinds.calendar
+        ? primaryViews.calendar
       : readAppRoute().kind === routeKinds.movieDetail || readAppRoute().kind === routeKinds.personDetail || readAppRoute().kind === routeKinds.tvDetail
       ? primaryViews.movies
       : primaryViews.home
@@ -144,6 +148,10 @@ function App() {
   const [activeMovieTab, setActiveMovieTab] = useState(movieTabs[0])
   const [activeTvTab, setActiveTvTab] = useState(tvShowTabs[0])
   const [activeWatchlistTab, setActiveWatchlistTab] = useState(watchlistTabs[0])
+  const [calendarMonth, setCalendarMonth] = useState(() => getLocalIsoMonth())
+  const [calendarMediaType, setCalendarMediaType] = useState('all')
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => getLocalIsoDate())
+  const [calendarState, setCalendarState] = useState({ status: 'idle', events: [], upcoming: [], error: '' })
   const [moviesScreenMode, setMoviesScreenMode] = useState(movieScreenModes.overview)
   const [currentScreen, setCurrentScreen] = useState(appScreens.dashboard)
   const [searchInput, setSearchInput] = useState(() => readAppRoute().query || '')
@@ -237,6 +245,7 @@ function App() {
     actors: [],
     error: '',
   })
+  const [alertsState, setAlertsState] = useState({ status: 'idle', alerts: [], unreadCount: 0, error: '' })
   const [watchlistActionState, setWatchlistActionState] = useState({
     status: 'idle',
     movieId: null,
@@ -283,6 +292,8 @@ function App() {
       setActiveView(
         nextRoute.kind === routeKinds.stats
           ? primaryViews.stats
+          : nextRoute.kind === routeKinds.calendar
+            ? primaryViews.calendar
           : nextRoute.kind === routeKinds.movieDetail || nextRoute.kind === routeKinds.personDetail || nextRoute.kind === routeKinds.tvDetail
           ? primaryViews.movies
           : primaryViews.home
@@ -491,6 +502,16 @@ function App() {
     handleNavigateToPath(`/tv/${showId}`, { kind: routeKinds.tvDetail, showId }, primaryViews.tvShows, { tvPreview: show })
   }
 
+  function handleOpenAlert(alert) {
+    if (Number.isInteger(Number(alert?.movieId))) {
+      handleOpenMovieDetail({ id: Number(alert.movieId), title: alert.title })
+      return
+    }
+    if (Number.isInteger(Number(alert?.showId))) {
+      handleOpenTvDetail({ id: Number(alert.showId), title: alert.title })
+    }
+  }
+
   function handleOpenContinueWatching() {
     setContinueWatchingPage(1)
     handleNavigateToPath('/tv/continue-watching', { kind: routeKinds.continueWatching })
@@ -597,6 +618,12 @@ function App() {
   function handleMovieViewSelection(view) {
     if (view === primaryViews.stats) {
       handleNavigateToPath('/stats', { kind: routeKinds.stats }, view)
+      setSelectedGenre(null)
+      return
+    }
+
+    if (view === primaryViews.calendar) {
+      handleNavigateToPath('/calendar', { kind: routeKinds.calendar }, view)
       setSelectedGenre(null)
       return
     }
@@ -852,6 +879,11 @@ function App() {
       return
     }
 
+    if (!user) {
+      handleOpenLogin()
+      return
+    }
+
     setActiveView(primaryViews.movies)
     setActiveMovieTab('All Movies')
     setSelectedGenre(genre)
@@ -920,6 +952,40 @@ function App() {
       setFavoriteActorsState({ status: 'success', actors: Array.isArray(payload.actors) ? payload.actors : [], error: '' })
     } catch (error) {
       setFavoriteActorsState({ status: 'error', actors: [], error: error instanceof Error ? error.message : 'Unable to load favorite actors right now.' })
+    }
+  }
+
+  async function loadAlertsForUser(nextUser) {
+    if (!nextUser?.username) {
+      setAlertsState({ status: 'idle', alerts: [], unreadCount: 0, error: '' })
+      return
+    }
+
+    setAlertsState((state) => ({ ...state, status: 'loading', error: '' }))
+    try {
+      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
+      const response = await fetch(`/api/alerts?timeZone=${encodeURIComponent(timezone || 'UTC')}`, { headers: buildAuthHeaders(nextUser) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+      setAlertsState({
+        status: 'success',
+        alerts: Array.isArray(payload.alerts) ? payload.alerts : [],
+        unreadCount: Number(payload.unreadCount) || 0,
+        error: '',
+      })
+    } catch (error) {
+      setAlertsState((state) => ({ ...state, status: 'error', error: error instanceof Error ? error.message : 'Unable to load alerts right now.' }))
+    }
+  }
+
+  async function handleOpenAlerts() {
+    if (!user) return handleOpenLogin()
+    await loadAlertsForUser(user)
+    try {
+      await fetch('/api/alerts/read', { method: 'POST', headers: buildAuthHeaders(user) })
+      setAlertsState((state) => ({ ...state, unreadCount: 0, alerts: state.alerts.map((alert) => ({ ...alert, readAt: alert.readAt || new Date().toISOString() })) }))
+    } catch {
+      // Alerts remain visible even if marking them read fails.
     }
   }
 
@@ -1182,6 +1248,7 @@ function App() {
     loadWatchedForUser(user)
     loadTvLibraryForUser(user)
     loadFavoriteActorsForUser(user)
+    loadAlertsForUser(user)
   }, [user, statsPeriod])
 
   useEffect(() => {
@@ -1796,6 +1863,45 @@ function App() {
   }, [currentRoute])
 
   useEffect(() => {
+    if (currentRoute.kind !== routeKinds.calendar) {
+      setCalendarState({ status: 'idle', events: [], upcoming: [], error: '' })
+      return
+    }
+
+    if (!user) {
+      setCalendarState({ status: 'signed-out', events: [], upcoming: [], error: '' })
+      return
+    }
+
+    let cancelled = false
+
+    async function loadCalendar() {
+      setCalendarState({ status: 'loading', events: [], upcoming: [], error: '' })
+      try {
+        const response = await fetch(`/api/calendar?month=${encodeURIComponent(calendarMonth)}&mediaType=${calendarMediaType}&today=${getLocalIsoDate()}`, {
+          headers: buildAuthHeaders(user),
+        })
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+        if (!cancelled) {
+          const events = Array.isArray(payload.events) ? payload.events.map(mapCalendarEventPayload) : []
+          setCalendarState({
+            status: 'success',
+            events,
+            upcoming: Array.isArray(payload.upcoming) ? payload.upcoming.map(mapCalendarEventPayload) : [],
+            error: '',
+          })
+        }
+      } catch (error) {
+        if (!cancelled) setCalendarState({ status: 'error', events: [], upcoming: [], error: error instanceof Error ? error.message : 'Unable to load your calendar.' })
+      }
+    }
+
+    loadCalendar()
+    return () => { cancelled = true }
+  }, [calendarMediaType, calendarMonth, currentRoute, user])
+
+  useEffect(() => {
     let cancelled = false
 
     async function loadGenres() {
@@ -2332,16 +2438,18 @@ function App() {
       setGenreMoviesState(createMovieCollectionLoadingState({ page: genreMoviesPage }))
 
       try {
-        const response = await fetch(buildMoviesApiPath('/api/movies', genreMoviesPage, moviesPageSize, {
+        const response = await fetch(buildMoviesApiPath('/api/watched/by-genre', genreMoviesPage, moviesPageSize, {
           genre: selectedGenre.name,
-        }))
+        }), { headers: buildAuthHeaders(user) })
 
         if (!response.ok) {
           throw new Error(`Request failed with status ${response.status}`)
         }
 
         const payload = await response.json()
-        const movies = Array.isArray(payload.movies) ? payload.movies.map(mapMovieRowToCard) : []
+        const movies = Array.isArray(payload.movies)
+          ? payload.movies.map((movie) => ({ ...mapWatchedMoviePayload(movie), theme: 'theme-catalog' }))
+          : []
         const pagination = mapPaginationPayload(payload.pagination, genreMoviesPage)
 
         if (!cancelled) {
@@ -2369,7 +2477,7 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [activeView, genreMoviesPage, moviesScreenMode, selectedGenre])
+  }, [activeView, genreMoviesPage, moviesScreenMode, selectedGenre, user])
 
   const watchlistMovieIds = new Set(watchlistState.movies.map((movie) => Number(movie.id)))
   const watchedMovieIds = new Set(watchedState.movies.map((movie) => Number(movie.id)))
@@ -2447,6 +2555,9 @@ function App() {
               onOpenAccount={handleOpenAccount}
               onOpenLogin={handleOpenLogin}
               onLogout={handleLogout}
+              alertsState={alertsState}
+              onOpenAlert={handleOpenAlert}
+              onOpenAlerts={handleOpenAlerts}
               user={user}
             />
             <MobileHeader
@@ -2458,6 +2569,9 @@ function App() {
                 if (searchError) setSearchError('')
               }}
               onSearchSubmit={handleSearchSubmit}
+              alertsState={alertsState}
+              onOpenAlert={handleOpenAlert}
+              onOpenAlerts={handleOpenAlerts}
               user={user}
             />
 
@@ -2511,6 +2625,22 @@ function App() {
                 onOpenLogin={handleOpenLogin}
                 onOpenTvShow={handleOpenTvDetail}
                 onPageChange={setContinueWatchingPage}
+              />
+            ) : currentRoute.kind === routeKinds.calendar ? (
+              <CalendarScreen
+                calendarMonth={calendarMonth}
+                mediaType={calendarMediaType}
+                selectedDate={selectedCalendarDate}
+                calendarState={calendarState}
+                onMonthChange={(nextMonth) => {
+                  setCalendarMonth(nextMonth)
+                  setSelectedCalendarDate(`${nextMonth}-01`)
+                }}
+                onMediaTypeChange={setCalendarMediaType}
+                onSelectDate={setSelectedCalendarDate}
+                onOpenMovie={handleOpenMovieDetail}
+                onOpenTvShow={handleOpenTvDetail}
+                onOpenLogin={handleOpenLogin}
               />
             ) : activeView === primaryViews.stats ? (
               <StatsScreen
@@ -2672,7 +2802,7 @@ function Brand() {
   )
 }
 
-function DesktopTopbar({ onOpenAdmin, onOpenAccount, onOpenLogin, onLogout, onSearchInputChange, onSearchSubmit, searchError, searchInput, user }) {
+function DesktopTopbar({ alertsState, onOpenAdmin, onOpenAccount, onOpenAlert, onOpenAlerts, onOpenLogin, onLogout, onSearchInputChange, onSearchSubmit, searchError, searchInput, user }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef(null)
 
@@ -2728,10 +2858,7 @@ function DesktopTopbar({ onOpenAdmin, onOpenAccount, onOpenLogin, onLogout, onSe
       </form>
 
       <div className="topbar-actions">
-        <button type="button" className="icon-button">
-          <BellIcon />
-          <span className="notification-dot" />
-        </button>
+        <AlertInbox alertsState={alertsState} onOpenAlert={onOpenAlert} onOpenAlerts={onOpenAlerts} onOpenLogin={onOpenLogin} user={user} />
 
         {user ? (
           <div className={`profile-menu${menuOpen ? ' open' : ''}`} ref={menuRef}>
@@ -2783,7 +2910,7 @@ function DesktopTopbar({ onOpenAdmin, onOpenAccount, onOpenLogin, onLogout, onSe
   )
 }
 
-function MobileHeader({ onOpenLogin, onSearchInputChange, onSearchSubmit, searchError, searchInput, user }) {
+function MobileHeader({ alertsState, onOpenAlert, onOpenAlerts, onOpenLogin, onSearchInputChange, onSearchSubmit, searchError, searchInput, user }) {
   const [searchOpen, setSearchOpen] = useState(false)
 
   return (
@@ -2795,9 +2922,7 @@ function MobileHeader({ onOpenLogin, onSearchInputChange, onSearchSubmit, search
           <button type="button" className="icon-button" aria-label="Search" aria-expanded={searchOpen} onClick={() => setSearchOpen((value) => !value)}>
             <SearchIcon />
           </button>
-          <button type="button" className="icon-button">
-            <BellIcon />
-          </button>
+          <AlertInbox alertsState={alertsState} onOpenAlert={onOpenAlert} onOpenAlerts={onOpenAlerts} onOpenLogin={onOpenLogin} user={user} />
           {user ? (
             <button type="button" className="avatar-button" aria-label={user.fullName}>
               <div className="avatar small">{getUserInitial(user.fullName)}</div>
@@ -2819,6 +2944,47 @@ function MobileHeader({ onOpenLogin, onSearchInputChange, onSearchSubmit, search
           <button type="submit" className="search-submit-button">Search</button>
           {searchError ? <span id="mobile-search-error" className="search-error" role="alert">{searchError}</span> : null}
         </form>
+      ) : null}
+    </div>
+  )
+}
+
+function AlertInbox({ alertsState, onOpenAlert, onOpenAlerts, onOpenLogin, user }) {
+  const [open, setOpen] = useState(false)
+  const inboxRef = useRef(null)
+
+  useEffect(() => {
+    if (!open) return undefined
+    function handlePointerDown(event) {
+      if (inboxRef.current && !inboxRef.current.contains(event.target)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handlePointerDown)
+    return () => document.removeEventListener('mousedown', handlePointerDown)
+  }, [open])
+
+  async function handleToggle() {
+    if (!user) return onOpenLogin()
+    const nextOpen = !open
+    setOpen(nextOpen)
+    if (nextOpen) await onOpenAlerts()
+  }
+
+  return (
+    <div className={`alert-inbox${open ? ' open' : ''}`} ref={inboxRef}>
+      <button type="button" className="icon-button" aria-label="Alerts" aria-expanded={open} aria-haspopup="dialog" onClick={handleToggle}>
+        <BellIcon />
+        {user && alertsState.unreadCount > 0 ? <span className="notification-dot" /> : null}
+      </button>
+      {open ? (
+        <section className="alert-dropdown" role="dialog" aria-label="Alerts">
+          <header><strong>Alerts</strong><span>{alertsState.unreadCount ? `${alertsState.unreadCount} unread` : 'All caught up'}</span></header>
+          {alertsState.status === 'loading' ? <p className="alert-empty">Loading alerts...</p> : null}
+          {alertsState.status === 'error' ? <p className="alert-empty alert-error">{alertsState.error}</p> : null}
+          {alertsState.status !== 'loading' && alertsState.status !== 'error' && !alertsState.alerts.length ? <p className="alert-empty">No alerts yet.</p> : null}
+          <div className="alert-list">
+            {alertsState.alerts.map((alert) => <button key={alert.id} type="button" className="alert-item" onClick={() => { setOpen(false); onOpenAlert(alert) }}><strong>{alert.title}</strong><span>{alert.message}</span><small>{formatAlertTime(alert.createdAt)}</small></button>)}
+          </div>
+        </section>
       ) : null}
     </div>
   )
@@ -3261,6 +3427,81 @@ function AccountScreen({ changePasswordState, onBack, onSubmit, user }) {
   )
 }
 
+function CalendarScreen({ calendarMonth, mediaType, selectedDate, calendarState, onMonthChange, onMediaTypeChange, onSelectDate, onOpenMovie, onOpenTvShow, onOpenLogin }) {
+  const eventsByDate = new Map()
+  for (const event of calendarState.events) {
+    const current = eventsByDate.get(event.date) ?? []
+    current.push(event)
+    eventsByDate.set(event.date, current)
+  }
+  const selectedEvents = eventsByDate.get(selectedDate) ?? []
+  const today = getLocalIsoDate()
+  const monthDays = getCalendarMonthDays(calendarMonth)
+  const openEvent = (event) => event.mediaType === 'tv' ? onOpenTvShow({ id: event.mediaId, title: event.title }) : onOpenMovie({ id: event.mediaId, title: event.title })
+
+  if (calendarState.status === 'signed-out') {
+    return <section className="calendar-page"><CalendarPageHeading /><div className="calendar-message"><CalendarIcon /><h2>Sign in to see your schedule</h2><p>Your Calendar is built from your movie and TV watchlist.</p><button type="button" className="primary-button" onClick={onOpenLogin}>Sign in</button></div></section>
+  }
+
+  return (
+    <section className="calendar-page">
+      <CalendarPageHeading />
+      <div className="calendar-filters" role="tablist" aria-label="Calendar media type">
+        {[['all', 'All'], ['tv', 'TV Shows'], ['movie', 'Movies']].map(([value, label]) => (
+          <button key={value} type="button" role="tab" aria-selected={mediaType === value} className={mediaType === value ? 'active' : ''} onClick={() => onMediaTypeChange(value)}>{label}</button>
+        ))}
+      </div>
+
+      {calendarState.status === 'loading' ? <div className="calendar-message compact"><p>Loading your release schedule…</p></div> : null}
+      {calendarState.status === 'error' ? <div className="calendar-message compact" role="alert"><p>{calendarState.error}</p></div> : null}
+      {calendarState.status === 'success' ? (
+        <div className="calendar-layout">
+          <div className="calendar-main-panel">
+            <div className="calendar-month-header">
+              <button type="button" className="calendar-month-button" aria-label="Previous month" onClick={() => onMonthChange(shiftIsoMonth(calendarMonth, -1))}><ChevronLeftIcon /></button>
+              <h2>{formatCalendarMonth(calendarMonth)}</h2>
+              <button type="button" className="calendar-month-button" aria-label="Next month" onClick={() => onMonthChange(shiftIsoMonth(calendarMonth, 1))}><ChevronRight /></button>
+            </div>
+            <div className="calendar-weekdays" aria-hidden="true">{['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => <span key={day}>{day}</span>)}</div>
+            <div className="calendar-grid">
+              {monthDays.map((day) => {
+                const events = eventsByDate.get(day.isoDate) ?? []
+                return <button key={day.isoDate} type="button" className={`calendar-day${day.isOutsideMonth ? ' outside' : ''}${selectedDate === day.isoDate ? ' selected' : ''}${day.isoDate === today ? ' today' : ''}`} onClick={() => onSelectDate(day.isoDate)}>
+                  <span className="calendar-day-number">{day.day}</span>
+                  <span className="calendar-day-events">{events.slice(0, 2).map((event) => <span key={`${event.mediaType}-${event.mediaId}-${event.episodeId ?? ''}`} className={`calendar-event-chip ${event.mediaType}`}><span className="calendar-event-art" style={event.posterUrl ? { backgroundImage: `url(${event.backdropUrl || event.posterUrl})` } : undefined} /><span>{event.mediaType === 'tv' ? event.episodeLabel : event.title}</span></span>)}</span>
+                  {events.length > 2 ? <small>+{events.length - 2} more</small> : null}
+                </button>
+              })}
+            </div>
+          </div>
+
+          <aside className="calendar-upcoming-panel">
+            <div className="calendar-panel-heading"><h2>Upcoming This Week</h2><span>{calendarState.upcoming.length}</span></div>
+            {calendarState.upcoming.length ? <div className="calendar-upcoming-list">{calendarState.upcoming.map((event) => <CalendarEventRow key={`${event.date}-${event.mediaType}-${event.mediaId}-${event.episodeId ?? ''}`} event={event} onOpen={() => openEvent(event)} />)}</div> : <p className="calendar-empty-copy">Nothing scheduled this week.</p>}
+          </aside>
+        </div>
+      ) : null}
+
+      {calendarState.status === 'success' ? <section className="calendar-agenda-panel">
+        <div className="calendar-panel-heading"><div><h2>{formatCalendarDate(selectedDate)}</h2><p>{selectedDate === today ? 'Today' : 'Selected day'}</p></div><span>{selectedEvents.length}</span></div>
+        {selectedEvents.length ? <div className="calendar-agenda-list">{selectedEvents.map((event) => <CalendarEventRow key={`${event.mediaType}-${event.mediaId}-${event.episodeId ?? ''}`} event={event} onOpen={() => openEvent(event)} agenda />)}</div> : <p className="calendar-empty-copy">No eligible movie releases or episodes on this day.</p>}
+      </section> : null}
+    </section>
+  )
+}
+
+function CalendarPageHeading() {
+  return <div className="calendar-page-heading"><h1>Calendar</h1><p>Keep up with watchlist releases and the next episodes in your shows.</p></div>
+}
+
+function CalendarEventRow({ event, onOpen, agenda = false }) {
+  return <button type="button" className={`calendar-event-row${agenda ? ' agenda' : ''}`} onClick={onOpen}>
+    <span className="calendar-event-row-art" style={event.posterUrl ? { backgroundImage: `url(${event.backdropUrl || event.posterUrl})` } : undefined} />
+    <span className="calendar-event-row-copy"><b>{event.mediaType === 'tv' ? event.episodeTitle || event.title : event.title}</b><small>{event.mediaType === 'tv' ? `${event.title} · ${event.episodeLabel}` : 'Movie premiere'}</small></span>
+    <time dateTime={event.date}>{formatCalendarShortDate(event.date)}</time>
+  </button>
+}
+
 function MoviesScreen({
   activeTab,
   setActiveTab,
@@ -3305,7 +3546,7 @@ function MoviesScreen({
         <h1>Movies</h1>
         <p>
           {isGenreListMode
-            ? `Browse every locally stored movie tagged with ${selectedGenre.name}.`
+            ? `Browse movies you watched in ${selectedGenre.name}, 30 titles at a time.`
             : isPopularListMode
             ? 'Browse popular movies imported from your local database, 30 titles at a time.'
             : isNowPlayingListMode
@@ -5651,7 +5892,7 @@ function GenreMoviesGrid({ genreMoviesState, onOpenMovie, watchedMovieIds = new 
   }
 
   if (genreMoviesState.movies.length === 0) {
-    return <SectionMessage message="No movies with this genre are available in the local database yet." />
+    return <SectionMessage message="You have not watched any movies in this genre yet." />
   }
 
   return (
@@ -5749,6 +5990,12 @@ function buildAuthHeaders(user) {
   return {
     'x-watchvault-username': user.username,
   }
+}
+
+function formatAlertTime(value) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
 
 function mapMovieStatsPayload(stats) {
@@ -5896,6 +6143,25 @@ function mapWatchlistMoviePayload(movie, index = 0) {
   }
 }
 
+function mapCalendarEventPayload(event) {
+  const seasonNumber = Number(event?.seasonNumber)
+  const episodeNumber = Number(event?.episodeNumber)
+  const episodeLabel = typeof event?.episodeLabel === 'string' && event.episodeLabel
+    ? event.episodeLabel
+    : Number.isInteger(seasonNumber) && Number.isInteger(episodeNumber) ? `S${seasonNumber} E${episodeNumber}` : null
+  return {
+    date: typeof event?.date === 'string' ? event.date.slice(0, 10) : '',
+    mediaType: event?.mediaType === 'tv' ? 'tv' : 'movie',
+    mediaId: Number(event?.mediaId),
+    episodeId: Number.isInteger(Number(event?.episodeId)) ? Number(event.episodeId) : null,
+    title: event?.title || 'Untitled',
+    episodeTitle: event?.episodeTitle || null,
+    episodeLabel,
+    posterUrl: event?.posterUrl || null,
+    backdropUrl: event?.backdropUrl || null,
+  }
+}
+
 function mapTvWatchlistShowPayload(show, index = 0) {
   return {
     id: show.id,
@@ -6025,7 +6291,7 @@ function mapTvDetailPayload(show) {
       ratingCount: Number.isInteger(show.yourEpisodeRating?.ratingCount) ? show.yourEpisodeRating.ratingCount : 0,
     },
     trailer: Array.isArray(show.trailers) ? show.trailers[0] ?? null : null,
-    seasons: (Array.isArray(show.seasons) ? show.seasons : []).map((season) => ({ ...season, episodes: (season.episodes ?? []).map((episode) => ({ ...episode, isAired: Boolean(episode.isAired), yourScore: typeof episode.yourScore === 'number' ? episode.yourScore : null, stillUrl: resolveMovieBackdropUrl(episode.stillPath), airDateLabel: episode.airDate ? formatLongDate(episode.airDate) : 'TBA', runtimeLabel: episode.runtimeMinutes ? `${episode.runtimeMinutes}m` : 'Runtime TBA' })) })),
+    seasons: (Array.isArray(show.seasons) ? show.seasons : []).filter((season) => Number(season.seasonNumber) > 0).map((season) => ({ ...season, episodes: (season.episodes ?? []).map((episode) => ({ ...episode, isAired: Boolean(episode.isAired), yourScore: typeof episode.yourScore === 'number' ? episode.yourScore : null, stillUrl: resolveMovieBackdropUrl(episode.stillPath), airDateLabel: episode.airDate ? formatLongDate(episode.airDate) : 'TBA', runtimeLabel: episode.runtimeMinutes ? `${episode.runtimeMinutes}m` : 'Runtime TBA' })) })),
     credits: Array.isArray(show.credits) ? show.credits.map((credit) => ({ ...credit, profileUrl: resolveMoviePosterUrl(credit.profilePath) })) : [],
     recommendations: Array.isArray(show.recommendations) ? show.recommendations.map((item) => ({ ...item, posterUrl: resolveMoviePosterUrl(item.posterPath) })) : [],
   }
@@ -6465,6 +6731,10 @@ function readAppRoute(pathname = window.location.pathname, search = window.locat
     return { kind: routeKinds.stats }
   }
 
+  if (/^\/calendar\/?$/.test(pathname)) {
+    return { kind: routeKinds.calendar }
+  }
+
   if (/^\/search\/?$/.test(pathname)) {
     return { kind: routeKinds.search, query: new URLSearchParams(search).get('q')?.trim() || '' }
   }
@@ -6586,8 +6856,7 @@ function formatFeaturedTvRailMeta(show) {
 }
 
 function formatEpisodeCount(details) {
-  const episodeCount = typeof details?.number_of_episodes === 'number' ? details.number_of_episodes : null
-  const seasonCount = typeof details?.number_of_seasons === 'number' ? details.number_of_seasons : null
+  const { episodeCount, seasonCount } = getRegularTvCounts(details)
 
   if (seasonCount && episodeCount) {
     return `S${seasonCount} • ${episodeCount} Episodes`
@@ -6602,6 +6871,22 @@ function formatEpisodeCount(details) {
   }
 
   return 'Episodes TBA'
+}
+
+function getRegularTvCounts(details) {
+  const seasons = Array.isArray(details?.seasons) ? details.seasons.filter((season) => Number(season?.season_number) > 0) : []
+  if (!Array.isArray(details?.seasons)) {
+    return {
+      episodeCount: typeof details?.number_of_episodes === 'number' ? details.number_of_episodes : null,
+      seasonCount: typeof details?.number_of_seasons === 'number' ? details.number_of_seasons : null,
+    }
+  }
+  if (!seasons.length) return { episodeCount: null, seasonCount: null }
+  const episodeCounts = seasons.map((season) => Number(season?.episode_count))
+  return {
+    episodeCount: episodeCounts.every(Number.isFinite) ? episodeCounts.reduce((total, count) => total + count, 0) : null,
+    seasonCount: seasons.length,
+  }
 }
 
 function readTvMaturityRating(details) {
@@ -6656,6 +6941,50 @@ function formatLongDate(releaseDate) {
     year: 'numeric',
     timeZone: 'UTC',
   }).format(parsedDate)
+}
+
+function getLocalIsoDate(date = new Date()) {
+  const offsetDate = new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
+  return offsetDate.toISOString().slice(0, 10)
+}
+
+function getLocalIsoMonth(date = new Date()) {
+  return getLocalIsoDate(date).slice(0, 7)
+}
+
+function shiftIsoMonth(month, amount) {
+  const [year, monthNumber] = month.split('-').map(Number)
+  const date = new Date(Date.UTC(year, monthNumber - 1 + amount, 1))
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`
+}
+
+function getCalendarMonthDays(month) {
+  const [year, monthNumber] = month.split('-').map(Number)
+  const firstDay = new Date(Date.UTC(year, monthNumber - 1, 1))
+  const start = new Date(firstDay)
+  start.setUTCDate(1 - firstDay.getUTCDay())
+  return Array.from({ length: 42 }, (_value, index) => {
+    const date = new Date(start)
+    date.setUTCDate(start.getUTCDate() + index)
+    return {
+      isoDate: date.toISOString().slice(0, 10),
+      day: date.getUTCDate(),
+      isOutsideMonth: date.getUTCMonth() !== monthNumber - 1,
+    }
+  })
+}
+
+function formatCalendarMonth(month) {
+  const [year, monthNumber] = month.split('-').map(Number)
+  return new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(Date.UTC(year, monthNumber - 1, 1)))
+}
+
+function formatCalendarDate(isoDate) {
+  return new Intl.DateTimeFormat('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${isoDate}T00:00:00.000Z`))
+}
+
+function formatCalendarShortDate(isoDate) {
+  return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(new Date(`${isoDate}T00:00:00.000Z`))
 }
 
 function resolveMoviePosterUrl(posterPath) {
@@ -6934,16 +7263,6 @@ function BookmarkStackIcon() {
     <IconBase>
       <path d="M8 5.5h8a1 1 0 0 1 1 1v10l-5-2.6-5 2.6v-10a1 1 0 0 1 1-1Z" />
       <path d="M6 8.5H5a1 1 0 0 0-1 1v9l5-2.5" />
-    </IconBase>
-  )
-}
-
-function MoreIcon() {
-  return (
-    <IconBase>
-      <circle cx="6.5" cy="12" r=".9" fill="currentColor" stroke="none" />
-      <circle cx="12" cy="12" r=".9" fill="currentColor" stroke="none" />
-      <circle cx="17.5" cy="12" r=".9" fill="currentColor" stroke="none" />
     </IconBase>
   )
 }

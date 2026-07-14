@@ -28,11 +28,16 @@ import {
   searchMovies,
   searchTvShows,
   listWatchlistMoviesForUser,
+  listCalendarEventsForUser,
+  listWatchedMoviesByGenreForUser,
   listWatchedMoviesForUser,
   listMovies,
   listRecentlyReleasedMovies,
   listRecentlyAiredTvShows,
   listLatestEpisodeTvShows,
+  listAlertsForUser,
+  countUnreadAlertsForUser,
+  markAlertsReadForUser,
   removeMovieFromWatchedForUser,
   removeMovieFromWatchlistForUser,
   listSimilarMovies,
@@ -51,6 +56,7 @@ import {
   listUpcomingTvShows,
   listUpcomingMovies,
   toggleFavoriteActorForUser,
+  updateUserAlertTimezone,
 } from './database.js'
 import { adminJobs, findAdminJob, listAdminJobs } from './adminJobs.js'
 import { fetchMovieReviews, fetchMovieVideos, fetchPersonCombinedCredits, fetchPersonDetails, fetchTvReviews, searchMovies as searchTmdbMovies, searchTvShows as searchTmdbTvShows } from './tmdbClient.js'
@@ -249,6 +255,79 @@ export async function createApp(pool, options = {}) {
     }
   })
 
+  app.get('/api/alerts', async (request, response, next) => {
+    const timezone = typeof request.query.timeZone === 'string' ? request.query.timeZone.trim() : ''
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+
+      if (isValidIanaTimezone(timezone)) {
+        await updateUserAlertTimezone(pool, { username: user.username, timezone })
+      }
+
+      const [alerts, unreadCount] = await Promise.all([
+        listAlertsForUser(pool, user.username),
+        countUnreadAlertsForUser(pool, user.username),
+      ])
+      response.json({ count: alerts.length, unreadCount, alerts: alerts.map(mapAlert) })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/alerts/read', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const markedReadCount = await markAlertsReadForUser(pool, user.username)
+      response.json({ markedReadCount, unreadCount: 0 })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/calendar', async (request, response, next) => {
+    const month = typeof request.query.month === 'string' ? request.query.month.trim() : ''
+    const mediaType = typeof request.query.mediaType === 'string' ? request.query.mediaType.trim() : 'all'
+    const today = typeof request.query.today === 'string' ? request.query.today.trim() : formatIsoDate(new Date())
+
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
+      response.status(400).json({ error: 'month must use YYYY-MM format' })
+      return
+    }
+    if (!['all', 'movie', 'tv'].includes(mediaType)) {
+      response.status(400).json({ error: 'mediaType must be all, movie, or tv' })
+      return
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(today)) {
+      response.status(400).json({ error: 'today must use YYYY-MM-DD format' })
+      return
+    }
+
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+
+      const monthStart = `${month}-01`
+      const monthEnd = addMonthsToIsoMonth(month, 1)
+      const upcomingEnd = addDaysToIsoDate(today, 7)
+      const [events, upcoming] = await Promise.all([
+        listCalendarEventsForUser(pool, user.username, { startDate: monthStart, endDate: monthEnd, mediaType }),
+        listCalendarEventsForUser(pool, user.username, { startDate: today, endDate: upcomingEnd, mediaType }),
+      ])
+
+      response.json({
+        month,
+        mediaType,
+        events: events.map(mapCalendarEvent),
+        upcoming: upcoming.map(mapCalendarEvent),
+        upcomingCount: upcoming.length,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
   app.get('/api/favorite-actors', async (request, response, next) => {
     try {
       await ensureFavoriteActorsTable(pool)
@@ -379,6 +458,41 @@ export async function createApp(pool, options = {}) {
 
       response.status(200).json({
         removed: result.removed,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/watched/by-genre', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+
+      if (!user) {
+        response.status(401).json({
+          error: 'Authentication required',
+        })
+        return
+      }
+
+      const genre = typeof request.query.genre === 'string' ? request.query.genre.trim() : ''
+      if (!genre) {
+        response.status(400).json({ error: 'genre is required' })
+        return
+      }
+
+      const pagination = readPaginationQuery(request, { defaultLimit: 30 })
+      const movies = await listWatchedMoviesByGenreForUser(pool, user.username, {
+        genre,
+        limit: pagination.limit + 1,
+        page: pagination.page,
+      })
+      const pagedMovies = movies.slice(0, pagination.limit)
+
+      response.json({
+        count: pagedMovies.length,
+        movies: pagedMovies.map(mapWatchedMovie),
+        pagination: buildPaginationPayload(pagination, movies.length > pagination.limit),
       })
     } catch (error) {
       next(error)
@@ -1192,7 +1306,7 @@ function mapTvDetail(detail) {
     trailers: trailers.map((trailer) => ({ provider: trailer.provider, key: trailer.video_key, name: trailer.name })),
     communityRating: { average: typeof communityRating?.average === 'number' ? communityRating.average : null, voteCount: Number(communityRating?.voteCount ?? 0) },
     yourEpisodeRating: { average: typeof yourEpisodeRating?.average === 'number' ? yourEpisodeRating.average : null, ratingCount: Number(yourEpisodeRating?.ratingCount ?? 0) },
-    seasons: seasons.map((season) => ({
+    seasons: seasons.filter((season) => Number(season.season_number) > 0).map((season) => ({
       id: season.id, seasonNumber: season.season_number, name: season.name, overview: season.overview, airDate: season.air_date, posterPath: season.poster_path,
       episodes: (season.episodes ?? []).map((episode) => ({ id: episode.id, tmdbId: episode.tmdb_id, episodeNumber: episode.episode_number, name: episode.name, overview: episode.overview, airDate: episode.air_date, runtimeMinutes: episode.runtime_minutes, stillPath: episode.still_path, isAired: Boolean(episode.is_aired), watched: Boolean(episode.watched), yourScore: episode.your_score === null || episode.your_score === undefined ? null : Number(episode.your_score) })),
     })),
@@ -1460,6 +1574,22 @@ function formatMovieYear(releaseDate) {
   return String(releaseDate).slice(0, 4)
 }
 
+function formatIsoDate(date) {
+  return date.toISOString().slice(0, 10)
+}
+
+function addMonthsToIsoMonth(month, amount) {
+  const [year, monthNumber] = month.split('-').map(Number)
+  const date = new Date(Date.UTC(year, monthNumber - 1 + amount, 1))
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-01`
+}
+
+function addDaysToIsoDate(isoDate, amount) {
+  const date = new Date(`${isoDate}T00:00:00.000Z`)
+  date.setUTCDate(date.getUTCDate() + amount)
+  return formatIsoDate(date)
+}
+
 function formatRuntime(runtimeMinutes) {
   if (typeof runtimeMinutes !== 'number' || runtimeMinutes <= 0) {
     return 'Runtime TBA'
@@ -1488,8 +1618,7 @@ function formatTvRuntime(runtimeMinutes) {
 }
 
 function formatEpisodeCountLabel(details) {
-  const episodeCount = typeof details?.number_of_episodes === 'number' ? details.number_of_episodes : null
-  const seasonCount = typeof details?.number_of_seasons === 'number' ? details.number_of_seasons : null
+  const { episodeCount, seasonCount } = getRegularTvCounts(details)
 
   if (episodeCount && episodeCount > 0) {
     return `${episodeCount} Episode${episodeCount === 1 ? '' : 's'}`
@@ -1500,6 +1629,22 @@ function formatEpisodeCountLabel(details) {
   }
 
   return 'Episodes TBA'
+}
+
+function getRegularTvCounts(details) {
+  const seasons = Array.isArray(details?.seasons) ? details.seasons.filter((season) => Number(season?.season_number) > 0) : []
+  if (!Array.isArray(details?.seasons)) {
+    return {
+      episodeCount: typeof details?.number_of_episodes === 'number' ? details.number_of_episodes : null,
+      seasonCount: typeof details?.number_of_seasons === 'number' ? details.number_of_seasons : null,
+    }
+  }
+  if (!seasons.length) return { episodeCount: null, seasonCount: null }
+  const episodeCounts = seasons.map((season) => Number(season?.episode_count))
+  return {
+    episodeCount: episodeCounts.every(Number.isFinite) ? episodeCounts.reduce((total, count) => total + count, 0) : null,
+    seasonCount: seasons.length,
+  }
 }
 
 function readTvMaturityRating(details) {
@@ -1721,6 +1866,51 @@ function mapWatchlistMovie(movie) {
     posterUrl: resolvePosterPath(movie.poster_path),
     backdropUrl: resolveBackdropPath(movie.backdrop_path),
     watchlistedAt: movie.watchlisted_at ?? null,
+  }
+}
+
+function mapAlert(alert) {
+  return {
+    id: Number(alert.id),
+    kind: alert.kind,
+    title: alert.title,
+    message: alert.message,
+    createdAt: alert.created_at,
+    readAt: alert.read_at,
+    movieId: alert.movie_tmdb_id === null || alert.movie_tmdb_id === undefined ? null : Number(alert.movie_tmdb_id),
+    showId: alert.tv_show_tmdb_id === null || alert.tv_show_tmdb_id === undefined ? null : Number(alert.tv_show_tmdb_id),
+  }
+}
+
+function isValidIanaTimezone(timezone) {
+  if (!timezone || timezone.length > 100) return false
+  try {
+    Intl.DateTimeFormat('en-US', { timeZone: timezone })
+    return true
+  } catch {
+    return false
+  }
+}
+
+function mapCalendarEvent(event) {
+  const seasonNumber = event.season_number === null || event.season_number === undefined ? null : Number(event.season_number)
+  const episodeNumber = event.episode_number === null || event.episode_number === undefined ? null : Number(event.episode_number)
+  const episodeLabel = Number.isInteger(seasonNumber) && Number.isInteger(episodeNumber)
+    ? `S${seasonNumber} E${episodeNumber}`
+    : null
+
+  return {
+    date: event.event_date,
+    mediaType: event.media_type === 'tv' ? 'tv' : 'movie',
+    mediaId: Number(event.media_id),
+    episodeId: event.episode_id === null || event.episode_id === undefined ? null : Number(event.episode_id),
+    title: event.title,
+    episodeTitle: event.episode_title || null,
+    seasonNumber,
+    episodeNumber,
+    episodeLabel,
+    posterUrl: resolvePosterPath(event.poster_path),
+    backdropUrl: resolveBackdropPath(event.still_path || event.backdrop_path),
   }
 }
 
