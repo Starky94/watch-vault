@@ -1,4 +1,5 @@
 import pg from 'pg'
+import { ACHIEVEMENTS } from './achievements.js'
 
 const { Pool } = pg
 
@@ -406,6 +407,98 @@ export async function ensureTvDetailTables(pool) {
       UNIQUE (user_id, tv_episode_id)
     )
   `)
+}
+
+export async function ensureAchievementTables(pool) {
+  await pool.query(`CREATE TABLE IF NOT EXISTS achievement_tracking (user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, activated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`)
+  await pool.query(`CREATE TABLE IF NOT EXISTS achievement_baseline_items (user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, kind TEXT NOT NULL, entity_id BIGINT NOT NULL, PRIMARY KEY (user_id, kind, entity_id))`)
+  await pool.query(`CREATE TABLE IF NOT EXISTS achievement_events (id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, event_type TEXT NOT NULL, media_type TEXT NOT NULL, entity_id BIGINT NOT NULL, metadata JSONB NOT NULL DEFAULT '{}'::jsonb, occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE (user_id, event_type, media_type, entity_id))`)
+  await pool.query(`CREATE TABLE IF NOT EXISTS user_achievement_unlocks (user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, achievement_id TEXT NOT NULL, unlocked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (user_id, achievement_id))`)
+  // This is a one-time, idempotent rollout snapshot. Existing records can never become achievement events.
+  await pool.query(`INSERT INTO achievement_tracking (user_id) SELECT id FROM users ON CONFLICT DO NOTHING`)
+  await pool.query(`INSERT INTO achievement_baseline_items (user_id,kind,entity_id) SELECT user_id,'movie_watch',movie_id FROM watched_movies ON CONFLICT DO NOTHING`)
+  await pool.query(`INSERT INTO achievement_baseline_items (user_id,kind,entity_id) SELECT user_id,'movie_rating',movie_id FROM movie_ratings ON CONFLICT DO NOTHING`)
+  await pool.query(`INSERT INTO achievement_baseline_items (user_id,kind,entity_id) SELECT user_id,'movie_watchlist',movie_id FROM watchlist_items ON CONFLICT DO NOTHING`)
+  await pool.query(`INSERT INTO achievement_baseline_items (user_id,kind,entity_id) SELECT user_id,'tv_show',tv_show_id FROM watched_tv_shows ON CONFLICT DO NOTHING`)
+  await pool.query(`INSERT INTO achievement_baseline_items (user_id,kind,entity_id) SELECT user_id,'tv_episode_rating',tv_episode_id FROM tv_episode_ratings ON CONFLICT DO NOTHING`)
+  await pool.query(`INSERT INTO achievement_baseline_items (user_id,kind,entity_id) SELECT user_id,'tv_watchlist',tv_show_id FROM tv_watchlist_items ON CONFLICT DO NOTHING`)
+  await pool.query(`INSERT INTO achievement_baseline_items (user_id,kind,entity_id) SELECT user_id,'tv_episode_watch',tv_episode_id FROM watched_tv_episodes ON CONFLICT DO NOTHING`)
+}
+
+export async function recordAchievementEventForUser(pool, { username, eventType, mediaType, entityId, baselineKind, metadata = {} }) {
+  const result = await pool.query(`WITH selected_user AS (SELECT id FROM users WHERE username=$1 LIMIT 1), eligible AS (
+    SELECT id FROM selected_user WHERE NOT EXISTS (SELECT 1 FROM achievement_baseline_items b WHERE b.user_id=selected_user.id AND b.kind=$5 AND b.entity_id=$4)
+  ), inserted AS (
+    INSERT INTO achievement_events (user_id,event_type,media_type,entity_id,metadata)
+    SELECT id,$2,$3,$4,$6::jsonb FROM eligible ON CONFLICT DO NOTHING RETURNING id
+  ) SELECT EXISTS(SELECT 1 FROM inserted) AS inserted`, [username, eventType, mediaType, entityId, baselineKind, JSON.stringify(metadata)])
+  return Boolean(result.rows[0]?.inserted)
+}
+
+export async function getAchievementsForUser(pool, username) {
+  const data = await pool.query(`WITH selected_user AS (SELECT id FROM users WHERE username=$1 LIMIT 1), events AS (
+    SELECT * FROM achievement_events WHERE user_id=(SELECT id FROM selected_user)
+  ), movie_events AS (SELECT e.*,m.runtime_minutes,m.release_date,m.original_language,m.genre_ids FROM events e JOIN movies m ON m.id=e.entity_id WHERE e.event_type='movie_watched'),
+  show_events AS (SELECT e.*,s.genre_ids FROM events e JOIN tv_shows s ON s.id=e.entity_id WHERE e.event_type='tv_show_completed'),
+  values AS (
+    SELECT
+      (SELECT COUNT(*) FROM movie_events)::int movie_count,
+      (SELECT COUNT(*) FROM show_events)::int show_count,
+      (SELECT COUNT(*) FROM events WHERE event_type='movie_watchlist_added')::int movie_watchlist_count,
+      (SELECT COUNT(*) FROM events WHERE event_type='tv_watchlist_added')::int tv_watchlist_count,
+      (SELECT COUNT(*) FROM events watched WHERE watched.event_type='movie_watched' AND EXISTS (SELECT 1 FROM events saved WHERE saved.event_type='movie_watchlist_added' AND saved.entity_id=watched.entity_id AND saved.occurred_at <= watched.occurred_at))::int movie_watchlist_watched,
+      (SELECT COUNT(DISTINCT entity_id) FROM events WHERE event_type='movie_rated')::int movie_rating_count,
+      (SELECT COUNT(DISTINCT entity_id) FROM events WHERE event_type='tv_rated')::int tv_rating_count,
+      (SELECT COALESCE(SUM(runtime_minutes),0) FROM movie_events)::int movie_runtime,
+      (SELECT COALESCE(SUM(COALESCE(te.runtime_minutes,0)),0) FROM events e JOIN tv_episodes te ON te.id=e.entity_id WHERE e.event_type='tv_episode_watched')::int tv_runtime
+  ) SELECT * FROM values`, [username])
+  const metrics = data.rows[0] ?? {}
+  const details = await pool.query(`WITH selected_user AS (SELECT id FROM users WHERE username=$1), events AS (SELECT * FROM achievement_events WHERE user_id=(SELECT id FROM selected_user)), movie_events AS (SELECT e.*,m.runtime_minutes,m.release_date,m.original_language,m.genre_ids FROM events e JOIN movies m ON m.id=e.entity_id WHERE e.event_type='movie_watched') SELECT
+    COALESCE((SELECT json_agg(name) FROM (SELECT DISTINCT g.name FROM movie_events me JOIN LATERAL unnest(me.genre_ids) gid ON true JOIN genres g ON g.tmdb_genre_id=gid) x),'[]'::json) genres,
+    COALESCE((SELECT json_agg(json_build_object('name',x.name,'count',x.count)) FROM (SELECT g.name,COUNT(DISTINCT me.entity_id)::int count FROM movie_events me JOIN LATERAL unnest(me.genre_ids) gid ON true JOIN genres g ON g.tmdb_genre_id=gid GROUP BY g.name) x),'[]'::json) genre_counts,
+    COALESCE((SELECT json_agg(score) FROM (SELECT DISTINCT (metadata->>'score')::numeric score FROM events WHERE event_type='movie_rated') x),'[]'::json) rating_scores,
+    COALESCE((SELECT COUNT(*)::int FROM events WHERE event_type='movie_rated' AND (metadata->>'score')::numeric=1),0) low_ratings,
+    COALESCE((SELECT COUNT(*)::int FROM events WHERE event_type='movie_rated' AND (metadata->>'score')::numeric=5),0) high_ratings,
+    COALESCE((SELECT COUNT(DISTINCT EXTRACT(YEAR FROM release_date)::int / 10) FROM movie_events WHERE release_date IS NOT NULL),0) decade_diversity,
+    COALESCE((SELECT COUNT(*)::int FROM movie_events WHERE original_language IS NOT NULL AND original_language <> 'en'),0) foreign_language,
+    COALESCE((SELECT COUNT(*)::int FROM movie_events WHERE release_date < '1970-01-01'),0) classic_movies,
+    COALESCE((SELECT COUNT(*)::int FROM movie_events WHERE runtime_minutes < 80),0) short_movie,
+    COALESCE((SELECT COUNT(*)::int FROM movie_events WHERE runtime_minutes > 180),0) long_movie,
+    COALESCE((SELECT MAX(count)::int FROM (SELECT COUNT(*)::int count FROM movie_events GROUP BY occurred_at::date) x),0) daily_movies,
+    COALESCE((SELECT MAX(minutes)::int FROM (SELECT SUM(COALESCE(runtime_minutes,0))::int minutes FROM movie_events GROUP BY occurred_at::date) x),0) daily_runtime,
+    COALESCE((SELECT MAX(count)::int FROM (SELECT COUNT(*)::int count FROM movie_events WHERE EXTRACT(ISODOW FROM occurred_at) IN (6,7) GROUP BY date_trunc('week',occurred_at)) x),0) weekend_movies`, [username])
+  const extra = details.rows[0] ?? {}
+  const genreCounts = new Map((extra.genre_counts ?? []).map((row) => [row.name, Number(row.count)]))
+  const movieDates = await pool.query(`SELECT occurred_at::date AS day FROM achievement_events WHERE user_id=(SELECT id FROM users WHERE username=$1) AND event_type='movie_watched' ORDER BY day`, [username])
+  const days = [...new Set(movieDates.rows.map((row) => String(row.day)))].sort()
+  let streak = 0; let bestStreak = 0; let previous = null
+  for (const day of days) { const current = new Date(`${day}T00:00:00Z`); streak = previous && current - previous === 86400000 ? streak + 1 : 1; bestStreak = Math.max(bestStreak, streak); previous = current }
+  const progressFor = (achievement) => {
+    if (achievement.availability !== 'active') return { current: 0, complete: false }
+    const { rule } = achievement
+    let current = 0
+    if (rule.startsWith('genre:')) current = genreCounts.get(rule.slice(6)) ?? 0
+    else if (rule === 'genre_diversity') current = (extra.genres ?? []).length
+    else if (rule === 'movie_streak') current = bestStreak
+    else current = Number(metrics[rule] ?? extra[rule] ?? 0)
+    if (rule === 'rating_scale') current = (extra.rating_scores ?? []).length
+    return { current, complete: current >= achievement.target }
+  }
+  const unlocked = await pool.query(`SELECT achievement_id,unlocked_at FROM user_achievement_unlocks WHERE user_id=(SELECT id FROM users WHERE username=$1)`, [username])
+  const unlockMap = new Map(unlocked.rows.map((row) => [row.achievement_id, row.unlocked_at]))
+  return ACHIEVEMENTS.map((achievement) => {
+    const progress = progressFor(achievement); const unlockedAt = unlockMap.get(achievement.id) ?? null
+    return { ...achievement, progress: { ...progress, target: achievement.target }, unlocked: Boolean(unlockedAt), unlockedAt }
+  })
+}
+
+export async function evaluateAchievementsForUser(pool, username) {
+  const achievements = await getAchievementsForUser(pool, username)
+  const newOnes = achievements.filter((item) => item.availability === 'active' && item.progress.complete && !item.unlocked)
+  if (!newOnes.length) return []
+  const result = await pool.query(`WITH selected_user AS (SELECT id FROM users WHERE username=$1), inserted AS (INSERT INTO user_achievement_unlocks (user_id,achievement_id) SELECT (SELECT id FROM selected_user), unnest($2::text[]) ON CONFLICT DO NOTHING RETURNING achievement_id,unlocked_at) SELECT achievement_id,unlocked_at FROM inserted`, [username, newOnes.map((item) => item.id)])
+  const dates = new Map(result.rows.map((row) => [row.achievement_id, row.unlocked_at]))
+  return newOnes.filter((item) => dates.has(item.id)).map((item) => ({ ...item, unlocked: true, unlockedAt: dates.get(item.id) }))
 }
 
 const demoUsers = [
@@ -1184,6 +1277,7 @@ export async function upsertMovieRatingForUser(pool, { username, movieId, score 
       SELECT
         EXISTS(SELECT 1 FROM selected_user) AS has_user,
         EXISTS(SELECT 1 FROM selected_movie) AS has_movie,
+        (SELECT id FROM selected_movie) AS entity_id,
         (SELECT score::DOUBLE PRECISION FROM saved_rating) AS score
     `,
     [username, movieId, score]
@@ -1194,7 +1288,7 @@ export async function upsertMovieRatingForUser(pool, { username, movieId, score 
   if (!row?.has_user) return { status: 'missing_user' }
   if (!row.has_movie) return { status: 'missing_movie' }
 
-  return { status: 'ok', score: Number(row.score) }
+  return { status: 'ok', score: Number(row.score), ...(Number.isFinite(Number(row.entity_id)) ? { entityId: Number(row.entity_id) } : {}) }
 }
 
 export async function getMovieByTmdbId(pool, tmdbId) {
@@ -1830,13 +1924,13 @@ export async function getTvDetailForUser(pool, { showId, username = null }) {
 
 export async function upsertTvEpisodeRatingForUser(pool, { username, episodeId, score }) {
   const result = await pool.query(
-    `WITH selected_user AS (SELECT id FROM users WHERE username = $1 LIMIT 1), selected_episode AS (SELECT e.id FROM tv_episodes e JOIN tv_seasons s ON s.id = e.tv_season_id WHERE e.id = $2 AND s.season_number > 0 LIMIT 1), saved_rating AS (INSERT INTO tv_episode_ratings (user_id, tv_episode_id, score, created_at, updated_at) SELECT selected_user.id, selected_episode.id, $3, NOW(), NOW() FROM selected_user CROSS JOIN selected_episode ON CONFLICT (user_id, tv_episode_id) DO UPDATE SET score = EXCLUDED.score, updated_at = NOW() RETURNING score) SELECT EXISTS(SELECT 1 FROM selected_user) AS has_user, EXISTS(SELECT 1 FROM selected_episode) AS has_episode, (SELECT score::DOUBLE PRECISION FROM saved_rating) AS score`,
+    `WITH selected_user AS (SELECT id FROM users WHERE username = $1 LIMIT 1), selected_episode AS (SELECT e.id FROM tv_episodes e JOIN tv_seasons s ON s.id = e.tv_season_id WHERE e.id = $2 AND s.season_number > 0 LIMIT 1), saved_rating AS (INSERT INTO tv_episode_ratings (user_id, tv_episode_id, score, created_at, updated_at) SELECT selected_user.id, selected_episode.id, $3, NOW(), NOW() FROM selected_user CROSS JOIN selected_episode ON CONFLICT (user_id, tv_episode_id) DO UPDATE SET score = EXCLUDED.score, updated_at = NOW() RETURNING score) SELECT EXISTS(SELECT 1 FROM selected_user) AS has_user, EXISTS(SELECT 1 FROM selected_episode) AS has_episode, (SELECT id FROM selected_episode) AS entity_id, (SELECT score::DOUBLE PRECISION FROM saved_rating) AS score`,
     [username, episodeId, score]
   )
   const row = result.rows[0] ?? null
   if (!row?.has_user) return { status: 'missing_user' }
   if (!row.has_episode) return { status: 'missing_episode' }
-  return { status: 'ok', score: Number(row.score) }
+  return { status: 'ok', score: Number(row.score), ...(Number.isFinite(Number(row.entity_id)) ? { entityId: Number(row.entity_id) } : {}) }
 }
 
 export function normalizeWatchService(value) {
@@ -1929,18 +2023,22 @@ export async function updateTvEpisodeWatchStateForUser(pool, { username, showId,
       return { status: 'invalid_action' }
     }
 
-    await syncTvShowWatchCompletion(client, username, showId)
+    const completion = await syncTvShowWatchCompletion(client, username, showId)
     await client.query('COMMIT')
-    return { status: 'ok', updatedCount }
+    return { status: 'ok', updatedCount, ...(completion?.newlyCompletedShowId ? { newlyCompletedShowId: completion.newlyCompletedShowId } : {}) }
   } catch (error) { await client.query('ROLLBACK'); throw error } finally { client.release() }
 }
 
 async function syncTvShowWatchCompletion(client, username, showId) {
   const result = await client.query(`WITH selected_user AS (SELECT id FROM users WHERE username=$1), selected_show AS (SELECT id FROM tv_shows WHERE tmdb_id=$2 OR id=$2 LIMIT 1), episode_totals AS (SELECT COUNT(*)::integer total, COUNT(w.id)::integer watched FROM tv_episodes e JOIN tv_seasons s ON s.id=e.tv_season_id LEFT JOIN watched_tv_episodes w ON w.tv_episode_id=e.id AND w.user_id=(SELECT id FROM selected_user) WHERE s.tv_show_id=(SELECT id FROM selected_show) AND s.season_number > 0 AND (e.air_date IS NULL OR e.air_date <= CURRENT_DATE)) SELECT (SELECT id FROM selected_user) user_id, (SELECT id FROM selected_show) show_id, total, watched FROM episode_totals`, [username, showId])
   const row = result.rows[0]
-  if (!row?.user_id || !row?.show_id) return
-  if (row.total > 0 && row.total === row.watched) await client.query('INSERT INTO watched_tv_shows (user_id,tv_show_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', [row.user_id, row.show_id])
-  else await client.query('DELETE FROM watched_tv_shows WHERE user_id=$1 AND tv_show_id=$2', [row.user_id, row.show_id])
+  if (!row?.user_id || !row?.show_id) return null
+  if (row.total > 0 && row.total === row.watched) {
+    const inserted = await client.query('INSERT INTO watched_tv_shows (user_id,tv_show_id) VALUES ($1,$2) ON CONFLICT DO NOTHING RETURNING tv_show_id', [row.user_id, row.show_id])
+    return { newlyCompletedShowId: inserted.rows[0]?.tv_show_id ?? null }
+  }
+  await client.query('DELETE FROM watched_tv_shows WHERE user_id=$1 AND tv_show_id=$2', [row.user_id, row.show_id])
+  return null
 }
 
 export async function listSimilarMovies(pool, tmdbId, options = {}) {
@@ -2394,6 +2492,7 @@ export async function addMovieToWatchlistForUser(pool, { username, movieId }) {
       SELECT
         EXISTS(SELECT 1 FROM selected_user) AS has_user,
         EXISTS(SELECT 1 FROM selected_movie) AS has_movie,
+        (SELECT id FROM selected_movie) AS entity_id,
         (SELECT total FROM watchlist_total) AS watchlist_total,
         EXISTS(SELECT 1 FROM existing_watchlist) AS already_saved,
         COALESCE(
@@ -2402,7 +2501,8 @@ export async function addMovieToWatchlistForUser(pool, { username, movieId }) {
             SELECT created_at
             FROM existing_watchlist
           )
-        ) AS created_at
+        ) AS created_at,
+        EXISTS(SELECT 1 FROM inserted_watchlist) AS added
     `,
     [username, movieId]
   )
@@ -2430,7 +2530,9 @@ export async function addMovieToWatchlistForUser(pool, { username, movieId }) {
 
   return {
     status: 'ok',
+    entityId: Number(row.entity_id),
     createdAt: row.created_at ?? null,
+    added: Boolean(row.added),
   }
 }
 
@@ -2635,11 +2737,13 @@ export async function addMovieToWatchedForUser(pool, { username, movieId, watchS
       SELECT
         EXISTS(SELECT 1 FROM selected_user) AS has_user,
         EXISTS(SELECT 1 FROM selected_movie) AS has_movie,
+        (SELECT id FROM selected_movie) AS entity_id,
         EXISTS(SELECT 1 FROM deleted_watchlist) AS removed_from_watchlist,
         COALESCE(
           (SELECT created_at FROM inserted_watched),
           (SELECT created_at FROM existing_watched)
-        ) AS created_at
+        ) AS created_at,
+        EXISTS(SELECT 1 FROM inserted_watched) AS added
     `,
     [username, movieId, normalizeWatchService(watchService)]
   )
@@ -2660,7 +2764,9 @@ export async function addMovieToWatchedForUser(pool, { username, movieId, watchS
 
   return {
     status: 'ok',
+    entityId: Number(row.entity_id),
     createdAt: row.created_at ?? null,
+    added: Boolean(row.added),
     removedFromWatchlist: Boolean(row.removed_from_watchlist),
   }
 }
@@ -3313,14 +3419,14 @@ export async function toggleTvLibraryItemForUser(pool, { username, showId, kind 
         RETURNING id
       )
       SELECT EXISTS(SELECT 1 FROM selected_user) AS has_user, EXISTS(SELECT 1 FROM selected_show) AS has_show,
-        EXISTS(SELECT 1 FROM inserted) AS added, EXISTS(SELECT 1 FROM deleted) AS removed
+        (SELECT id FROM selected_show) AS entity_id, EXISTS(SELECT 1 FROM inserted) AS added, EXISTS(SELECT 1 FROM deleted) AS removed
     `,
     [username, showId]
   )
   const row = result.rows[0] ?? null
   if (!row?.has_user) return { status: 'missing_user' }
   if (!row.has_show) return { status: 'missing_show' }
-  return { status: 'ok', added: Boolean(row.added), removed: Boolean(row.removed) }
+  return { status: 'ok', entityId: Number(row.entity_id), added: Boolean(row.added), removed: Boolean(row.removed) }
 }
 
 export async function countMovies(pool) {

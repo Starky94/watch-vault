@@ -8,6 +8,7 @@ const primaryViews = {
   watchlist: 'Watchlist',
   calendar: 'Calendar',
   stats: 'Stats',
+  achievements: 'Achievements',
 }
 
 const navItems = [
@@ -17,6 +18,7 @@ const navItems = [
   { label: 'Watchlist', icon: BookmarkIcon, view: primaryViews.watchlist },
   { label: 'Calendar', icon: CalendarIcon, view: primaryViews.calendar },
   { label: 'Stats', icon: BarsIcon, view: primaryViews.stats },
+  { label: 'Achievements', icon: TrophyIcon, view: primaryViews.achievements },
 ]
 
 const movieTabs = ['All Movies', 'Popular', 'Now Playing', 'Upcoming', 'Top Rated']
@@ -109,7 +111,7 @@ const statsPeriods = [
   { value: 'year', label: 'This Year' },
 ]
 
-const statsMockData = {
+const _statsMockData = {
   metrics: [
     { label: 'Titles Watched', value: '148', trend: '18%', tone: 'violet', icon: ClapperIcon },
     { label: 'Hours Watched', value: '426h', trend: '22%', tone: 'blue', icon: ClockIcon },
@@ -276,6 +278,8 @@ function App() {
   const [tvStatsState, setTvStatsState] = useState({ status: 'idle', stats: emptyTvStats, error: '' })
   const [tvWatchedHistoryState, setTvWatchedHistoryState] = useState({ status: 'idle', episodes: [], error: '' })
   const [statsInsightsState, setStatsInsightsState] = useState({ status: 'idle', insights: emptyStatsInsights, error: '' })
+  const [achievementsState, setAchievementsState] = useState({ status: 'idle', achievements: [], error: '' })
+  const [achievementToast, setAchievementToast] = useState(null)
   const [continueWatchingState, setContinueWatchingState] = useState({ status: 'idle', shows: [], error: '' })
   const [continueWatchingPage, setContinueWatchingPage] = useState(1)
   const [continueWatchingPageState, setContinueWatchingPageState] = useState(() => createTvCollectionState())
@@ -829,6 +833,7 @@ function App() {
       setTvWatchlistIds(new Set(payload.watchlistIds ?? []))
       setTvWatchlistShows(Array.isArray(payload.watchlistShows) ? payload.watchlistShows.map(mapTvWatchlistShowPayload) : [])
       setTvStatsState({ status: 'success', stats: mapTvStatsPayload(payload.stats), error: '' })
+      receiveAchievementUnlocks(payload.newlyUnlockedAchievements)
     } catch (error) {
       setTvStatsState((state) => ({ ...state, status: 'error', error: error instanceof Error ? error.message : 'Unable to update TV library.' }))
     }
@@ -846,6 +851,7 @@ function App() {
     const payload = await response.json().catch(() => ({}))
     if (!response.ok) throw new Error(payload.error || 'Unable to update episode')
     setTvDetailState({ status: 'success', show: mapTvDetailPayload(payload.show), error: '' })
+    receiveAchievementUnlocks(payload.newlyUnlockedAchievements)
     await Promise.all([loadTvLibraryForUser(user), loadTvWatchedHistoryForUser(user)])
   }
 
@@ -867,6 +873,7 @@ function App() {
       if (!response.ok) throw new Error(payload.error || 'Unable to save episode rating')
       if (payload.show) setTvDetailState({ status: 'success', show: mapTvDetailPayload(payload.show), error: '' })
       setTvEpisodeRatingActionState({ status: 'success', episodeId, error: '' })
+      receiveAchievementUnlocks(payload.newlyUnlockedAchievements)
       return true
     } catch (error) {
       setTvEpisodeRatingActionState({ status: 'error', episodeId, error: error instanceof Error ? error.message : 'Unable to save episode rating.' })
@@ -1169,6 +1176,7 @@ function App() {
         movieId: normalizedMovieId,
         error: '',
       })
+      receiveAchievementUnlocks(payload.newlyUnlockedAchievements)
       void loadWatchedForUser(user)
     } catch (error) {
       setWatchlistActionState({
@@ -1286,6 +1294,26 @@ function App() {
     }
   }, [activeView, statsPeriod, user])
 
+  useEffect(() => {
+    if (![primaryViews.achievements, primaryViews.stats].includes(activeView) || !user?.username) return
+    let cancelled = false
+    setAchievementsState((state) => ({ ...state, status: 'loading', error: '' }))
+    fetch('/api/achievements', { headers: buildAuthHeaders(user) })
+      .then(async (response) => ({ response, payload: await response.json().catch(() => ({})) }))
+      .then(({ response, payload }) => {
+        if (!response.ok) throw new Error(payload.error || 'Unable to load achievements.')
+        if (!cancelled) setAchievementsState({ status: 'success', achievements: Array.isArray(payload.achievements) ? payload.achievements : [], error: '' })
+      })
+      .catch((error) => { if (!cancelled) setAchievementsState({ status: 'error', achievements: [], error: error instanceof Error ? error.message : 'Unable to load achievements.' }) })
+    return () => { cancelled = true }
+  }, [activeView, user])
+
+  function receiveAchievementUnlocks(items) {
+    if (!Array.isArray(items) || !items.length) return
+    setAchievementToast(items[0])
+    window.setTimeout(() => setAchievementToast(null), 4500)
+  }
+
   async function handleAddMovieToWatched(movie, watchService = null) {
     const normalizedMovieId = Number(movie?.id)
 
@@ -1347,6 +1375,7 @@ function App() {
         movieId: normalizedMovieId,
         error: '',
       })
+      receiveAchievementUnlocks(payload.newlyUnlockedAchievements)
     } catch (error) {
       setWatchedActionState({
         status: 'error',
@@ -1451,6 +1480,7 @@ function App() {
           : previousState
       ))
       setMovieRatingActionState({ status: 'success', movieId, error: '' })
+      receiveAchievementUnlocks(payload.newlyUnlockedAchievements)
       return true
     } catch (error) {
       setMovieRatingActionState({
@@ -2642,6 +2672,8 @@ function App() {
                 onOpenTvShow={handleOpenTvDetail}
                 onOpenLogin={handleOpenLogin}
               />
+            ) : activeView === primaryViews.achievements ? (
+              <AchievementsScreen isSignedIn={Boolean(user)} state={achievementsState} />
             ) : activeView === primaryViews.stats ? (
               <StatsScreen
                 movieStats={movieStatsState.stats}
@@ -2654,9 +2686,12 @@ function App() {
                 tvStatsStatus={tvStatsState.status}
                 onStatsPeriodChange={setStatsPeriod}
                 insightsState={statsInsightsState}
+                achievementsState={achievementsState}
                 onOpenMovie={handleOpenMovieDetail}
                 onOpenPerson={handleOpenPersonDetail}
                 onOpenTvShow={handleOpenTvDetail}
+                achievements={achievementsState.achievements}
+                onOpenAchievements={() => setActiveView(primaryViews.achievements)}
               />
             ) : activeView === primaryViews.home ? (
               <HomeScreen
@@ -2785,6 +2820,7 @@ function App() {
           </>
         )}
       </main>
+      {achievementToast ? <div className="achievement-toast" role="status"><TrophyIcon /><div><b>Achievement unlocked</b><span>{achievementToast.name}</span></div></div> : null}
     </div>
   )
 }
@@ -5138,12 +5174,45 @@ function DetailFactRow({ icon: Icon, label, value }) {
   )
 }
 
-function StatsScreen({ movieStats, movieStatsStatus, watchedState, tvWatchedHistoryState, isSignedIn, statsPeriod, tvStats, tvStatsStatus, onStatsPeriodChange, insightsState, onOpenMovie, onOpenPerson, onOpenTvShow }) {
+function AchievementsScreen({ isSignedIn, state }) {
+  const [category, setCategory] = useState('All')
+  const [status, setStatus] = useState('all')
+  if (!isSignedIn) return <section className="achievements-page"><h1>Achievements</h1><SectionMessage message="Sign in to start tracking achievements." /></section>
+  const categories = ['All', ...new Set(state.achievements.map((item) => item.category))]
+  const visible = state.achievements.filter((item) => (category === 'All' || item.category === category) && (status === 'all' || (status === 'unlocked' ? item.unlocked : !item.unlocked)))
+  return <section className="achievements-page"><div className="achievements-heading"><div><h1>Achievements</h1><p>Only activity recorded after achievement tracking began counts toward progress.</p></div><b>{state.achievements.filter((item) => item.unlocked).length} unlocked</b></div><div className="achievement-filters"><select value={category} onChange={(event) => setCategory(event.target.value)}>{categories.map((value) => <option key={value}>{value}</option>)}</select><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">All badges</option><option value="unlocked">Unlocked</option><option value="locked">Locked</option></select></div>{state.status === 'loading' ? <SectionMessage message="Loading achievements..." /> : state.status === 'error' ? <SectionMessage tone="error" message={state.error} /> : <div className="achievement-grid">{visible.map((item) => <article key={item.id} className={`achievement-card${item.unlocked ? ' unlocked' : ''}${item.availability === 'coming_soon' ? ' coming-soon' : ''}`}><div className="achievement-card-icon">{item.unlocked ? <TrophyIcon /> : <LockIcon />}</div><div><span className="achievement-category">{item.category} · {item.rarity}</span><h2>{item.secret && !item.unlocked ? item.name : item.name}</h2><p>{item.secret && !item.unlocked ? 'Keep watching to discover this secret achievement.' : item.description}</p>{item.availability === 'coming_soon' ? <em>Coming soon</em> : <><div className="achievement-progress"><i style={{ width: `${Math.min(100, ((item.progress?.current ?? 0) / Math.max(1, item.progress?.target ?? 1)) * 100)}%` }} /></div><small>{item.unlocked ? `Unlocked ${formatLongDate(item.unlockedAt)}` : `${item.progress?.current ?? 0} / ${item.progress?.target ?? 0}`}</small></>}</div></article>)}</div>}</section>
+}
+
+function StatsAchievementsTab({ isSignedIn, state }) {
+  if (!isSignedIn) return <section className="stats-achievements-tab"><SectionMessage message="Sign in to track your achievements." /></section>
+  if (state?.status === 'loading' || state?.status === 'idle') return <section className="stats-achievements-tab"><SectionMessage message="Loading achievements..." /></section>
+  if (state?.status === 'error') return <section className="stats-achievements-tab"><SectionMessage tone="error" message={state.error || 'Unable to load achievements right now.'} /></section>
+
+  const items = Array.isArray(state?.achievements) ? state.achievements : []
+  const inProgress = items.filter((item) => item.availability === 'active' && !item.unlocked && Number(item.progress?.current) > 0)
+  const incomplete = items.filter((item) => !item.unlocked && !inProgress.includes(item))
+  const completed = items.filter((item) => item.unlocked)
+  const sections = [
+    { title: 'In Progress', description: 'Achievements you are actively working toward.', items: inProgress, empty: 'No achievements are in progress yet.' },
+    { title: 'Incomplete', description: 'Start these next, including badges coming in a future update.', items: incomplete, empty: 'No incomplete achievements right now.' },
+    { title: 'Completed', description: 'Your unlocked achievements.', items: completed, empty: 'No achievements completed yet.' },
+  ]
+
+  return <section className="stats-achievements-tab">{sections.map((section) => <section className="stats-achievement-section" key={section.title}><div className="stats-watched-movies-heading"><div><h2>{section.title}</h2><p>{section.description}</p></div><span>{section.items.length}</span></div>{section.items.length ? <div className="achievement-grid stats-achievement-grid">{section.items.map((item) => <AchievementCard key={item.id} item={item} />)}</div> : <SectionMessage message={section.empty} />}</section>)}</section>
+}
+
+function AchievementCard({ item }) {
+  const progress = item.progress ?? { current: 0, target: 0 }
+  const progressPercent = Math.min(100, (Number(progress.current) / Math.max(1, Number(progress.target))) * 100)
+  return <article className={`achievement-card${item.unlocked ? ' unlocked' : ''}${item.availability === 'coming_soon' ? ' coming-soon' : ''}`}><div className="achievement-card-icon">{item.unlocked ? <TrophyIcon /> : <LockIcon />}</div><div><span className="achievement-category">{item.category} · {item.rarity}</span><h2>{item.name}</h2><p>{item.secret && !item.unlocked ? 'Keep watching to discover this secret achievement.' : item.description}</p>{item.availability === 'coming_soon' ? <em>Coming soon</em> : <><div className="achievement-progress"><i style={{ width: `${progressPercent}%` }} /></div><small>{item.unlocked ? `Unlocked ${formatLongDate(item.unlockedAt)}` : `${progress.current} / ${progress.target}`}</small></>}</div></article>
+}
+
+function StatsScreen({ movieStats, movieStatsStatus, watchedState, tvWatchedHistoryState, isSignedIn, statsPeriod, tvStats, tvStatsStatus, onStatsPeriodChange, insightsState, achievementsState, onOpenMovie, onOpenPerson, onOpenTvShow, achievements = [], onOpenAchievements }) {
   const [activeTab, setActiveTab] = useState('Overview')
   const [periodOpen, setPeriodOpen] = useState(false)
   const [movieHistoryPage, setMovieHistoryPage] = useState(1)
   const [tvHistoryPage, setTvHistoryPage] = useState(1)
-  const tabs = ['Overview', 'Movies', 'TV Shows', 'Genres', 'History']
+  const tabs = ['Overview', 'Movies', 'TV Shows', 'Genres', 'History', 'Achievements']
   const period = statsPeriods.find((option) => option.value === statsPeriod) ?? statsPeriods[1]
   const metricCards = buildStatsDashboardMetrics({ movieStats, tvStats })
   const isLoading = movieStatsStatus === 'loading' || tvStatsStatus === 'loading'
@@ -5205,7 +5274,7 @@ function StatsScreen({ movieStats, movieStatsStatus, watchedState, tvWatchedHist
         {tabs.map((tab) => <button key={tab} type="button" role="tab" aria-selected={tab === activeTab} className={tab === activeTab ? 'active' : ''} onClick={() => { setActiveTab(tab); if (tab === 'Movies') setMovieHistoryPage(1); if (tab === 'TV Shows') setTvHistoryPage(1) }}>{tab}</button>)}
       </div>
 
-      {activeTab === 'Movies' ? (
+      {activeTab === 'Achievements' ? <StatsAchievementsTab isSignedIn={isSignedIn} state={achievementsState} /> : activeTab === 'Movies' ? (
         <section className="stats-watched-movies">
           <div className="stats-watched-movies-heading">
             <div>
@@ -5283,7 +5352,7 @@ function StatsScreen({ movieStats, movieStatsStatus, watchedState, tvWatchedHist
         </section>
         <section className="stats-surface stats-actors-card"><StatsSectionTitle title="Most Watched Actors" />{insightsState.status === 'loading' ? <SectionMessage message="Loading watched actors..." /> : insightsState.status === 'error' ? <SectionMessage tone="error" message={insightsState.error} /> : insights.mostWatchedActors.length === 0 ? <SectionMessage message="No watched cast data in this period yet." /> : <div className="stats-actors-list">{insights.mostWatchedActors.map((actor, index) => <button type="button" className="stats-actor-row" key={actor.personId} onClick={() => onOpenPerson(actor)} aria-label={`Open ${actor.name}`}><span className={`stats-actor-avatar${actor.profileUrl ? ' has-image' : ''}`} style={actor.profileUrl ? { backgroundImage: `url(${actor.profileUrl})` } : { '--avatar-color': statsActorColors[index % statsActorColors.length] }}>{!actor.profileUrl ? actor.name.split(' ').map((name) => name[0]).join('').slice(0, 2) : null}</span><p><b>{actor.name}</b><small>{actor.titleCount} {actor.titleCount === 1 ? 'title' : 'titles'}</small></p><em>#{index + 1}</em></button>)}</div>}</section>
         <section className="stats-surface stats-platforms-card"><StatsSectionTitle title="Streaming Platforms" />{insightsState.status === 'loading' ? <SectionMessage message="Loading streaming platforms..." /> : insightsState.status === 'error' ? <SectionMessage tone="error" message={insightsState.error} /> : insights.streamingPlatforms.length === 0 ? <SectionMessage message="No watch services recorded in this period yet." /> : <div className="stats-platform-list">{insights.streamingPlatforms.map((platform) => <div key={platform.name}><span className="stats-platform-mark">{platform.name.slice(0, 1).toUpperCase()}</span><p><b>{platform.name}</b><i><span style={{ width: `${platform.percent}%` }} /></i></p><strong>{formatMinutesAsHoursAndMinutes(platform.minutes)}<small>{platform.percent}%</small></strong></div>)}</div>}</section>
-        <section className="stats-surface stats-achievements-card"><StatsSectionTitle title="Achievements" action="View all" /><div className="stats-achievement-list">{statsMockData.achievements.map(({ icon: Icon, ...achievement }) => <div key={achievement.title}><span className="stats-achievement-icon"><Icon /></span><p><b>{achievement.title}</b><small>{achievement.detail}</small></p><strong>{achievement.value}</strong>{achievement.complete ? <CheckIcon /> : null}</div>)}</div></section>
+        <section className="stats-surface stats-achievements-card"><StatsSectionTitle title="Achievements" action="View all" onAction={onOpenAchievements} /><div className="stats-achievement-list">{achievements.filter((item) => item.unlocked || item.availability === 'active').slice(0, 3).map((achievement) => <div key={achievement.id}><span className="stats-achievement-icon"><TrophyIcon /></span><p><b>{achievement.unlocked ? achievement.name : 'In progress'}</b><small>{achievement.unlocked ? achievement.description : achievement.name}</small></p><strong>{achievement.unlocked ? 'Unlocked' : `${achievement.progress?.current ?? 0} / ${achievement.progress?.target ?? '—'}`}</strong>{achievement.unlocked ? <CheckIcon /> : null}</div>)}{achievements.length === 0 ? <SectionMessage message="Start watching to begin earning achievements." /> : null}</div></section>
       </div>
 
       <div className="stats-bottom-grid">
@@ -5315,8 +5384,8 @@ function StatsWatchedTvEpisode({ episode, onOpenTvShow }) {
   )
 }
 
-function StatsSectionTitle({ title, action }) {
-  return <div className="stats-section-title"><h2>{title}</h2>{action ? <button type="button">{action}</button> : null}</div>
+function StatsSectionTitle({ title, action, onAction }) {
+  return <div className="stats-section-title"><h2>{title}</h2>{action ? <button type="button" onClick={onAction}>{action}</button> : null}</div>
 }
 
 function StatsTitleRow({ item, onOpenMovie, onOpenTvShow }) {
@@ -7158,6 +7227,14 @@ function ShieldIcon() {
       <path d="m9.6 12 1.65 1.65L14.6 10.3" />
     </IconBase>
   )
+}
+
+function TrophyIcon() {
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 4h8v5a4 4 0 0 1-8 0V4Z" /><path d="M8 6H5v1a4 4 0 0 0 4 4" /><path d="M16 6h3v1a4 4 0 0 1-4 4" /><path d="M12 13v4" /><path d="M8 21h8" /><path d="M10 17h4" /></svg>
+}
+
+function LockIcon() {
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></svg>
 }
 
 function LogoutIcon() {

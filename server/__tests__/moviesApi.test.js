@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createApp } from '../app.js'
-import { buildStatsInsights, countMovies, countStoredDataBytes, ensureMoviesTable, getMostWatchedActorsForUser, getMovieStatsForUser, getStatsInsightsForUser, getStreamingPlatformsForUser, listCalendarEventsForUser, listContinueWatchingTvShowsForUser, listGenres, listLatestEpisodeTvShows, listMovies, listRecentlyReleasedMovies, listSimilarMovies, listTopRatedMovies, listTvShows, listTvWatchlistShowsForUser, listUpcomingMovies, listWatchedMoviesByGenreForUser, listWatchedTvEpisodesForUser, searchActors, searchMovies, searchTvShows, updateTvEpisodeWatchStateForUser, upsertTvEpisodeRatingForUser } from '../database.js'
+import { buildStatsInsights, countMovies, countStoredDataBytes, ensureMoviesTable, getMostWatchedActorsForUser, getMovieStatsForUser, getStatsInsightsForUser, getStreamingPlatformsForUser, getTopRatedThisMonthForUser, listCalendarEventsForUser, listContinueWatchingTvShowsForUser, listGenres, listLatestEpisodeTvShows, listMovies, listRecentlyReleasedMovies, listSimilarMovies, listTopRatedMovies, listTvShows, listTvWatchlistShowsForUser, listUpcomingMovies, listWatchedMoviesByGenreForUser, listWatchedTvEpisodesForUser, searchActors, searchMovies, searchTvShows, updateTvEpisodeWatchStateForUser, upsertTvEpisodeRatingForUser } from '../database.js'
 
 function isSchemaSetupQuery(sql) {
   return (
@@ -37,6 +37,9 @@ function isSchemaSetupQuery(sql) {
     || sql.includes('CREATE TABLE IF NOT EXISTS alert_feature_state')
     || sql.includes('INSERT INTO alert_feature_state')
     || sql.includes('CREATE TABLE IF NOT EXISTS favorite_actors')
+    || sql.includes('CREATE TABLE IF NOT EXISTS achievement_')
+    || sql.includes('CREATE TABLE IF NOT EXISTS user_achievement_unlocks')
+    || sql.includes('INSERT INTO achievement_')
   )
 }
 

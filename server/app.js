@@ -8,8 +8,11 @@ import {
   countStoredDataBytes,
   countTvShows,
   ensureFavoriteActorsTable,
+  ensureAchievementTables,
   ensureTvDetailTables,
   ensureMoviesTable,
+  evaluateAchievementsForUser,
+  getAchievementsForUser,
   findUserByCredentials,
   findUserByUsername,
   getMovieStatsForUser,
@@ -38,6 +41,7 @@ import {
   listAlertsForUser,
   countUnreadAlertsForUser,
   markAlertsReadForUser,
+  recordAchievementEventForUser,
   removeMovieFromWatchedForUser,
   removeMovieFromWatchlistForUser,
   listSimilarMovies,
@@ -76,12 +80,23 @@ export async function createApp(pool, options = {}) {
   } = options
 
   await ensureMoviesTable(pool)
+  await ensureTvDetailTables(pool)
+  await ensureAchievementTables(pool)
 
   const app = express()
   app.use(express.json())
 
   app.get('/api/health', async (_request, response) => {
     response.json({ ok: true })
+  })
+
+  app.get('/api/achievements', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const achievements = await getAchievementsForUser(pool, user.username)
+      response.json({ count: achievements.length, achievements })
+    } catch (error) { next(error) }
   })
 
   app.get('/api/genres', async (_request, response, next) => {
@@ -408,9 +423,11 @@ export async function createApp(pool, options = {}) {
 
       const movies = await listWatchlistMoviesForUser(pool, user.username)
       const savedMovie = movies.find((movie) => Number(movie.tmdb_id) === movieId) ?? null
+      const newlyUnlockedAchievements = result.added && await recordAchievementEventForUser(pool, { username: user.username, eventType: 'movie_watchlist_added', mediaType: 'movie', entityId: result.entityId, baselineKind: 'movie_watchlist' }) ? await evaluateAchievementsForUser(pool, user.username) : []
 
       response.status(200).json({
         movie: savedMovie ? mapWatchlistMovie(savedMovie) : null,
+        newlyUnlockedAchievements,
       })
     } catch (error) {
       next(error)
@@ -591,11 +608,13 @@ export async function createApp(pool, options = {}) {
         getMovieStatsForUser(pool, user.username, period),
       ])
       const watchedMovie = movies.find((movie) => Number(movie.tmdb_id) === movieId) ?? null
+      const newlyUnlockedAchievements = result.added && await recordAchievementEventForUser(pool, { username: user.username, eventType: 'movie_watched', mediaType: 'movie', entityId: result.entityId, baselineKind: 'movie_watch', metadata: { fromWatchlist: result.removedFromWatchlist } }) ? await evaluateAchievementsForUser(pool, user.username) : []
 
       response.status(200).json({
         movie: watchedMovie ? mapWatchedMovie(watchedMovie) : null,
         removedFromWatchlist: result.removedFromWatchlist,
         stats: mapMovieStats(stats),
+        newlyUnlockedAchievements,
       })
     } catch (error) {
       next(error)
@@ -723,7 +742,8 @@ export async function createApp(pool, options = {}) {
         getTvStatsForUser(pool, user.username, period),
         listTvWatchlistShowsForUser(pool, user.username),
       ])
-      response.json({ added: result.added, watchedIds: library.watchedIds, watchlistIds: library.watchlistIds, watchlistShows: watchlistShows.map(mapWatchlistTvShow), stats: mapTvStats(stats) })
+      const newlyUnlockedAchievements = result.added && await recordAchievementEventForUser(pool, { username: user.username, eventType: 'tv_watchlist_added', mediaType: 'tv', entityId: result.entityId, baselineKind: 'tv_watchlist' }) ? await evaluateAchievementsForUser(pool, user.username) : []
+      response.json({ added: result.added, watchedIds: library.watchedIds, watchlistIds: library.watchlistIds, watchlistShows: watchlistShows.map(mapWatchlistTvShow), stats: mapTvStats(stats), newlyUnlockedAchievements })
     } catch (error) {
       next(error)
     }
@@ -978,8 +998,12 @@ export async function createApp(pool, options = {}) {
       if (!user) return response.status(401).json({ error: 'Authentication required' })
       const result = await updateTvEpisodeWatchStateForUser(pool, { username: user.username, showId, action, episodeId, seasonId, watchService: request.body?.watchService })
       if (result.status !== 'ok') return response.status(404).json({ error: action === 'mark_season' ? 'Season was not found' : 'Episode was not found' })
+      const inserted = action !== 'unmark_episode' && result.updatedCount > 0
+      if (inserted && Number.isInteger(episodeId)) await recordAchievementEventForUser(pool, { username: user.username, eventType: 'tv_episode_watched', mediaType: 'tv', entityId: episodeId, baselineKind: 'tv_episode_watch' })
+      const didComplete = result.newlyCompletedShowId && await recordAchievementEventForUser(pool, { username: user.username, eventType: 'tv_show_completed', mediaType: 'tv', entityId: result.newlyCompletedShowId, baselineKind: 'tv_show' })
+      const newlyUnlockedAchievements = (inserted || didComplete) ? await evaluateAchievementsForUser(pool, user.username) : []
       const detail = await getTvDetailForUser(pool, { showId, username: user.username })
-      response.json({ updatedCount: result.updatedCount, show: mapTvDetail(detail) })
+      response.json({ updatedCount: result.updatedCount, show: mapTvDetail(detail), newlyUnlockedAchievements })
     } catch (error) { next(error) }
   })
 
@@ -997,7 +1021,8 @@ export async function createApp(pool, options = {}) {
       const result = await pool.query('SELECT tv_shows.tmdb_id FROM tv_episodes JOIN tv_seasons ON tv_seasons.id = tv_episodes.tv_season_id JOIN tv_shows ON tv_shows.id = tv_seasons.tv_show_id WHERE tv_episodes.id = $1 LIMIT 1', [episodeId])
       const showId = result.rows[0]?.tmdb_id
       const detail = Number.isInteger(showId) ? await getTvDetailForUser(pool, { showId, username: user.username }) : null
-      response.json({ score: savedRating.score, show: detail ? mapTvDetail(detail) : null })
+      const newlyUnlockedAchievements = savedRating.entityId && await recordAchievementEventForUser(pool, { username: user.username, eventType: 'tv_rated', mediaType: 'tv', entityId: savedRating.entityId, baselineKind: 'tv_episode_rating', metadata: { score } }) ? await evaluateAchievementsForUser(pool, user.username) : []
+      response.json({ score: savedRating.score, show: detail ? mapTvDetail(detail) : null, newlyUnlockedAchievements })
     } catch (error) { next(error) }
   })
 
@@ -1118,7 +1143,8 @@ export async function createApp(pool, options = {}) {
       }
 
       const communityRating = await getMovieCommunityRating(pool, { movieId, username: user.username })
-      response.json({ communityRating: mapCommunityRating(communityRating) })
+      const newlyUnlockedAchievements = savedRating.entityId && await recordAchievementEventForUser(pool, { username: user.username, eventType: 'movie_rated', mediaType: 'movie', entityId: savedRating.entityId, baselineKind: 'movie_rating', metadata: { score } }) ? await evaluateAchievementsForUser(pool, user.username) : []
+      response.json({ communityRating: mapCommunityRating(communityRating), newlyUnlockedAchievements })
     } catch (error) {
       next(error)
     }
