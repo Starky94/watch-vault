@@ -1,11 +1,22 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createApp } from '../app.js'
-import { buildStatsInsights, countMovies, countStoredDataBytes, ensureMoviesTable, getMostWatchedActorsForUser, getMovieStatsForUser, getStatsInsightsForUser, getStreamingPlatformsForUser, getTopRatedThisMonthForUser, listCalendarEventsForUser, listContinueWatchingTvShowsForUser, listGenres, listLatestEpisodeTvShows, listMovies, listRecentlyReleasedMovies, listSimilarMovies, listTopRatedMovies, listTvShows, listTvWatchlistShowsForUser, listUpcomingMovies, listWatchedMoviesByGenreForUser, listWatchedTvEpisodesForUser, searchActors, searchMovies, searchTvShows, updateTvEpisodeWatchStateForUser, upsertTvEpisodeRatingForUser } from '../database.js'
+import { buildStatsInsights, countMovies, countStoredDataBytes, ensureMoviesTable, getBookStatsForUser, getMostWatchedActorsForUser, getMovieStatsForUser, getStatsInsightsForUser, getStreamingPlatformsForUser, getTopRatedThisMonthForUser, listCalendarEventsForUser, listContinueWatchingTvShowsForUser, listGenres, listLatestEpisodeTvShows, listMovies, listRecentlyReleasedMovies, listSimilarMovies, listTopRatedMovies, listTvShows, listTvWatchlistShowsForUser, listUpcomingMovies, listWatchedMoviesByGenreForUser, listWatchedTvEpisodesForUser, searchActors, searchBooks, searchMovies, searchTvShows, updateTvEpisodeWatchStateForUser, upsertTvEpisodeRatingForUser } from '../database.js'
 
 function isSchemaSetupQuery(sql) {
   return (
     sql.includes('CREATE TABLE IF NOT EXISTS movies') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS books') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS authors') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS book_authors') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS favorite_authors') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS book_watchlist_items') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS read_books') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS book_ratings') ||
+    sql.includes('CREATE INDEX IF NOT EXISTS books_import_order_idx') ||
+    sql.includes('INSERT INTO authors') ||
+    sql.includes('INSERT INTO book_authors') ||
+    sql.includes('UPDATE books') ||
     sql.includes('CREATE TABLE IF NOT EXISTS genres') ||
     sql.includes('CREATE TABLE IF NOT EXISTS tv_genres') ||
     sql.includes('CREATE TABLE IF NOT EXISTS tv_shows') ||
@@ -159,6 +170,32 @@ test('listGenres returns only used genres ordered alphabetically', async () => {
   assert.match(executedSql, /JOIN movies ON genres\.tmdb_genre_id = ANY\(movies\.genre_ids\)/i)
   assert.match(executedSql, /HAVING COUNT\(DISTINCT movies\.id\) > 0/i)
   assert.match(executedSql, /ORDER BY LOWER\(genres\.name\) ASC/i)
+})
+
+test('getBookStatsForUser scopes all book widgets to the requested period and preserves missing page counts', async () => {
+  const queries = []
+  const responses = [
+    { rows: [{ has_user: true, books_read: 2, pages_read: 320, physical_books_read: 1, ebook_books_read: 0, audiobook_books_read: 1, watchlist_count: 1, average_rating: 4.5 }] },
+    { rows: [{ read_at: '2026-07-02T12:00:00.000Z', page_count: 320 }, { read_at: '2026-07-08T12:00:00.000Z', page_count: 0 }] },
+    { rows: [{ name: 'Fantasy', book_count: 2, pages: 320 }] },
+    { rows: [{ name: 'Ursula K. Le Guin', book_count: 2 }] },
+    { rows: [{ google_books_id: 'earthsea', title: 'A Wizard of Earthsea', authors: ['Ursula K. Le Guin'], cover_image_url: null, score: 5 }] },
+    { rows: [{ google_books_id: 'earthsea', title: 'A Wizard of Earthsea', authors: ['Ursula K. Le Guin'], cover_image_url: null, read_at: '2026-07-08T12:00:00.000Z' }] },
+  ]
+  const pool = { async query(sql, params) { queries.push({ sql, params }); return responses.shift() } }
+
+  const stats = await getBookStatsForUser(pool, 'florind', 'month')
+
+  assert.deepEqual(stats.metrics, { booksRead: 2, pagesRead: 320, watchlistCount: 1, averageRating: 4.5 })
+  assert.deepEqual(stats.formats, { physical: 1, ebook: 0, audiobook: 1 })
+  assert.deepEqual(stats.categories, [{ name: 'Fantasy', bookCount: 2, pages: 320 }])
+  assert.deepEqual(stats.authors, [{ name: 'Ursula K. Le Guin', bookCount: 2 }])
+  assert.equal(stats.topRated[0].id, 'earthsea')
+  assert.equal(stats.recentReads[0].id, 'earthsea')
+  assert.equal(stats.activity.buckets.reduce((total, bucket) => total + bucket.pagesRead, 0), 320)
+  assert.equal(stats.activity.buckets.reduce((total, bucket) => total + bucket.booksRead, 0), 2)
+  assert.equal(queries.length, 6)
+  for (const query of queries) assert.equal(query.params[1], 'month')
 })
 
 test('ensureMoviesTable creates normalized cast tables and watchlist tables', async () => {
@@ -734,6 +771,10 @@ test('watchlist endpoints stay isolated per user and duplicate adds are idempote
         return {
           rows: watchlists.get(params[0]) ?? [],
         }
+      }
+
+      if (sql.includes('FROM book_watchlist_items') && sql.includes('WHERE users.username = $1')) {
+        return { rows: [] }
       }
 
       throw new Error(`Unexpected query: ${sql}`)
@@ -1739,6 +1780,11 @@ test('GET /api/search validates the query and returns grouped local matches', as
         return { rows: [{ tmdb_person_id: 3, name: 'Dune Actor', popularity: 80 }] }
       }
 
+      if (sql.includes('FROM books') && sql.includes('POSITION')) {
+        assert.deepEqual(params, ['Dune', 30])
+        return { rows: [{ google_books_id: 'dune-book', title: 'Dune', authors: ['Frank Herbert'] }] }
+      }
+
       throw new Error(`Unexpected query: ${sql}`)
     },
   }
@@ -1760,9 +1806,26 @@ test('GET /api/search validates the query and returns grouped local matches', as
     assert.deepEqual(payload.movies.map((movie) => movie.title), ['Dune'])
     assert.deepEqual(payload.shows.map((show) => show.name), ['Dune: Prophecy'])
     assert.deepEqual(payload.actors.map((actor) => actor.name), ['Dune Actor'])
+    assert.deepEqual(payload.books.map((book) => book.title), ['Dune'])
   } finally {
     await closeServer(server)
   }
+})
+
+test('searchBooks matches stored titles case-insensitively', async () => {
+  let executedSql = ''
+  let executedParams = []
+  const pool = {
+    async query(sql, params) {
+      executedSql = sql
+      executedParams = params
+      return { rows: [] }
+    },
+  }
+  await searchBooks(pool, 'Dune')
+  assert.match(executedSql, /FROM books/i)
+  assert.match(executedSql, /POSITION\(LOWER\(\$1\) IN LOWER\(title\)\)/i)
+  assert.deepEqual(executedParams, ['Dune', 30])
 })
 
 test('GET /api/search/tmdb returns normalized TMDB title cards without database writes', async () => {
@@ -3090,6 +3153,10 @@ test('GET /api/admin/overview returns the configured jobs and database totals', 
         return { rows: [{ movie_count: 125 }] }
       }
 
+      if (sql.includes('SELECT COUNT(*)::INTEGER AS book_count')) {
+        return { rows: [{ book_count: 240 }] }
+      }
+
       if (sql.includes('SELECT COUNT(*)::INTEGER AS tv_show_count')) {
         return { rows: [{ tv_show_count: 48 }] }
       }
@@ -3116,10 +3183,17 @@ test('GET /api/admin/overview returns the configured jobs and database totals', 
 
     assert.equal(response.status, 200)
     assert.equal(payload.totals.actors, 913)
+    assert.equal(payload.totals.books, 240)
     assert.equal(payload.totals.movies, 125)
     assert.equal(payload.totals.storedDataBytes, 5242880)
     assert.equal(payload.totals.tvShows, 48)
     assert.deepEqual(payload.crons, [
+      {
+        key: 'books',
+        name: 'Books Import',
+        execution: 'Interval-based loop',
+        frequency: 'Every hour',
+      },
       {
         key: 'popular',
         name: 'Popular Movies Import',

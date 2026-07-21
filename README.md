@@ -5,7 +5,7 @@ WatchVault ships with a Docker-first stack for the Vite web app, Node API, Postg
 ## Setup
 
 1. Copy [.env.example](/Users/florindruta/dev/watchvault/.env.example) to `.env`.
-2. Set `TMDB_BEARER_TOKEN` to your TMDB v3 bearer token.
+2. Set `TMDB_BEARER_TOKEN` to your TMDB v3 bearer token and `GOOGLE_BOOKS_API_KEY` to an API key with Google Books API access.
 3. Keep `DATABASE_URL` pointed at `db:5432` when running through Docker Compose.
 4. If you run the Node processes outside Docker, switch the host in `DATABASE_URL` to `127.0.0.1`.
 
@@ -22,7 +22,7 @@ Services:
 - API (through reverse proxy): `http://localhost:8080/api/health`
 - Postgres: internal `db:5432`
 
-The popular importer runs automatically every 10 minutes, and the Now Playing plus Upcoming importers each run once every 24 hours. All importers log each attempt and share a TMDB client throttle capped below 40 requests per second.
+The popular importer runs automatically every 10 minutes, the Now Playing plus Upcoming importers each run once every 24 hours, and the Google Books importer runs hourly.
 
 Use this mode when you want the production-style static web image. Frontend changes require rebuilding the `web` image.
 
@@ -99,6 +99,7 @@ docker compose down
 - `npm run server` starts the API outside Docker.
 - `npm run server:watch` starts the API with automatic reload on file changes.
 - `npm run import:movies` runs a one-off TMDB import.
+- `npm run import:books` imports 10 Google Books titles from one randomly selected subject each run.
 - `npm run import:now-playing` runs a one-off TMDB Now Playing import for movies released in the last 30 days.
 - `npm run import:upcoming` runs a one-off TMDB Upcoming import for movies releasing in the next 30 days.
 - `npm run import:tv-popular` runs a one-off TMDB Popular TV import.
@@ -111,5 +112,7 @@ docker compose down
 
 - `GET /api/health` returns a basic health response.
 - `GET /api/movies` returns the imported popular movies ordered by popularity plus a featured movie payload derived from the top result.
+- `GET /api/books` returns imported books from the local database.
+- `GET /api/books/:bookId` returns a stored book's full metadata.
 - `GET /api/movies/recently-released` returns recently released movies from the local DB.
 - `GET /api/movies/upcoming` returns upcoming movies releasing in the next 30 days from the local DB.

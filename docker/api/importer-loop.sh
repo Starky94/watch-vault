@@ -14,12 +14,12 @@ trap handle_shutdown INT TERM
 
 while true
 do
-  echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] Starting TMDB import: ${import_command}."
+  echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] Starting import: ${import_command}."
 
   if sh -c "$import_command"; then
-    echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] TMDB import completed."
+    echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] Import completed."
   else
-    echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] TMDB import failed; retrying after sleep."
+    echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] Import failed; retrying after sleep."
   fi
 
   sleep "$interval_seconds" &

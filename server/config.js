@@ -24,6 +24,8 @@ export function loadConfig(options = {}) {
     databaseUrl: requireDatabase ? requireEnv('DATABASE_URL', env) : env.DATABASE_URL,
     tmdbBearerToken: requireTmdbToken ? requireEnv('TMDB_BEARER_TOKEN', env) : env.TMDB_BEARER_TOKEN,
     tmdbBaseUrl: env.TMDB_BASE_URL || 'https://api.themoviedb.org/3',
+    googleBooksApiKey: env.GOOGLE_BOOKS_API_KEY,
+    googleBooksBaseUrl: env.GOOGLE_BOOKS_BASE_URL || 'https://www.googleapis.com/books/v1',
   }
 
   if (!Number.isInteger(config.port) || config.port <= 0) {

@@ -4,6 +4,7 @@ import './App.css'
 const primaryViews = {
   home: 'Home',
   movies: 'Movies',
+  books: 'Books',
   tvShows: 'TV Shows',
   watchlist: 'Watchlist',
   calendar: 'Calendar',
@@ -14,6 +15,7 @@ const primaryViews = {
 const navItems = [
   { label: 'Home', icon: HomeIcon, view: primaryViews.home },
   { label: 'Movies', icon: ClapperIcon, view: primaryViews.movies },
+  { label: 'Books', icon: BookmarkIcon, view: primaryViews.books },
   { label: 'TV Shows', icon: TvIcon, view: primaryViews.tvShows },
   { label: 'Watchlist', icon: BookmarkIcon, view: primaryViews.watchlist },
   { label: 'Calendar', icon: CalendarIcon, view: primaryViews.calendar },
@@ -46,6 +48,8 @@ const routeKinds = {
   calendar: 'calendar',
   movieDetail: 'movieDetail',
   tvDetail: 'tvDetail',
+  bookDetail: 'bookDetail',
+  authorDetail: 'authorDetail',
   personDetail: 'personDetail',
 }
 
@@ -64,12 +68,13 @@ const initialTvWatchedIds = []
 const mobileNavItems = [
   { label: 'Home', icon: HomeIcon, view: primaryViews.home },
   { label: 'Search', icon: SearchIcon, view: primaryViews.movies },
+  { label: 'Books', icon: BookmarkIcon, view: primaryViews.books },
   { label: 'Watchlist', icon: BookmarkIcon, view: primaryViews.watchlist },
   { label: 'Calendar', icon: CalendarIcon, view: primaryViews.calendar },
   { label: 'Stats', icon: BarsIcon, view: primaryViews.stats },
 ]
 
-const watchlistTabs = ['All', 'Movies', 'TV Shows', 'Actors']
+const watchlistTabs = ['All', 'Movies', 'TV Shows', 'Books', 'Actors', 'Authors']
 const moviesPageSize = 30
 const statsWatchedMoviesPageSize = 30
 const genreAccentPalette = ['#ff6b7a', '#7c8dff', '#ffd86f', '#84b3ff', '#ff6cb6', '#67e8f9', '#9ae66e']
@@ -86,6 +91,15 @@ const emptyTvStats = {
   episodesWatched: 0,
   timeWatchedMinutes: 0,
   watchlistCount: 0,
+}
+const emptyBookStats = {
+  metrics: { booksRead: 0, pagesRead: 0, watchlistCount: 0, averageRating: null },
+  formats: { physical: 0, ebook: 0, audiobook: 0 },
+  activity: { buckets: [] },
+  categories: [],
+  authors: [],
+  topRated: [],
+  recentReads: [],
 }
 const emptyStatsInsights = {
   activity: { buckets: [] },
@@ -105,6 +119,9 @@ const emptyCommunityRating = {
 }
 const movieRatingOptions = Array.from({ length: 9 }, (_value, index) => 1 + index * 0.5)
 const watchServiceOptions = ['Netflix', 'Prime Video', 'Disney+', 'Max', 'Apple TV+', 'Hulu', 'Paramount+', 'Peacock']
+const bookCompletionFields = [
+  ['favorite', 'This is a favorite'], ['translated', 'Read in translation'], ['newAuthor', 'A new-to-you author'], ['seriesStarted', 'Started a series'], ['seriesFinished', 'Finished a series'], ['classic', 'A recognized classic'], ['library', 'Borrowed from a library'], ['recommended', 'Recommended by someone'], ['plotTwist', 'A surprising plot twist'], ['madeCry', 'Made me cry'], ['madeLaugh', 'Made me laugh aloud'], ['fictionalCrush', 'A favorite character'], ['foundFamily', 'Found-family theme'], ['villainFavorite', 'Favorite villain/antihero'], ['enemiesToLovers', 'Enemies-to-lovers'], ['slowBurn', 'Slow-burn romance'], ['cozy', 'A cozy read'], ['vacation', 'Read on vacation'], ['coverEnjoyed', 'Chose it for the cover and enjoyed it'], ['coverRegretted', 'Chose it for the cover and regretted it'], ['hyped', 'A hyped or trending read'], ['moodRead', 'Picked for my mood'], ['adaptationWatched', 'Watched its adaptation'], ['bookWasBetter', 'The book was better'], ['adaptationWon', 'The adaptation was better'], ['mapUsed', 'Had a map'], ['trickyNames', 'Names were hard to pronounce'], ['slumpEscape', 'Helped end a reading slump'],
+]
 const statsPeriods = [
   { value: 'week', label: 'This Week' },
   { value: 'month', label: 'This Month' },
@@ -143,6 +160,10 @@ function App() {
       ? primaryViews.stats
       : readAppRoute().kind === routeKinds.calendar
         ? primaryViews.calendar
+      : readAppRoute().kind === routeKinds.bookDetail
+        ? primaryViews.books
+      : readAppRoute().kind === routeKinds.authorDetail
+        ? primaryViews.books
       : readAppRoute().kind === routeKinds.movieDetail || readAppRoute().kind === routeKinds.personDetail || readAppRoute().kind === routeKinds.tvDetail
       ? primaryViews.movies
       : primaryViews.home
@@ -163,6 +184,7 @@ function App() {
     movies: [],
     shows: [],
     actors: [],
+    books: [],
     error: '',
   })
   const [tmdbSearchState, setTmdbSearchState] = useState({
@@ -172,6 +194,13 @@ function App() {
     error: '',
   })
   const tmdbSearchRequestId = useRef(0)
+  const [googleBooksSearchState, setGoogleBooksSearchState] = useState({
+    status: 'idle',
+    books: [],
+    error: '',
+    persistingBookId: null,
+  })
+  const googleBooksSearchRequestId = useRef(0)
   const [user, setUser] = useState(null)
   const [authStatus, setAuthStatus] = useState('idle')
   const [authError, setAuthError] = useState('')
@@ -181,6 +210,7 @@ function App() {
     message: '',
   })
   const [popularMoviesPage, setPopularMoviesPage] = useState(1)
+  const [booksPage, setBooksPage] = useState(1)
   const [recentMoviesPage, setRecentMoviesPage] = useState(1)
   const [upcomingMoviesPage, setUpcomingMoviesPage] = useState(1)
   const [topRatedMoviesPage, setTopRatedMoviesPage] = useState(1)
@@ -189,6 +219,7 @@ function App() {
   const [upcomingTvPage, setUpcomingTvPage] = useState(1)
   const [topRatedTvPage, setTopRatedTvPage] = useState(1)
   const [popularMoviesState, setPopularMoviesState] = useState(() => createMovieCollectionState({ includeFeaturedMovie: true }))
+  const [booksState, setBooksState] = useState(() => createBookCollectionState())
   const [recentMoviesState, setRecentMoviesState] = useState(() => createMovieCollectionState())
   const [upcomingMoviesState, setUpcomingMoviesState] = useState(() => createMovieCollectionState())
   const [topRatedMoviesState, setTopRatedMoviesState] = useState(() => createMovieCollectionState())
@@ -210,6 +241,9 @@ function App() {
     movie: null,
     error: '',
   })
+  const [bookDetailState, setBookDetailState] = useState({ status: currentRoute.kind === routeKinds.bookDetail ? 'idle' : 'hidden', book: null, error: '' })
+  const [authorDetailState, setAuthorDetailState] = useState({ status: currentRoute.kind === routeKinds.authorDetail ? 'idle' : 'hidden', author: null, books: [], error: '' })
+  const [relatedBooksState, setRelatedBooksState] = useState({ status: currentRoute.kind === routeKinds.bookDetail ? 'idle' : 'hidden', books: [], error: '', persistingBookId: null })
   const [tvDetailState, setTvDetailState] = useState({ status: currentRoute.kind === routeKinds.tvDetail ? 'idle' : 'hidden', show: null, error: '' })
   const [tvReviewsState, setTvReviewsState] = useState({ status: 'idle', reviews: [], error: '' })
   const [similarMoviesState, setSimilarMoviesState] = useState({
@@ -230,6 +264,7 @@ function App() {
     status: 'idle',
     crons: [],
     totalActors: 0,
+    totalBooks: 0,
     totalMovies: 0,
     storedDataBytes: 0,
     totalTvShows: 0,
@@ -240,6 +275,7 @@ function App() {
   const [watchlistState, setWatchlistState] = useState({
     status: 'idle',
     movies: [],
+    books: [],
     error: '',
   })
   const [favoriteActorsState, setFavoriteActorsState] = useState({
@@ -247,12 +283,22 @@ function App() {
     actors: [],
     error: '',
   })
+  const [favoriteAuthorsState, setFavoriteAuthorsState] = useState({ status: 'idle', authors: [], error: '' })
   const [alertsState, setAlertsState] = useState({ status: 'idle', alerts: [], unreadCount: 0, error: '' })
   const [watchlistActionState, setWatchlistActionState] = useState({
     status: 'idle',
     movieId: null,
     error: '',
   })
+  const [bookWatchlistActionState, setBookWatchlistActionState] = useState({
+    status: 'idle',
+    bookId: null,
+    error: '',
+  })
+  const [readBooksState, setReadBooksState] = useState({ status: 'idle', books: [], error: '' })
+  const [bookReadActionState, setBookReadActionState] = useState({ status: 'idle', bookId: null, error: '' })
+  const [bookReadingFormatDialogBook, setBookReadingFormatDialogBook] = useState(null)
+  const [bookRatingActionState, setBookRatingActionState] = useState({ status: 'idle', bookId: null, error: '' })
   const [watchedState, setWatchedState] = useState({
     status: 'idle',
     movies: [],
@@ -278,6 +324,8 @@ function App() {
   const [tvStatsState, setTvStatsState] = useState({ status: 'idle', stats: emptyTvStats, error: '' })
   const [tvWatchedHistoryState, setTvWatchedHistoryState] = useState({ status: 'idle', episodes: [], error: '' })
   const [statsInsightsState, setStatsInsightsState] = useState({ status: 'idle', insights: emptyStatsInsights, error: '' })
+  const [bookStatsState, setBookStatsState] = useState({ status: 'idle', stats: emptyBookStats, error: '' })
+  const [bookAchievementsState, setBookAchievementsState] = useState({ status: 'idle', achievements: [], error: '' })
   const [achievementsState, setAchievementsState] = useState({ status: 'idle', achievements: [], error: '' })
   const [achievementToast, setAchievementToast] = useState(null)
   const [continueWatchingState, setContinueWatchingState] = useState({ status: 'idle', shows: [], error: '' })
@@ -298,7 +346,11 @@ function App() {
           ? primaryViews.stats
           : nextRoute.kind === routeKinds.calendar
             ? primaryViews.calendar
-          : nextRoute.kind === routeKinds.movieDetail || nextRoute.kind === routeKinds.personDetail || nextRoute.kind === routeKinds.tvDetail
+          : nextRoute.kind === routeKinds.bookDetail
+            ? primaryViews.books
+            : nextRoute.kind === routeKinds.authorDetail
+              ? primaryViews.books
+            : nextRoute.kind === routeKinds.movieDetail || nextRoute.kind === routeKinds.personDetail || nextRoute.kind === routeKinds.tvDetail
           ? primaryViews.movies
           : primaryViews.home
       )
@@ -410,7 +462,7 @@ function App() {
     })
     setCurrentScreen(appScreens.dashboard)
 
-    if (currentRoute.kind !== routeKinds.movieDetail && currentRoute.kind !== routeKinds.personDetail) {
+    if (currentRoute.kind !== routeKinds.movieDetail && currentRoute.kind !== routeKinds.personDetail && currentRoute.kind !== routeKinds.bookDetail && currentRoute.kind !== routeKinds.authorDetail) {
       setActiveView(primaryViews.home)
     }
   }
@@ -438,7 +490,7 @@ function App() {
     const query = searchInput.trim()
 
     if (!query) {
-      setSearchError('Enter a title or actor to search.')
+      setSearchError('Enter a movie, show, book, or actor to search.')
       return false
     }
 
@@ -479,6 +531,32 @@ function App() {
     }
   }
 
+  async function handleSearchGoogleBooks() {
+    const query = currentRoute.kind === routeKinds.search ? currentRoute.query : ''
+    if (!query) return
+
+    const requestId = ++googleBooksSearchRequestId.current
+    setGoogleBooksSearchState({ status: 'loading', books: [], error: '', persistingBookId: null })
+
+    try {
+      const response = await fetch(`/api/search/books?q=${encodeURIComponent(query)}`)
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+      if (requestId === googleBooksSearchRequestId.current) {
+        setGoogleBooksSearchState({
+          status: 'success',
+          books: Array.isArray(payload.books) ? payload.books.map(mapGoogleBookToCard) : [],
+          error: '',
+          persistingBookId: null,
+        })
+      }
+    } catch (error) {
+      if (requestId === googleBooksSearchRequestId.current) {
+        setGoogleBooksSearchState({ status: 'error', books: [], error: error instanceof Error ? error.message : 'Unable to search Google Books right now.', persistingBookId: null })
+      }
+    }
+  }
+
   function handleOpenMovieDetail(movie) {
     const normalizedMovieId = Number(movie?.id)
 
@@ -498,6 +576,65 @@ function App() {
     }, primaryViews.movies, {
       moviePreview: movie,
     })
+  }
+
+  function handleOpenBookDetail(book) {
+    const bookId = String(book?.id || '').trim()
+    if (!bookId) return
+    setBookDetailState({ status: 'success', book, error: '' })
+    handleNavigateToPath(buildBookDetailPath(bookId), { kind: routeKinds.bookDetail, bookId }, primaryViews.books, { bookPreview: book })
+  }
+
+  function handleOpenAuthorDetail(author) {
+    const authorId = Number(author?.id)
+    if (!Number.isInteger(authorId)) return
+    setAuthorDetailState({ status: 'success', author: { id: authorId, name: author.name || 'Author' }, books: [], error: '' })
+    handleNavigateToPath(buildAuthorDetailPath(authorId), { kind: routeKinds.authorDetail, authorId }, primaryViews.books, { authorPreview: author })
+  }
+
+  async function persistGoogleBook(book) {
+    const bookId = String(book?.id || '').trim()
+    if (!bookId) throw new Error('Book ID is required')
+    try {
+      const response = await fetch(`/api/books/${encodeURIComponent(bookId)}`, { method: 'POST' })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+      return payload.book ? mapBookDetailPayload(payload.book) : book
+    } catch (error) {
+      throw error instanceof Error ? error : new Error('Unable to save this book right now.')
+    }
+  }
+
+  async function handleOpenGoogleBookDetail(book) {
+    const bookId = String(book?.id || '').trim()
+    if (!bookId || googleBooksSearchState.persistingBookId) return
+
+    setGoogleBooksSearchState((state) => ({ ...state, error: '', persistingBookId: bookId }))
+    try {
+      const storedBook = await persistGoogleBook(book)
+      setBookDetailState({ status: 'success', book: storedBook, error: '' })
+      handleNavigateToPath(buildBookDetailPath(bookId), { kind: routeKinds.bookDetail, bookId }, primaryViews.books, { bookPreview: storedBook })
+    } catch (error) {
+      setGoogleBooksSearchState((state) => ({ ...state, error: error.message, persistingBookId: null }))
+      return
+    }
+    setGoogleBooksSearchState((state) => ({ ...state, persistingBookId: null }))
+  }
+
+  async function handleOpenRelatedBookDetail(book) {
+    const bookId = String(book?.id || '').trim()
+    if (!bookId || relatedBooksState.persistingBookId) return
+
+    setRelatedBooksState((state) => ({ ...state, error: '', persistingBookId: bookId }))
+    try {
+      const storedBook = await persistGoogleBook(book)
+      setBookDetailState({ status: 'success', book: storedBook, error: '' })
+      handleNavigateToPath(buildBookDetailPath(bookId), { kind: routeKinds.bookDetail, bookId }, primaryViews.books, { bookPreview: storedBook })
+    } catch (error) {
+      setRelatedBooksState((state) => ({ ...state, error: error.message, persistingBookId: null }))
+      return
+    }
+    setRelatedBooksState((state) => ({ ...state, persistingBookId: null }))
   }
 
   function handleOpenTvDetail(show) {
@@ -633,7 +770,7 @@ function App() {
     }
 
     setActiveView(view)
-    if (currentRoute.kind === routeKinds.movieDetail || currentRoute.kind === routeKinds.personDetail || currentRoute.kind === routeKinds.tvDetail) {
+    if (currentRoute.kind === routeKinds.movieDetail || currentRoute.kind === routeKinds.personDetail || currentRoute.kind === routeKinds.tvDetail || currentRoute.kind === routeKinds.bookDetail || currentRoute.kind === routeKinds.authorDetail) {
       handleNavigateToPath('/', { kind: routeKinds.home }, view)
     } else if (window.location.pathname !== '/') {
       window.history.pushState({}, '', '/')
@@ -910,6 +1047,7 @@ function App() {
       setWatchlistState({
         status: 'idle',
         movies: [],
+        books: [],
         error: '',
       })
       return
@@ -934,14 +1072,33 @@ function App() {
       setWatchlistState({
         status: 'success',
         movies: Array.isArray(payload.movies) ? payload.movies.map(mapWatchlistMoviePayload) : [],
+        books: Array.isArray(payload.books) ? payload.books.map(mapWatchlistBookPayload) : [],
         error: '',
       })
     } catch (error) {
       setWatchlistState({
         status: 'error',
         movies: [],
+        books: [],
         error: error instanceof Error ? error.message : 'Unable to load your watchlist right now.',
       })
+    }
+  }
+
+  async function loadReadBooksForUser(nextUser) {
+    if (!nextUser?.username) {
+      setReadBooksState({ status: 'idle', books: [], error: '' })
+      return
+    }
+
+    setReadBooksState((state) => ({ ...state, status: 'loading', error: '' }))
+    try {
+      const response = await fetch('/api/read/books', { headers: buildAuthHeaders(nextUser) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+      setReadBooksState({ status: 'success', books: Array.isArray(payload.books) ? payload.books.map(mapReadBookPayload) : [], error: '' })
+    } catch (error) {
+      setReadBooksState({ status: 'error', books: [], error: error instanceof Error ? error.message : 'Unable to load your read books right now.' })
     }
   }
 
@@ -959,6 +1116,23 @@ function App() {
       setFavoriteActorsState({ status: 'success', actors: Array.isArray(payload.actors) ? payload.actors : [], error: '' })
     } catch (error) {
       setFavoriteActorsState({ status: 'error', actors: [], error: error instanceof Error ? error.message : 'Unable to load favorite actors right now.' })
+    }
+  }
+
+  async function loadFavoriteAuthorsForUser(nextUser) {
+    if (!nextUser?.username) {
+      setFavoriteAuthorsState({ status: 'idle', authors: [], error: '' })
+      return
+    }
+
+    setFavoriteAuthorsState((state) => ({ ...state, status: 'loading', error: '' }))
+    try {
+      const response = await fetch('/api/favorite-authors', { headers: buildAuthHeaders(nextUser) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+      setFavoriteAuthorsState({ status: 'success', authors: Array.isArray(payload.authors) ? payload.authors : [], error: '' })
+    } catch (error) {
+      setFavoriteAuthorsState({ status: 'error', authors: [], error: error instanceof Error ? error.message : 'Unable to load favorite authors right now.' })
     }
   }
 
@@ -1008,6 +1182,21 @@ function App() {
       await loadFavoriteActorsForUser(user)
     } catch (error) {
       setFavoriteActorsState((state) => ({ ...state, status: 'error', error: error instanceof Error ? error.message : 'Unable to update favorite actor.' }))
+    }
+  }
+
+  async function handleToggleFavoriteAuthor(author) {
+    const authorId = Number(author?.id)
+    if (!Number.isInteger(authorId)) return
+    if (!user) return handleOpenLogin()
+
+    try {
+      const response = await fetch(`/api/favorite-authors/${authorId}`, { method: 'POST', headers: buildAuthHeaders(user) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+      await loadFavoriteAuthorsForUser(user)
+    } catch (error) {
+      setFavoriteAuthorsState((state) => ({ ...state, status: 'error', error: error instanceof Error ? error.message : 'Unable to update favorite author.' }))
     }
   }
 
@@ -1168,6 +1357,7 @@ function App() {
         return {
           status: 'success',
           movies: savedMovie ? [savedMovie, ...remainingMovies] : remainingMovies,
+          books: previousState.books,
           error: '',
         }
       })
@@ -1217,6 +1407,7 @@ function App() {
       setWatchlistState((previousState) => ({
         status: 'success',
         movies: previousState.movies.filter((watchlistMovie) => Number(watchlistMovie.id) !== normalizedMovieId),
+        books: previousState.books,
         error: '',
       }))
       setWatchlistActionState({
@@ -1251,11 +1442,92 @@ function App() {
     await handleAddMovieToWatchlist(movie)
   }
 
+  async function handleToggleBookInWatchlist(book) {
+    const bookId = String(book?.id || '').trim()
+    if (!bookId) return
+    if (!user) return handleOpenLogin()
+
+    const isSaved = watchlistState.books.some((watchlistBook) => watchlistBook.id === bookId)
+    setBookWatchlistActionState({ status: 'loading', bookId, error: '' })
+
+    try {
+      const response = await fetch(isSaved ? `/api/watchlist/books/${encodeURIComponent(bookId)}` : '/api/watchlist/books', {
+        method: isSaved ? 'DELETE' : 'POST',
+        headers: isSaved ? buildAuthHeaders(user) : { 'Content-Type': 'application/json', ...buildAuthHeaders(user) },
+        body: isSaved ? undefined : JSON.stringify({ bookId }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+
+      setWatchlistState((state) => ({
+        ...state,
+        status: 'success',
+        books: isSaved
+          ? state.books.filter((watchlistBook) => watchlistBook.id !== bookId)
+          : [payload.book ? mapWatchlistBookPayload(payload.book) : mapBookToWatchlistItem(book), ...state.books.filter((watchlistBook) => watchlistBook.id !== bookId)],
+        error: '',
+      }))
+      setBookWatchlistActionState({ status: 'success', bookId, error: '' })
+    } catch (error) {
+      setBookWatchlistActionState({ status: 'error', bookId, error: error instanceof Error ? error.message : 'Unable to update this book right now.' })
+    }
+  }
+
+  async function handleToggleBookRead(book, readingFormat = null) {
+    const bookId = String(book?.id || '').trim()
+    if (!bookId) return
+    if (!user) return handleOpenLogin()
+
+    if (!readingFormat) {
+      setBookReadingFormatDialogBook(book)
+      return
+    }
+    setBookReadActionState({ status: 'loading', bookId, error: '' })
+    try {
+      const response = await fetch('/api/read/books', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...buildAuthHeaders(user) },
+        body: JSON.stringify({ bookId, readingFormat, completionMetadata: book?.metadata ?? {} }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+
+      setReadBooksState((state) => ({
+        status: 'success',
+        books: [payload.book ? mapReadBookPayload(payload.book) : { ...mapBookToWatchlistItem(book), readAt: new Date().toISOString(), readingFormat }, ...state.books.filter((readBook) => readBook.id !== bookId)],
+        error: '',
+      }))
+      setWatchlistState((state) => ({ ...state, books: state.books.filter((watchlistBook) => watchlistBook.id !== bookId) }))
+      setBookReadingFormatDialogBook(null)
+      receiveAchievementUnlocks(payload.newlyUnlockedBookAchievements)
+      setBookReadActionState({ status: 'success', bookId, error: '' })
+    } catch (error) {
+      setBookReadActionState({ status: 'error', bookId, error: error instanceof Error ? error.message : 'Unable to update this book right now.' })
+    }
+  }
+
+  async function handleMarkBookUnread(book) {
+    const bookId = String(book?.id || '').trim()
+    if (!bookId || !user) return
+    setBookReadActionState({ status: 'loading', bookId, error: '' })
+    try {
+      const response = await fetch(`/api/read/books/${encodeURIComponent(bookId)}`, { method: 'DELETE', headers: buildAuthHeaders(user) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+      setReadBooksState((state) => ({ ...state, status: 'success', books: state.books.filter((readBook) => readBook.id !== bookId), error: '' }))
+      setBookReadActionState({ status: 'success', bookId, error: '' })
+    } catch (error) {
+      setBookReadActionState({ status: 'error', bookId, error: error instanceof Error ? error.message : 'Unable to mark this book as unread.' })
+    }
+  }
+
   useEffect(() => {
     loadWatchlistForUser(user)
+    loadReadBooksForUser(user)
     loadWatchedForUser(user)
     loadTvLibraryForUser(user)
     loadFavoriteActorsForUser(user)
+    loadFavoriteAuthorsForUser(user)
     loadAlertsForUser(user)
   }, [user, statsPeriod])
 
@@ -1295,6 +1567,25 @@ function App() {
   }, [activeView, statsPeriod, user])
 
   useEffect(() => {
+    if (activeView !== primaryViews.stats || !user?.username) {
+      if (!user?.username) setBookStatsState({ status: 'idle', stats: emptyBookStats, error: '' })
+      return
+    }
+    let cancelled = false
+    setBookStatsState((state) => ({ ...state, status: 'loading', error: '' }))
+    fetch(`/api/stats/books?period=${statsPeriod}`, { headers: buildAuthHeaders(user) })
+      .then(async (response) => ({ response, payload: await response.json().catch(() => ({})) }))
+      .then(({ response, payload }) => {
+        if (!response.ok) throw new Error(payload.error || 'Unable to load book stats.')
+        if (!cancelled) setBookStatsState({ status: 'success', stats: mapBookStatsPayload(payload), error: '' })
+      })
+      .catch((error) => {
+        if (!cancelled) setBookStatsState({ status: 'error', stats: emptyBookStats, error: error instanceof Error ? error.message : 'Unable to load book stats right now.' })
+      })
+    return () => { cancelled = true }
+  }, [activeView, statsPeriod, user])
+
+  useEffect(() => {
     if (![primaryViews.achievements, primaryViews.stats].includes(activeView) || !user?.username) return
     let cancelled = false
     setAchievementsState((state) => ({ ...state, status: 'loading', error: '' }))
@@ -1307,6 +1598,20 @@ function App() {
       .catch((error) => { if (!cancelled) setAchievementsState({ status: 'error', achievements: [], error: error instanceof Error ? error.message : 'Unable to load achievements.' }) })
     return () => { cancelled = true }
   }, [activeView, user])
+
+  useEffect(() => {
+    if (activeView !== primaryViews.stats || !user?.username) return
+    let cancelled = false
+    setBookAchievementsState((state) => ({ ...state, status: 'loading', error: '' }))
+    fetch('/api/book-achievements', { headers: buildAuthHeaders(user) })
+      .then(async (response) => ({ response, payload: await response.json().catch(() => ({})) }))
+      .then(({ response, payload }) => {
+        if (!response.ok) throw new Error(payload.error || 'Unable to load book achievements.')
+        if (!cancelled) setBookAchievementsState({ status: 'success', achievements: Array.isArray(payload.achievements) ? payload.achievements : [], error: '' })
+      })
+      .catch((error) => { if (!cancelled) setBookAchievementsState({ status: 'error', achievements: [], error: error instanceof Error ? error.message : 'Unable to load book achievements.' }) })
+    return () => { cancelled = true }
+  }, [activeView, user, bookReadActionState.status, bookRatingActionState.status])
 
   function receiveAchievementUnlocks(items) {
     if (!Array.isArray(items) || !items.length) return
@@ -1492,6 +1797,34 @@ function App() {
     }
   }
 
+  async function handleSubmitBookRating(book, score) {
+    const bookId = String(book?.id || '').trim()
+    if (!bookId) return false
+    if (!user) {
+      handleOpenLogin()
+      return false
+    }
+
+    setBookRatingActionState({ status: 'loading', bookId, error: '' })
+    try {
+      const response = await fetch(`/api/books/${encodeURIComponent(bookId)}/rating`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...buildAuthHeaders(user) },
+        body: JSON.stringify({ score }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+      const communityRating = mapCommunityRatingPayload(payload.communityRating)
+      setBookDetailState((state) => state.book?.id === bookId ? { ...state, book: { ...state.book, communityRating } } : state)
+      setBookRatingActionState({ status: 'success', bookId, error: '' })
+      receiveAchievementUnlocks(payload.newlyUnlockedBookAchievements)
+      return true
+    } catch (error) {
+      setBookRatingActionState({ status: 'error', bookId, error: error instanceof Error ? error.message : 'Unable to save your rating right now.' })
+      return false
+    }
+  }
+
   useEffect(() => {
     if (currentScreen !== appScreens.admin) {
       return
@@ -1519,6 +1852,7 @@ function App() {
             status: 'success',
             crons: Array.isArray(payload.crons) ? payload.crons : [],
             totalActors: typeof payload?.totals?.actors === 'number' ? payload.totals.actors : 0,
+            totalBooks: typeof payload?.totals?.books === 'number' ? payload.totals.books : 0,
             totalMovies: typeof payload?.totals?.movies === 'number' ? payload.totals.movies : 0,
             storedDataBytes: typeof payload?.totals?.storedDataBytes === 'number' ? payload.totals.storedDataBytes : 0,
             totalTvShows: typeof payload?.totals?.tvShows === 'number' ? payload.totals.tvShows : 0,
@@ -1590,6 +1924,8 @@ function App() {
   useEffect(() => {
     tmdbSearchRequestId.current += 1
     setTmdbSearchState({ status: 'idle', movies: [], shows: [], error: '' })
+    googleBooksSearchRequestId.current += 1
+    setGoogleBooksSearchState({ status: 'idle', books: [], error: '', persistingBookId: null })
 
     if (currentRoute.kind !== routeKinds.search || !currentRoute.query) {
       setSearchResultsState({
@@ -1597,6 +1933,7 @@ function App() {
         movies: [],
         shows: [],
         actors: [],
+        books: [],
         error: '',
       })
       return
@@ -1610,6 +1947,7 @@ function App() {
         movies: [],
         shows: [],
         actors: [],
+        books: [],
         error: '',
       })
 
@@ -1627,6 +1965,7 @@ function App() {
             movies: Array.isArray(payload.movies) ? payload.movies.map(mapMovieRowToCard) : [],
             shows: Array.isArray(payload.shows) ? payload.shows.map(mapTvRowToCard) : [],
             actors: Array.isArray(payload.actors) ? payload.actors.map(mapSearchActorPayload) : [],
+            books: Array.isArray(payload.books) ? payload.books.map(mapBookRowToCard) : [],
             error: '',
           })
         }
@@ -1637,6 +1976,7 @@ function App() {
             movies: [],
             shows: [],
             actors: [],
+            books: [],
             error: error instanceof Error ? error.message : 'Unable to search right now.',
           })
         }
@@ -1719,6 +2059,28 @@ function App() {
       cancelled = true
     }
   }, [currentRoute, user])
+
+  useEffect(() => {
+    if (currentRoute.kind !== routeKinds.bookDetail) {
+      setRelatedBooksState({ status: 'hidden', books: [], error: '', persistingBookId: null })
+      return
+    }
+
+    let cancelled = false
+    async function loadRelatedBooks() {
+      setRelatedBooksState({ status: 'loading', books: [], error: '', persistingBookId: null })
+      try {
+        const response = await fetch(`/api/books/${encodeURIComponent(currentRoute.bookId)}/related`)
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+        if (!cancelled) setRelatedBooksState({ status: 'success', books: Array.isArray(payload.books) ? payload.books.map(mapGoogleBookToCard) : [], error: '', persistingBookId: null })
+      } catch (error) {
+        if (!cancelled) setRelatedBooksState({ status: 'error', books: [], error: error instanceof Error ? error.message : 'Unable to load related books right now.', persistingBookId: null })
+      }
+    }
+    loadRelatedBooks()
+    return () => { cancelled = true }
+  }, [currentRoute])
 
   useEffect(() => {
     if (currentRoute.kind !== routeKinds.movieDetail) {
@@ -2026,6 +2388,45 @@ function App() {
       cancelled = true
     }
   }, [activeView, popularMoviesPage])
+
+  useEffect(() => {
+    if (activeView !== primaryViews.books) return
+    let cancelled = false
+    async function loadBooks() {
+      setBooksState(createBookCollectionLoadingState(booksPage))
+      try {
+        const response = await fetch(buildMoviesApiPath('/api/books', booksPage))
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+        if (!cancelled) setBooksState({ status: 'success', books: Array.isArray(payload.books) ? payload.books.map(mapBookRowToCard) : [], pagination: mapPaginationPayload(payload.pagination, booksPage), error: '' })
+      } catch (error) {
+        if (!cancelled) setBooksState({ status: 'error', books: [], pagination: createPaginationState(booksPage), error: error instanceof Error ? error.message : 'Unable to load books right now.' })
+      }
+    }
+    loadBooks()
+    return () => { cancelled = true }
+  }, [activeView, booksPage])
+
+  useEffect(() => {
+    if (currentRoute.kind !== routeKinds.bookDetail) {
+      setBookDetailState({ status: 'hidden', book: null, error: '' })
+      return
+    }
+    let cancelled = false
+    async function loadBookDetail() {
+      setBookDetailState({ status: 'loading', book: null, error: '' })
+      try {
+        const response = await fetch(`/api/books/${encodeURIComponent(currentRoute.bookId)}`, { headers: buildAuthHeaders(user) })
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+        if (!cancelled) setBookDetailState({ status: 'success', book: mapBookDetailPayload(payload.book), error: '' })
+      } catch (error) {
+        if (!cancelled) setBookDetailState({ status: 'error', book: null, error: error instanceof Error ? error.message : 'Unable to load the book detail right now.' })
+      }
+    }
+    loadBookDetail()
+    return () => { cancelled = true }
+  }, [currentRoute, user])
 
   useEffect(() => {
     if (activeView !== primaryViews.home) {
@@ -2509,7 +2910,38 @@ function App() {
     }
   }, [activeView, genreMoviesPage, moviesScreenMode, selectedGenre, user])
 
+  useEffect(() => {
+    if (currentRoute.kind !== routeKinds.authorDetail) {
+      setAuthorDetailState({ status: 'hidden', author: null, books: [], error: '' })
+      return
+    }
+
+    let cancelled = false
+    async function loadAuthorDetail() {
+      setAuthorDetailState((state) => ({ ...state, status: 'loading', error: '' }))
+      try {
+        const response = await fetch(`/api/authors/${currentRoute.authorId}`)
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+        if (!cancelled) {
+          setAuthorDetailState({
+            status: 'success',
+            author: payload.author ?? null,
+            books: Array.isArray(payload.books) ? payload.books.map(mapBookRowToCard) : [],
+            error: '',
+          })
+        }
+      } catch (error) {
+        if (!cancelled) setAuthorDetailState({ status: 'error', author: null, books: [], error: error instanceof Error ? error.message : 'Unable to load this author right now.' })
+      }
+    }
+    loadAuthorDetail()
+    return () => { cancelled = true }
+  }, [currentRoute])
+
   const watchlistMovieIds = new Set(watchlistState.movies.map((movie) => Number(movie.id)))
+  const watchlistBookIds = new Set(watchlistState.books.map((book) => book.id))
+  const readBookIds = new Set(readBooksState.books.map((book) => book.id))
   const watchedMovieIds = new Set(watchedState.movies.map((movie) => Number(movie.id)))
   const homeStats = buildMoviesPageStats({
     stats: movieStatsState.stats,
@@ -2591,6 +3023,7 @@ function App() {
               user={user}
             />
             <MobileHeader
+              onOpenAccount={handleOpenAccount}
               onOpenLogin={handleOpenLogin}
               searchError={searchError}
               searchInput={searchInput}
@@ -2624,10 +3057,14 @@ function App() {
                 query={currentRoute.query}
                 searchResultsState={searchResultsState}
                 tmdbSearchState={tmdbSearchState}
+                googleBooksSearchState={googleBooksSearchState}
                 onSearchTmdb={handleSearchTmdb}
+                onSearchGoogleBooks={handleSearchGoogleBooks}
                 onOpenMovie={handleOpenMovieDetail}
                 onOpenTvShow={handleOpenTvDetail}
                 onOpenPerson={handleOpenPersonDetail}
+                onOpenBook={handleOpenBookDetail}
+                onOpenGoogleBook={handleOpenGoogleBookDetail}
                 watchedMovieIds={watchedMovieIds}
                 watchlistMovieIds={watchlistMovieIds}
                 watchedTvIds={tvWatchedIds}
@@ -2679,6 +3116,7 @@ function App() {
                 movieStats={movieStatsState.stats}
                 movieStatsStatus={movieStatsState.status}
                 watchedState={watchedState}
+                readBooksState={readBooksState}
                 tvWatchedHistoryState={tvWatchedHistoryState}
                 isSignedIn={Boolean(user)}
                 statsPeriod={statsPeriod}
@@ -2686,10 +3124,13 @@ function App() {
                 tvStatsStatus={tvStatsState.status}
                 onStatsPeriodChange={setStatsPeriod}
                 insightsState={statsInsightsState}
+                bookStatsState={bookStatsState}
+                bookAchievementsState={bookAchievementsState}
                 achievementsState={achievementsState}
                 onOpenMovie={handleOpenMovieDetail}
                 onOpenPerson={handleOpenPersonDetail}
                 onOpenTvShow={handleOpenTvDetail}
+                onOpenBook={handleOpenBookDetail}
                 achievements={achievementsState.achievements}
                 onOpenAchievements={() => setActiveView(primaryViews.achievements)}
               />
@@ -2720,10 +3161,13 @@ function App() {
                 onOpenLogin={handleOpenLogin}
                 onOpenMovie={handleOpenMovieDetail}
                 onOpenTvShow={handleOpenTvDetail}
+                onOpenBook={handleOpenBookDetail}
                 onOpenPerson={handleOpenPersonDetail}
                 favoriteActorsState={favoriteActorsState}
+                favoriteAuthorsState={favoriteAuthorsState}
                 watchlistState={watchlistState}
                 tvWatchlistShows={tvWatchlistShows}
+                onOpenAuthor={handleOpenAuthorDetail}
               />
             ) : activeView === primaryViews.tvShows ? (
               <TvShowsScreen
@@ -2751,6 +3195,38 @@ function App() {
                 statsPeriod={statsPeriod}
                 onStatsPeriodChange={setStatsPeriod}
               />
+            ) : currentRoute.kind === routeKinds.bookDetail ? (
+              <BookDetailPage
+                bookDetailState={bookDetailState}
+                relatedBooksState={relatedBooksState}
+                onBack={() => handleMovieViewSelection(primaryViews.books)}
+                onToggleWatchlist={handleToggleBookInWatchlist}
+                onToggleRead={handleToggleBookRead}
+                onMarkUnread={handleMarkBookUnread}
+                onSubmitRating={handleSubmitBookRating}
+                onOpenLogin={handleOpenLogin}
+                isSignedIn={Boolean(user)}
+                isInWatchlist={watchlistBookIds.has(bookDetailState.book?.id)}
+                isRead={readBookIds.has(bookDetailState.book?.id)}
+                readBook={readBooksState.books.find((book) => book.id === bookDetailState.book?.id) ?? null}
+                watchlistActionState={bookWatchlistActionState}
+                readActionState={bookReadActionState}
+                ratingActionState={bookRatingActionState}
+                onOpenRelatedBook={handleOpenRelatedBookDetail}
+                onOpenAuthor={handleOpenAuthorDetail}
+              />
+            ) : currentRoute.kind === routeKinds.authorDetail ? (
+              <AuthorDetailPage
+                authorDetailState={authorDetailState}
+                onBack={() => handleMovieViewSelection(primaryViews.books)}
+                onOpenBook={handleOpenBookDetail}
+                onOpenLogin={handleOpenLogin}
+                isSignedIn={Boolean(user)}
+                favoriteAuthorIds={new Set(favoriteAuthorsState.authors.map((author) => Number(author.id)))}
+                onToggleFavorite={handleToggleFavoriteAuthor}
+              />
+            ) : activeView === primaryViews.books ? (
+              <BooksScreen booksState={booksState} onPageChange={setBooksPage} onOpenBook={handleOpenBookDetail} />
             ) : currentRoute.kind === routeKinds.personDetail ? (
               <PersonDetailPage
                 personDetailState={personDetailState}
@@ -2821,6 +3297,7 @@ function App() {
         )}
       </main>
       {achievementToast ? <div className="achievement-toast" role="status"><TrophyIcon /><div><b>Achievement unlocked</b><span>{achievementToast.name}</span></div></div> : null}
+      {bookReadingFormatDialogBook ? <BookReadingFormatDialog book={bookReadingFormatDialogBook} isSaving={bookReadActionState.status === 'loading' && bookReadActionState.bookId === bookReadingFormatDialogBook.id} onCancel={() => setBookReadingFormatDialogBook(null)} onSelect={(readingFormat, metadata) => handleToggleBookRead({ ...bookReadingFormatDialogBook, metadata }, readingFormat)} /> : null}
     </div>
   )
 }
@@ -2878,13 +3355,13 @@ function DesktopTopbar({ alertsState, onOpenAdmin, onOpenAccount, onOpenAlert, o
   return (
     <header className="topbar desktop-only">
       <form className="topbar-search" onSubmit={(event) => { event.preventDefault(); onSearchSubmit() }}>
-        <label className="searchbar" aria-label="Search movies, shows, and actors">
+        <label className="searchbar" aria-label="Search movies, shows, books, and actors">
           <SearchIcon />
           <input
             type="text"
             value={searchInput}
             onChange={(event) => onSearchInputChange(event.target.value)}
-            placeholder="Search movies, shows, actors..."
+            placeholder="Search movies, shows, books, actors..."
             aria-invalid={Boolean(searchError)}
             aria-describedby={searchError ? 'desktop-search-error' : undefined}
           />
@@ -2946,7 +3423,7 @@ function DesktopTopbar({ alertsState, onOpenAdmin, onOpenAccount, onOpenAlert, o
   )
 }
 
-function MobileHeader({ alertsState, onOpenAlert, onOpenAlerts, onOpenLogin, onSearchInputChange, onSearchSubmit, searchError, searchInput, user }) {
+function MobileHeader({ alertsState, onOpenAccount, onOpenAlert, onOpenAlerts, onOpenLogin, onSearchInputChange, onSearchSubmit, searchError, searchInput, user }) {
   const [searchOpen, setSearchOpen] = useState(false)
 
   return (
@@ -2960,7 +3437,7 @@ function MobileHeader({ alertsState, onOpenAlert, onOpenAlerts, onOpenLogin, onS
           </button>
           <AlertInbox alertsState={alertsState} onOpenAlert={onOpenAlert} onOpenAlerts={onOpenAlerts} onOpenLogin={onOpenLogin} user={user} />
           {user ? (
-            <button type="button" className="avatar-button" aria-label={user.fullName}>
+            <button type="button" className="avatar-button" aria-label={`Open ${user.fullName}'s profile`} onClick={onOpenAccount}>
               <div className="avatar small">{getUserInitial(user.fullName)}</div>
             </button>
           ) : (
@@ -2973,9 +3450,9 @@ function MobileHeader({ alertsState, onOpenAlert, onOpenAlerts, onOpenLogin, onS
 
       {searchOpen ? (
         <form className="mobile-search-form" onSubmit={(event) => { event.preventDefault(); if (onSearchSubmit()) setSearchOpen(false) }}>
-          <label className="searchbar" aria-label="Search movies, shows, and actors">
+          <label className="searchbar" aria-label="Search movies, shows, books, and actors">
             <SearchIcon />
-            <input type="text" autoFocus value={searchInput} onChange={(event) => onSearchInputChange(event.target.value)} placeholder="Search movies, shows, actors..." aria-invalid={Boolean(searchError)} aria-describedby={searchError ? 'mobile-search-error' : undefined} />
+            <input type="text" autoFocus value={searchInput} onChange={(event) => onSearchInputChange(event.target.value)} placeholder="Search movies, shows, books, actors..." aria-invalid={Boolean(searchError)} aria-describedby={searchError ? 'mobile-search-error' : undefined} />
           </label>
           <button type="submit" className="search-submit-button">Search</button>
           {searchError ? <span id="mobile-search-error" className="search-error" role="alert">{searchError}</span> : null}
@@ -3027,8 +3504,12 @@ function AlertInbox({ alertsState, onOpenAlert, onOpenAlerts, onOpenLogin, user 
 }
 
 function SearchResultsPage({
+  googleBooksSearchState,
+  onOpenBook,
+  onOpenGoogleBook,
   onOpenMovie,
   onOpenPerson,
+  onSearchGoogleBooks,
   onSearchTmdb,
   onOpenTvShow,
   query,
@@ -3045,7 +3526,7 @@ function SearchResultsPage({
         <div className="search-results-heading">
           <p className="eyebrow">Search</p>
           <h1>Find something to watch</h1>
-          <p>Enter a movie, show, or actor in the search field above.</p>
+          <p>Enter a movie, show, book, or actor in the search field above.</p>
         </div>
       </section>
     )
@@ -3054,9 +3535,12 @@ function SearchResultsPage({
   const isLoading = searchResultsState.status === 'loading' || searchResultsState.status === 'idle'
   const hasError = searchResultsState.status === 'error'
   const isTmdbLoading = tmdbSearchState.status === 'loading'
+  const isGoogleBooksLoading = googleBooksSearchState.status === 'loading'
   const showingTmdbResults = tmdbSearchState.status === 'success'
+  const showingGoogleBooksResults = googleBooksSearchState.status === 'success'
   const titleMovies = showingTmdbResults ? tmdbSearchState.movies : searchResultsState.movies
   const titleShows = showingTmdbResults ? tmdbSearchState.shows : searchResultsState.shows
+  const titleBooks = showingGoogleBooksResults ? googleBooksSearchState.books : searchResultsState.books
 
   return (
     <section className="search-results-page">
@@ -3067,7 +3551,11 @@ function SearchResultsPage({
           <button type="button" className="search-tmdb-button" onClick={onSearchTmdb} disabled={isTmdbLoading}>
             {isTmdbLoading ? 'Searching TMDB…' : 'Search TMDB'}
           </button>
+          <button type="button" className="search-tmdb-button" onClick={onSearchGoogleBooks} disabled={isGoogleBooksLoading}>
+            {isGoogleBooksLoading ? 'Searching Google Books…' : 'Search Google Books'}
+          </button>
           {tmdbSearchState.status === 'error' ? <p className="tmdb-search-error" role="alert">Could not search TMDB. {tmdbSearchState.error}</p> : null}
+          {googleBooksSearchState.status === 'error' || googleBooksSearchState.error ? <p className="tmdb-search-error" role="alert">Could not search or save from Google Books. {googleBooksSearchState.error}</p> : null}
         </div>
       </div>
 
@@ -3080,6 +3568,12 @@ function SearchResultsPage({
       <SearchResultGroup title={showingTmdbResults ? 'TMDB TV Shows' : 'TV Shows'} isLoading={isLoading || isTmdbLoading} error={hasError ? searchResultsState.error : ''} items={titleShows} emptyMessage={showingTmdbResults ? 'No TMDB TV shows matched this search.' : 'No TV shows matched this search.'}>
         <div className="tv-show-card-grid popular-movies-catalog">
           {titleShows.map((show) => <TvShowPosterCard key={show.id} show={show} onSelectShow={onOpenTvShow} isWatched={watchedTvIds.has(Number(show.id))} isInWatchlist={watchlistTvIds.has(Number(show.id))} />)}
+        </div>
+      </SearchResultGroup>
+
+      <SearchResultGroup title={showingGoogleBooksResults ? 'Google Books' : 'Books'} isLoading={isLoading || isGoogleBooksLoading} error={hasError ? searchResultsState.error : ''} items={titleBooks} emptyMessage={showingGoogleBooksResults ? 'No Google Books matched this search.' : 'No locally stored books matched this search.'}>
+        <div className="movie-card-grid popular-movies-catalog">
+          {titleBooks.map((book) => <BookCard key={book.id} book={book} onOpenBook={showingGoogleBooksResults ? onOpenGoogleBook : onOpenBook} disabled={googleBooksSearchState.persistingBookId === book.id} />)}
         </div>
       </SearchResultGroup>
 
@@ -3285,6 +3779,11 @@ function AdminScreen({ adminOverviewState, adminRunState, onBack, onRunJob }) {
           <span>Total Movies Stored</span>
           <strong>{adminOverviewState.status === 'success' ? formatAdminTotal(adminOverviewState.totalMovies) : '--'}</strong>
           <p>Imported movies currently available in the local database.</p>
+        </article>
+        <article className="admin-summary-card">
+          <span>Total Books Stored</span>
+          <strong>{adminOverviewState.status === 'success' ? formatAdminTotal(adminOverviewState.totalBooks) : '--'}</strong>
+          <p>Imported books currently available in the local database.</p>
         </article>
         <article className="admin-summary-card">
           <span>Total TV Shows Stored</span>
@@ -3741,6 +4240,156 @@ function MoviesScreen({
   )
 }
 
+function BooksScreen({ booksState, onPageChange, onOpenBook }) {
+  return (
+    <section className="movies-page">
+      <div className="movies-heading"><h1>Books</h1><p>Discover books imported from your local catalog.</p></div>
+      <ContentSection title="Books">
+        <BooksGrid booksState={booksState} onOpenBook={onOpenBook} />
+        <PaginationControls pagination={booksState.pagination} onPageChange={onPageChange} />
+      </ContentSection>
+    </section>
+  )
+}
+
+function BooksGrid({ booksState, onOpenBook }) {
+  if (booksState.status === 'loading' || booksState.status === 'idle') return <SectionMessage message="Loading books from your local database..." />
+  if (booksState.status === 'error') return <SectionMessage message={`Could not load books. ${booksState.error}`} tone="error" />
+  if (booksState.books.length === 0) return <SectionMessage message="No books are available in the local database yet." />
+  return <div className="movie-card-grid popular-movies-catalog" aria-label="Books catalog">{booksState.books.map((book) => <BookCard key={book.id} book={book} onOpenBook={onOpenBook} />)}</div>
+}
+
+function AuthorDetailPage({ authorDetailState, onBack, onOpenBook, onOpenLogin, isSignedIn, favoriteAuthorIds, onToggleFavorite }) {
+  if (authorDetailState.status === 'loading' || authorDetailState.status === 'idle') return <section className="person-detail-page"><SectionMessage message="Loading author detail from your local catalog..." /></section>
+  if (authorDetailState.status === 'error') return <section className="person-detail-page"><SectionMessage message={`Could not load the author detail. ${authorDetailState.error}`} tone="error" /></section>
+  const author = authorDetailState.author
+  if (!author) return <section className="person-detail-page"><SectionMessage message="Author detail is not available yet." /></section>
+  const isFavorite = favoriteAuthorIds.has(Number(author.id))
+  return (
+    <section className="person-detail-page author-detail-page">
+      <button type="button" className="movie-detail-back" onClick={onBack} aria-label="Back to Books"><ChevronLeftIcon /></button>
+      <article className="person-detail-hero author-detail-hero">
+        <div className="person-detail-portrait-wrap"><div className="person-detail-portrait author-detail-portrait"><span>{getMovieCreditInitials(author.name)}</span></div></div>
+        <div className="person-detail-main">
+          <div className="person-detail-title-row"><h1>{author.name}</h1></div>
+          <div className="person-detail-role-list"><span>Author</span></div>
+          <div className="person-detail-stat-row"><MetricBadge icon={BookmarkIcon} value={String(authorDetailState.books.length)} label="Catalog Books" tone="violet" /></div>
+          <p className="person-detail-summary">Browse books by {author.name} available in your local catalog.</p>
+          <div className="movie-detail-actions">
+            <button type="button" className="secondary-button movie-detail-secondary" onClick={() => isSignedIn ? onToggleFavorite(author) : onOpenLogin()}>
+              <StarOutlineIcon /><span>{isFavorite ? 'Favorited' : isSignedIn ? 'Favorite' : 'Sign in to Favorite'}</span>
+            </button>
+          </div>
+        </div>
+      </article>
+      <section className="content-section movie-detail-panel">
+        <div className="section-header"><h2>Books by {author.name}</h2></div>
+        {authorDetailState.books.length > 0 ? <div className="movie-card-grid popular-movies-catalog">{authorDetailState.books.map((book) => <BookCard key={book.id} book={book} onOpenBook={onOpenBook} />)}</div> : <SectionMessage message="No books by this author are in the local catalog yet." />}
+      </section>
+    </section>
+  )
+}
+
+function BookCard({ book, disabled = false, onOpenBook }) {
+  const [coverUnavailable, setCoverUnavailable] = useState(false)
+  return (
+    <button type="button" className="movie-card movie-card-button" onClick={() => onOpenBook(book)} aria-label={`Open ${book.title}`} disabled={disabled}>
+      <div className={`movie-card-poster ${book.coverUrl && !coverUnavailable ? 'has-image' : 'theme-catalog'}`}>
+        {book.coverUrl && !coverUnavailable ? <img src={book.coverUrl} alt={`${book.title} cover`} className="movie-card-poster-image" loading="lazy" onError={() => setCoverUnavailable(true)} /> : null}
+      </div>
+      <div className="movie-card-copy"><h3>{book.title}</h3><p>{book.authorsLabel}</p><div className="rating-row"><span>{book.year}</span><span>{book.categoriesLabel}</span></div></div>
+    </button>
+  )
+}
+
+function BookDetailPage({ bookDetailState, relatedBooksState, onBack, onToggleWatchlist, onToggleRead, onMarkUnread, onSubmitRating, onOpenLogin, isSignedIn, isInWatchlist, isRead, readBook, watchlistActionState, readActionState, ratingActionState, onOpenRelatedBook, onOpenAuthor }) {
+  const [isRatingDialogOpen, setIsRatingDialogOpen] = useState(false)
+  const [selectedRating, setSelectedRating] = useState(5)
+  if (bookDetailState.status === 'loading' || bookDetailState.status === 'idle') return <section className="movie-detail-page"><SectionMessage message="Loading book detail from your local database..." /></section>
+  if (bookDetailState.status === 'error') return <section className="movie-detail-page"><SectionMessage message={`Could not load the book detail. ${bookDetailState.error}`} tone="error" /></section>
+  const book = bookDetailState.book
+  if (!book) return <section className="movie-detail-page"><SectionMessage message="Book detail is not available yet." /></section>
+  const isUpdatingWatchlist = watchlistActionState.status === 'loading' && watchlistActionState.bookId === book.id
+  const isUpdatingRead = readActionState.status === 'loading' && readActionState.bookId === book.id
+  const communityRating = book.communityRating ?? emptyCommunityRating
+  const isRatingSaving = ratingActionState.status === 'loading' && ratingActionState.bookId === book.id
+  const selectedReadingDetails = getSelectedReadingDetails(readBook?.completionMetadata)
+  return (
+    <section className="movie-detail-page">
+      <button type="button" className="movie-detail-back" onClick={onBack} aria-label="Back to Books"><ChevronLeftIcon /></button>
+      <article className="movie-detail-hero">
+        <div className="movie-detail-poster-wrap"><div className={`movie-card-poster ${book.coverUrl ? 'has-image' : 'theme-catalog'}`}>{book.coverUrl ? <img src={book.coverUrl} alt={`${book.title} cover`} className="movie-card-poster-image" /> : null}</div></div>
+        <div className="movie-detail-main">
+          <h1>{book.title}</h1>
+          <div className="movie-detail-meta">
+            {book.authorProfiles?.length > 0 ? book.authorProfiles.map((author) => <button key={author.id} type="button" className="book-author-link" onClick={() => onOpenAuthor(author)}>{author.name}</button>) : <span>{book.authorsLabel}</span>}
+            <span>{book.publishedDate || 'Publication date TBA'}</span><span>{book.languageLabel}</span>
+          </div>
+          <div className="movie-detail-score-row"><MetricBadge icon={UserRatingIcon} value={formatCommunityRating(communityRating.average)} label={`${communityRating.voteCount} ${communityRating.voteCount === 1 ? 'vote' : 'votes'}`} tone="violet" /></div>
+          <div className="movie-detail-actions">
+            <button
+              type="button"
+              className={`primary-button movie-detail-primary${isInWatchlist ? ' is-active' : ''}`}
+              onClick={() => isSignedIn ? onToggleWatchlist(book) : onOpenLogin()}
+              disabled={isUpdatingWatchlist || isRead}
+            >
+              <PlusIcon />
+              <span>{isUpdatingWatchlist ? 'Updating...' : isRead ? 'Read' : isInWatchlist ? 'In Watchlist' : 'Add to Watchlist'}</span>
+            </button>
+            <button type="button" className={`secondary-button movie-detail-secondary${isRead ? ' is-active' : ''}`} onClick={() => isSignedIn ? onToggleRead(book) : onOpenLogin()} disabled={isUpdatingRead}>
+              <CheckIcon />
+              <span>{isUpdatingRead ? 'Updating...' : isRead ? 'Log reread' : 'Mark as Read'}</span>
+            </button>
+            {isRead ? <button type="button" className="secondary-button movie-detail-secondary ghost" onClick={() => onMarkUnread(book)} disabled={isUpdatingRead}><span>Mark unread</span></button> : null}
+            <button type="button" className="secondary-button movie-detail-secondary ghost" onClick={() => { if (!isSignedIn) return onOpenLogin(); setSelectedRating(communityRating.yourScore ?? 5); setIsRatingDialogOpen(true) }}>
+              <StarOutlineIcon />
+              <span>{communityRating.yourScore === null ? 'Rate' : 'Update Rating'}</span>
+            </button>
+          </div>
+          {isRead ? <><p className="movie-detail-summary">Read on {formatLongDate(readBook?.readAt)}</p>{selectedReadingDetails.length > 0 ? <div className="book-detail-tropes"><span>Your selections</span><div>{selectedReadingDetails.map((detail) => <span key={detail} className="book-detail-trope">{detail}</span>)}</div></div> : null}</> : null}
+          {watchlistActionState.status === 'error' && watchlistActionState.bookId === book.id ? <p className="tmdb-search-error" role="alert">{watchlistActionState.error}</p> : null}
+          {readActionState.status === 'error' && readActionState.bookId === book.id ? <p className="tmdb-search-error" role="alert">{readActionState.error}</p> : null}
+          {ratingActionState.status === 'error' && ratingActionState.bookId === book.id ? <p className="tmdb-search-error" role="alert">{ratingActionState.error}</p> : null}
+          <div className="movie-detail-facts">
+            <div><span>Categories</span><strong>{book.categoriesLabel}</strong></div>
+            <div><span>Publisher</span><strong>{book.publisher || 'TBA'}</strong></div>
+            <div><span>Pages</span><strong>{book.pageCount ? String(book.pageCount) : 'TBA'}</strong></div>
+            <div><span>ISBN-10</span><strong>{book.isbn10 || 'TBA'}</strong></div>
+            <div><span>ISBN-13</span><strong>{book.isbn13 || 'TBA'}</strong></div>
+            <div><span>Your Rating</span><strong>{formatCommunityRating(communityRating.yourScore)}</strong></div>
+          </div>
+        </div>
+        <p className="book-detail-description">{book.description || 'Description not available yet.'}</p>
+      </article>
+      <section className="content-section movie-detail-panel book-detail-related">
+        <div className="section-header"><h2>Related books</h2></div>
+        <RelatedBooksSlider relatedBooksState={relatedBooksState} onOpenBook={onOpenRelatedBook} />
+      </section>
+      {isRatingDialogOpen ? <MovieRatingDialog movie={book} selectedRating={selectedRating} onSelectRating={setSelectedRating} onCancel={() => setIsRatingDialogOpen(false)} onSubmit={async () => { if (await onSubmitRating(book, selectedRating)) setIsRatingDialogOpen(false) }} isSaving={isRatingSaving} error={ratingActionState.status === 'error' && ratingActionState.bookId === book.id ? ratingActionState.error : ''} /> : null}
+    </section>
+  )
+}
+
+function RelatedBooksSlider({ relatedBooksState, onOpenBook }) {
+  if (relatedBooksState.status === 'loading' || relatedBooksState.status === 'idle') return <SectionMessage message="Loading related books from Google Books..." />
+  if (relatedBooksState.status === 'error') return <SectionMessage message={`Could not load related books. ${relatedBooksState.error}`} tone="error" />
+  if (relatedBooksState.books.length === 0) return <SectionMessage message="No related books are available for this category." />
+
+  return (
+    <div className="movie-detail-similar" aria-label="Related books">
+      {relatedBooksState.books.map((book) => {
+        const isPersisting = relatedBooksState.persistingBookId === book.id
+        return (
+          <button key={book.id} type="button" className="movie-detail-similar-card book-detail-related-card" onClick={() => onOpenBook(book)} disabled={Boolean(relatedBooksState.persistingBookId)}>
+            <div className={`movie-detail-similar-poster ${book.coverUrl ? 'has-image' : 'theme-catalog'}`}>{book.coverUrl ? <img src={book.coverUrl} alt={`${book.title} cover`} /> : null}</div>
+            <div className="movie-detail-similar-copy"><span>{book.authorsLabel}</span><strong>{isPersisting ? 'Opening...' : book.title}</strong><span>{book.year}</span></div>
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 function ContinueWatchingPage({ isSignedIn, pageState, onOpenLogin, onOpenTvShow, onPageChange }) {
   if (!isSignedIn) {
     return (
@@ -3975,11 +4624,14 @@ function WatchlistScreen({
   onOpenMovie,
   onOpenPerson,
   onOpenTvShow,
+  onOpenBook,
   favoriteActorsState,
+  favoriteAuthorsState,
   watchlistState,
   tvWatchlistShows,
+  onOpenAuthor,
 }) {
-  const allItems = [...watchlistState.movies, ...tvWatchlistShows]
+  const allItems = [...watchlistState.movies, ...tvWatchlistShows, ...watchlistState.books]
   const filteredItems = getFilteredWatchlistItems({
     items: allItems,
     activeTab,
@@ -4010,7 +4662,7 @@ function WatchlistScreen({
       <div className="watchlist-hero">
         <div className="watchlist-heading">
           <h1>My Watchlist</h1>
-          <p>Organize everything you want to watch next.</p>
+          <p>Organize everything you want to watch or read next.</p>
         </div>
 
         <section className="watchlist-stats-panel" aria-label="Watchlist summary">
@@ -4018,7 +4670,9 @@ function WatchlistScreen({
             { label: 'Total', value: String(allItems.length), caption: 'In Watchlist' },
             { label: 'Movies', value: String(watchlistState.movies.length), caption: 'Titles' },
             { label: 'TV Shows', value: String(tvWatchlistShows.length), caption: 'Series' },
+            { label: 'Books', value: String(watchlistState.books.length), caption: 'Titles' },
             { label: 'Actors', value: String(favoriteActorsState.actors.length), caption: 'Favorites' },
+            { label: 'Authors', value: String(favoriteAuthorsState.authors.length), caption: 'Favorites' },
           ].map((item) => (
             <article key={item.label} className={`watchlist-stat${item.accent ? ' accent' : ''}`}>
               <span>{item.label}</span>
@@ -4046,10 +4700,19 @@ function WatchlistScreen({
         <div className="favorite-actors-grid">
           {favoriteActorsState.actors.map((actor) => <FavoriteActorCard key={actor.id} actor={actor} onOpenPerson={onOpenPerson} />)}
         </div>
+      ) : activeTab === 'Authors' ? (
+        <div className="favorite-actors-grid">
+          {favoriteAuthorsState.authors.map((author) => <FavoriteAuthorCard key={author.id} author={author} onOpenAuthor={onOpenAuthor} />)}
+        </div>
       ) : (
         <div className="watchlist-grid-mobile">
           {filteredItems.map((item) => (
-            <WatchlistCard key={`${item.type}-${item.id}`} item={item} compact onOpenMovie={item.type === 'TV Shows' ? onOpenTvShow : onOpenMovie} />
+            <WatchlistCard
+              key={`${item.type}-${item.id}`}
+              item={item}
+              compact
+              onOpenItem={item.type === 'TV Shows' ? onOpenTvShow : item.type === 'Books' ? onOpenBook : onOpenMovie}
+            />
           ))}
         </div>
       )}
@@ -4058,10 +4721,15 @@ function WatchlistScreen({
       {watchlistState.status === 'error' ? <SectionMessage message={watchlistState.error} tone="error" /> : null}
       {activeTab === 'Actors' && favoriteActorsState.status === 'loading' ? <SectionMessage message="Loading favorite actors..." /> : null}
       {activeTab === 'Actors' && favoriteActorsState.status === 'error' ? <SectionMessage message={favoriteActorsState.error} tone="error" /> : null}
+      {activeTab === 'Authors' && favoriteAuthorsState.status === 'loading' ? <SectionMessage message="Loading favorite authors..." /> : null}
+      {activeTab === 'Authors' && favoriteAuthorsState.status === 'error' ? <SectionMessage message={favoriteAuthorsState.error} tone="error" /> : null}
       {activeTab === 'Actors' && favoriteActorsState.status !== 'loading' && favoriteActorsState.status !== 'error' && favoriteActorsState.actors.length === 0
         ? <SectionMessage message="Favorite actors will appear here." />
         : null}
-      {activeTab !== 'Actors' && watchlistState.status !== 'loading' && watchlistState.status !== 'error' && filteredItems.length === 0
+      {activeTab === 'Authors' && favoriteAuthorsState.status !== 'loading' && favoriteAuthorsState.status !== 'error' && favoriteAuthorsState.authors.length === 0
+        ? <SectionMessage message="Favorite authors will appear here." />
+        : null}
+      {activeTab !== 'Actors' && activeTab !== 'Authors' && watchlistState.status !== 'loading' && watchlistState.status !== 'error' && filteredItems.length === 0
         ? <SectionMessage message="No watchlist titles match this section yet." />
         : null}
     </section>
@@ -4078,6 +4746,15 @@ function FavoriteActorCard({ actor, onOpenPerson }) {
         {showImage ? <img src={actor.profileUrl} alt={`${actor.name} portrait`} loading="lazy" onError={() => setImageUnavailable(true)} /> : <span>{getMovieCreditInitials(actor.name)}</span>}
       </div>
       <div><h2>{actor.name}</h2><p>{actor.role || 'Actor'}</p></div>
+    </button>
+  )
+}
+
+function FavoriteAuthorCard({ author, onOpenAuthor }) {
+  return (
+    <button type="button" className="favorite-actor-card favorite-author-card" onClick={() => onOpenAuthor(author)} aria-label={`Open ${author.name}`}>
+      <div className="favorite-actor-portrait"><span>{getMovieCreditInitials(author.name)}</span></div>
+      <div><h2>{author.name}</h2><p>Author</p></div>
     </button>
   )
 }
@@ -4370,7 +5047,7 @@ function TvDetailPage({ tvDetailState, tvReviewsState, onBackToTv, onToggleWatch
   </section>
 }
 
-function WatchlistCard({ item, compact = false, onOpenMovie }) {
+function WatchlistCard({ item, compact = false, onOpenItem }) {
   const [posterUnavailable, setPosterUnavailable] = useState(false)
   const showPoster = Boolean(item.posterUrl) && !posterUnavailable
 
@@ -4378,7 +5055,7 @@ function WatchlistCard({ item, compact = false, onOpenMovie }) {
     <button
       type="button"
       className={`watchlist-card watchlist-card-button${compact ? ' compact' : ''}`}
-      onClick={() => onOpenMovie(item)}
+      onClick={() => onOpenItem(item)}
       aria-label={`Open ${item.title}`}
     >
       <div className={`watchlist-poster accent-${item.accent}${showPoster ? ' has-image' : ''}`}>
@@ -4410,6 +5087,8 @@ function WatchlistCard({ item, compact = false, onOpenMovie }) {
             </div>
             <strong>{item.progressLabel}</strong>
           </div>
+        ) : item.type === 'Books' ? (
+          <div className="watchlist-card-footer"><span>{item.categoriesLabel}</span></div>
         ) : (
           <div className="watchlist-card-footer">
             <span className="star-rating">
@@ -4874,6 +5553,33 @@ function WatchServiceDialog({ title, onCancel, onSelect }) {
   </div>
 }
 
+function BookReadingFormatDialog({ book, isSaving, onCancel, onSelect }) {
+  const [readingFormat, setReadingFormat] = useState('')
+  const [metadata, setMetadata] = useState({})
+  const [tropes, setTropes] = useState('')
+  useEffect(() => {
+    function handleKeyDown(event) {
+      if (event.key === 'Escape' && !isSaving) onCancel()
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [isSaving, onCancel])
+
+  return <div className="movie-rating-dialog-backdrop" role="presentation" onMouseDown={isSaving ? undefined : onCancel}>
+    <section className="movie-rating-dialog" role="dialog" aria-modal="true" aria-labelledby="book-reading-format-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
+      <p className="movie-rating-dialog-kicker">Reading format</p>
+      <h2 id="book-reading-format-dialog-title">What format did you read {book.title} in?</h2>
+      <p>Choose a format and optionally record details that count toward your book achievements.</p>
+      <div className="movie-rating-options" role="radiogroup" aria-label="Reading format">
+        {[['physical', 'Physical'], ['ebook', 'Ebook'], ['audiobook', 'Audiobook']].map(([value, label]) => <button key={value} type="button" className={`movie-rating-option${readingFormat === value ? ' selected' : ''}`} role="radio" aria-checked={readingFormat === value} onClick={() => setReadingFormat(value)} disabled={isSaving}>{label}</button>)}
+      </div>
+      <div className="book-completion-checklist">{bookCompletionFields.map(([key, label]) => <label key={key}><input type="checkbox" checked={Boolean(metadata[key])} onChange={(event) => setMetadata((state) => ({ ...state, [key]: event.target.checked }))} />{label}</label>)}</div>
+      <input className="book-completion-tropes" value={tropes} maxLength={300} placeholder="Tropes (optional, comma separated)" onChange={(event) => setTropes(event.target.value)} />
+      <div className="movie-rating-dialog-actions"><button type="button" className="secondary-button" onClick={onCancel} disabled={isSaving}>Cancel</button><button type="button" className="primary-button" onClick={() => onSelect(readingFormat, { ...metadata, tropes: tropes.split(',').map((item) => item.trim()).filter(Boolean) })} disabled={isSaving || !readingFormat}><CheckIcon /><span>{isSaving ? 'Saving...' : 'Save'}</span></button></div>
+    </section>
+  </div>
+}
+
 function MovieRatingDialog({ movie, selectedRating, onSelectRating, onCancel, onSubmit, isSaving, error, kicker = 'Your WatchVault Rating', cancelLabel = 'Cancel' }) {
   return (
     <div className="movie-rating-dialog-backdrop" role="presentation" onMouseDown={isSaving ? undefined : onCancel}>
@@ -5201,18 +5907,23 @@ function StatsAchievementsTab({ isSignedIn, state }) {
   return <section className="stats-achievements-tab">{sections.map((section) => <section className="stats-achievement-section" key={section.title}><div className="stats-watched-movies-heading"><div><h2>{section.title}</h2><p>{section.description}</p></div><span>{section.items.length}</span></div>{section.items.length ? <div className="achievement-grid stats-achievement-grid">{section.items.map((item) => <AchievementCard key={item.id} item={item} />)}</div> : <SectionMessage message={section.empty} />}</section>)}</section>
 }
 
+function BookAchievementsTab({ isSignedIn, state }) {
+  return <StatsAchievementsTab isSignedIn={isSignedIn} state={state} />
+}
+
 function AchievementCard({ item }) {
   const progress = item.progress ?? { current: 0, target: 0 }
   const progressPercent = Math.min(100, (Number(progress.current) / Math.max(1, Number(progress.target))) * 100)
   return <article className={`achievement-card${item.unlocked ? ' unlocked' : ''}${item.availability === 'coming_soon' ? ' coming-soon' : ''}`}><div className="achievement-card-icon">{item.unlocked ? <TrophyIcon /> : <LockIcon />}</div><div><span className="achievement-category">{item.category} · {item.rarity}</span><h2>{item.name}</h2><p>{item.secret && !item.unlocked ? 'Keep watching to discover this secret achievement.' : item.description}</p>{item.availability === 'coming_soon' ? <em>Coming soon</em> : <><div className="achievement-progress"><i style={{ width: `${progressPercent}%` }} /></div><small>{item.unlocked ? `Unlocked ${formatLongDate(item.unlockedAt)}` : `${progress.current} / ${progress.target}`}</small></>}</div></article>
 }
 
-function StatsScreen({ movieStats, movieStatsStatus, watchedState, tvWatchedHistoryState, isSignedIn, statsPeriod, tvStats, tvStatsStatus, onStatsPeriodChange, insightsState, achievementsState, onOpenMovie, onOpenPerson, onOpenTvShow, achievements = [], onOpenAchievements }) {
+function StatsScreen({ movieStats, movieStatsStatus, watchedState, readBooksState, tvWatchedHistoryState, isSignedIn, statsPeriod, tvStats, tvStatsStatus, onStatsPeriodChange, insightsState, bookStatsState, achievementsState, bookAchievementsState, onOpenMovie, onOpenPerson, onOpenTvShow, onOpenBook, achievements = [], onOpenAchievements }) {
   const [activeTab, setActiveTab] = useState('Overview')
   const [periodOpen, setPeriodOpen] = useState(false)
   const [movieHistoryPage, setMovieHistoryPage] = useState(1)
   const [tvHistoryPage, setTvHistoryPage] = useState(1)
-  const tabs = ['Overview', 'Movies', 'TV Shows', 'Genres', 'History', 'Achievements']
+  const [bookHistoryPage, setBookHistoryPage] = useState(1)
+  const tabs = ['Overview', 'Movies', 'TV Shows', 'Books', 'Book stats', 'Book achievements', 'Achievements']
   const period = statsPeriods.find((option) => option.value === statsPeriod) ?? statsPeriods[1]
   const metricCards = buildStatsDashboardMetrics({ movieStats, tvStats })
   const isLoading = movieStatsStatus === 'loading' || tvStatsStatus === 'loading'
@@ -5242,6 +5953,15 @@ function StatsScreen({ movieStats, movieStatsStatus, watchedState, tvWatchedHist
     hasPreviousPage: tvHistoryPage > 1,
     hasNextPage: tvHistoryPage < tvHistoryPageCount,
   }
+  const readBooks = readBooksState.books
+  const bookHistoryPageCount = Math.max(1, Math.ceil(readBooks.length / statsWatchedMoviesPageSize))
+  const visibleReadBooks = readBooks.slice((bookHistoryPage - 1) * statsWatchedMoviesPageSize, bookHistoryPage * statsWatchedMoviesPageSize)
+  const bookHistoryPagination = {
+    page: bookHistoryPage,
+    pageSize: statsWatchedMoviesPageSize,
+    hasPreviousPage: bookHistoryPage > 1,
+    hasNextPage: bookHistoryPage < bookHistoryPageCount,
+  }
 
   useEffect(() => {
     setMovieHistoryPage((page) => Math.min(page, movieHistoryPageCount))
@@ -5250,6 +5970,10 @@ function StatsScreen({ movieStats, movieStatsStatus, watchedState, tvWatchedHist
   useEffect(() => {
     setTvHistoryPage((page) => Math.min(page, tvHistoryPageCount))
   }, [tvHistoryPageCount])
+
+  useEffect(() => {
+    setBookHistoryPage((page) => Math.min(page, bookHistoryPageCount))
+  }, [bookHistoryPageCount])
 
   return (
     <section className="stats-page">
@@ -5271,10 +5995,10 @@ function StatsScreen({ movieStats, movieStatsStatus, watchedState, tvWatchedHist
       </div>
 
       <div className="stats-tabs" role="tablist" aria-label="Stats categories">
-        {tabs.map((tab) => <button key={tab} type="button" role="tab" aria-selected={tab === activeTab} className={tab === activeTab ? 'active' : ''} onClick={() => { setActiveTab(tab); if (tab === 'Movies') setMovieHistoryPage(1); if (tab === 'TV Shows') setTvHistoryPage(1) }}>{tab}</button>)}
+        {tabs.map((tab) => <button key={tab} type="button" role="tab" aria-selected={tab === activeTab} className={tab === activeTab ? 'active' : ''} onClick={() => { setActiveTab(tab); if (tab === 'Movies') setMovieHistoryPage(1); if (tab === 'TV Shows') setTvHistoryPage(1); if (tab === 'Books') setBookHistoryPage(1) }}>{tab}</button>)}
       </div>
 
-      {activeTab === 'Achievements' ? <StatsAchievementsTab isSignedIn={isSignedIn} state={achievementsState} /> : activeTab === 'Movies' ? (
+      {activeTab === 'Achievements' ? <StatsAchievementsTab isSignedIn={isSignedIn} state={achievementsState} /> : activeTab === 'Book achievements' ? <BookAchievementsTab isSignedIn={isSignedIn} state={bookAchievementsState} /> : activeTab === 'Movies' ? (
         <section className="stats-watched-movies">
           <div className="stats-watched-movies-heading">
             <div>
@@ -5313,6 +6037,23 @@ function StatsScreen({ movieStats, movieStatsStatus, watchedState, tvWatchedHist
             <PaginationControls pagination={tvHistoryPagination} onPageChange={setTvHistoryPage} />
           </> : null}
         </section>
+      ) : activeTab === 'Books' ? (
+        <section className="stats-watched-movies">
+          <div className="stats-watched-movies-heading">
+            <div><h2>Read Books</h2><p>Every book you have marked as read, newest first.</p></div>
+            {readBooksState.status === 'success' ? <span>{readBooks.length} {readBooks.length === 1 ? 'book' : 'books'}</span> : null}
+          </div>
+          {!isSignedIn ? <SectionMessage message="Sign in to view your read book history." /> : null}
+          {isSignedIn && (readBooksState.status === 'loading' || readBooksState.status === 'idle') ? <SectionMessage message="Loading read books..." /> : null}
+          {isSignedIn && readBooksState.status === 'error' ? <SectionMessage tone="error" message={readBooksState.error || 'Unable to load your read books right now.'} /> : null}
+          {isSignedIn && readBooksState.status === 'success' && readBooks.length === 0 ? <SectionMessage message="You have not marked any books as read yet." /> : null}
+          {isSignedIn && readBooksState.status === 'success' && visibleReadBooks.length > 0 ? <>
+            <div className="movie-card-grid popular-movies-catalog stats-watched-movies-grid">{visibleReadBooks.map((book) => <StatsReadBookCard key={book.id} book={book} onOpenBook={onOpenBook} />)}</div>
+            <PaginationControls pagination={bookHistoryPagination} onPageChange={setBookHistoryPage} />
+          </> : null}
+        </section>
+      ) : activeTab === 'Book stats' ? (
+        <BookStatsDashboard isSignedIn={isSignedIn} state={bookStatsState} onOpenBook={onOpenBook} />
       ) : <>
       <div className="stats-metric-grid">
         {metricCards.map(({ icon: Icon, label, value, suffix, tone }) => (
@@ -5364,6 +6105,42 @@ function StatsScreen({ movieStats, movieStatsStatus, watchedState, tvWatchedHist
   )
 }
 
+function BookStatsDashboard({ isSignedIn, state, onOpenBook }) {
+  if (!isSignedIn) return <section className="book-stats-dashboard"><SectionMessage message="Sign in to view your reading stats." /></section>
+  if (state.status === 'loading' || state.status === 'idle') return <section className="book-stats-dashboard"><SectionMessage message="Loading your book stats..." /></section>
+  if (state.status === 'error') return <section className="book-stats-dashboard"><SectionMessage tone="error" message={state.error || 'Unable to load your book stats right now.'} /></section>
+  const { metrics, formats, activity, categories, authors, topRated, recentReads } = state.stats
+  const maxPages = Math.max(...activity.buckets.map((bucket) => bucket.pagesRead), 0)
+  const maxCategoryBooks = Math.max(...categories.map((category) => category.bookCount), 0)
+  const metricCards = [
+    { label: 'Books Read', value: String(metrics.booksRead), tone: 'violet', icon: BookmarkIcon },
+    { label: 'Pages Read', value: metrics.pagesRead.toLocaleString(), tone: 'blue', icon: BarsIcon },
+    { label: 'In Reading List', value: String(metrics.watchlistCount), tone: 'orange', icon: BookmarkStackIcon },
+    { label: 'Average Rating', value: metrics.averageRating === null ? '—' : metrics.averageRating.toFixed(1), suffix: '/5', tone: 'gold', icon: StarOutlineIcon },
+  ]
+  return <section className="book-stats-dashboard">
+    <div className="stats-metric-grid">{metricCards.map(({ icon: Icon, label, value, suffix, tone }) => <article key={label} className={`stats-metric-card ${tone}`}><div className="stats-metric-icon"><Icon /></div><div><span>{label}</span><strong>{value}<small>{suffix}</small></strong></div></article>)}</div>
+    <div className="book-stats-main-grid">
+      <section className="stats-surface stats-activity-card"><StatsSectionTitle title="Reading Activity" />{maxPages === 0 ? <SectionMessage message="No books read in this period yet." /> : <><div className="stats-chart-axis">{buildBookActivityAxisLabels(maxPages).map((label) => <span key={label}>{label}</span>)}</div><div className="stats-activity-bars" style={{ '--bar-count': activity.buckets.length }}>{activity.buckets.map((bucket) => <div key={bucket.label} className="stats-activity-bar-wrap"><span style={{ height: `${Math.max(3, (bucket.pagesRead / maxPages) * 100)}%` }} title={`${bucket.label}: ${bucket.pagesRead.toLocaleString()} pages across ${bucket.booksRead} ${bucket.booksRead === 1 ? 'book' : 'books'}`} /><small>{bucket.label}</small></div>)}</div></>}</section>
+      <section className="stats-surface stats-genres-card"><StatsSectionTitle title="Top Categories" />{categories.length === 0 ? <SectionMessage message="No category data in this period yet." /> : <div className="stats-genre-list">{categories.map((category) => <div key={category.name}><span>{category.name}</span><div><i style={{ width: `${(category.bookCount / maxCategoryBooks) * 100}%` }} /></div><b>{category.bookCount} {category.bookCount === 1 ? 'book' : 'books'}</b></div>)}</div>}</section>
+    </div>
+    <section className="stats-surface book-stats-format-card"><StatsSectionTitle title="Reading Formats" /><div className="book-stats-format-list"><div><span>Physical</span><b>{formats.physical}</b></div><div><span>Ebook</span><b>{formats.ebook}</b></div><div><span>Audiobook</span><b>{formats.audiobook}</b></div></div></section>
+    <div className="book-stats-detail-grid">
+      <section className="stats-surface stats-rated-card"><StatsSectionTitle title="Top Rated Books" />{topRated.length === 0 ? <SectionMessage message="No book ratings in this period yet." /> : <div className="stats-rated-list">{topRated.map((book) => <StatsBookRow key={book.id} book={book} onOpenBook={onOpenBook} />)}</div>}</section>
+      <section className="stats-surface stats-authors-card"><StatsSectionTitle title="Favorite Authors" />{authors.length === 0 ? <SectionMessage message="No author data in this period yet." /> : <div className="book-stats-author-list">{authors.map((author, index) => <div key={author.name}><span>{author.name.split(' ').map((part) => part[0]).join('').slice(0, 2)}</span><p><b>{author.name}</b><small>{author.bookCount} {author.bookCount === 1 ? 'book' : 'books'} read</small></p><em>#{index + 1}</em></div>)}</div>}</section>
+    </div>
+    <section className="stats-surface stats-history-card"><StatsSectionTitle title="Recent Reads" />{recentReads.length === 0 ? <SectionMessage message="No books read in this period yet." /> : <div className="stats-history-list">{recentReads.map((book) => <StatsBookHistoryItem key={book.id} book={book} onOpenBook={onOpenBook} />)}</div>}</section>
+  </section>
+}
+
+function StatsBookRow({ book, onOpenBook }) {
+  return <button type="button" className="stats-title-row" onClick={() => onOpenBook(book)} aria-label={`Open ${book.title}`}><div className="stats-title-art">{book.coverUrl ? <img src={book.coverUrl} alt={`${book.title} cover`} loading="lazy" /> : null}</div><p><b>{book.title}</b><small>{book.authorsLabel}</small></p><span><StarIcon />{book.score?.toFixed(1) ?? '—'}</span></button>
+}
+
+function StatsBookHistoryItem({ book, onOpenBook }) {
+  return <button type="button" className="stats-history-item" onClick={() => onOpenBook(book)} aria-label={`Open ${book.title}`}><div className="stats-title-art">{book.coverUrl ? <img src={book.coverUrl} alt={`${book.title} cover`} loading="lazy" /> : null}</div><b>{book.title}</b><small>{book.authorsLabel}</small><em>{book.readAt ? `Read ${formatRelativeTime(book.readAt)}` : 'Recently read'}</em></button>
+}
+
 function StatsWatchedMovieCard({ movie, onOpenMovie }) {
   return (
     <div className="stats-watched-movie-card">
@@ -5371,6 +6148,10 @@ function StatsWatchedMovieCard({ movie, onOpenMovie }) {
       <p>Watched on {formatLongDate(movie.watchedAt)}</p>
     </div>
   )
+}
+
+function StatsReadBookCard({ book, onOpenBook }) {
+  return <div className="stats-watched-movie-card"><BookCard book={book} onOpenBook={onOpenBook} /><p>Read on {formatLongDate(book.readAt)}</p></div>
 }
 
 function StatsWatchedTvEpisode({ episode, onOpenTvShow }) {
@@ -5989,6 +6770,10 @@ function getFilteredWatchlistItems({ items, activeTab }) {
       return false
     }
 
+    if (activeTab === 'Books' && item.type !== 'Books') {
+      return false
+    }
+
     return true
   })
 }
@@ -6150,6 +6935,32 @@ function mapStatsInsightsPayload(payload) {
   }
 }
 
+function mapBookStatsPayload(payload) {
+  const metrics = payload?.metrics || {}
+  return {
+    metrics: {
+      booksRead: Number.isInteger(metrics.booksRead) ? metrics.booksRead : 0,
+      pagesRead: Number.isFinite(metrics.pagesRead) ? metrics.pagesRead : 0,
+      watchlistCount: Number.isInteger(metrics.watchlistCount) ? metrics.watchlistCount : 0,
+      averageRating: Number.isFinite(metrics.averageRating) ? metrics.averageRating : null,
+    },
+    formats: {
+      physical: Number.isInteger(payload?.formats?.physical) ? payload.formats.physical : 0,
+      ebook: Number.isInteger(payload?.formats?.ebook) ? payload.formats.ebook : 0,
+      audiobook: Number.isInteger(payload?.formats?.audiobook) ? payload.formats.audiobook : 0,
+    },
+    activity: { buckets: Array.isArray(payload?.activity?.buckets) ? payload.activity.buckets.map((bucket) => ({ label: typeof bucket?.label === 'string' ? bucket.label : '', pagesRead: Number.isFinite(bucket?.pagesRead) ? bucket.pagesRead : 0, booksRead: Number.isInteger(bucket?.booksRead) ? bucket.booksRead : 0 })) : [] },
+    categories: Array.isArray(payload?.categories) ? payload.categories.filter((item) => typeof item?.name === 'string').slice(0, 5).map((item) => ({ name: item.name, bookCount: Number.isInteger(item.bookCount) ? item.bookCount : 0, pages: Number.isFinite(item.pages) ? item.pages : 0 })) : [],
+    authors: Array.isArray(payload?.authors) ? payload.authors.filter((item) => typeof item?.name === 'string').slice(0, 4).map((item) => ({ name: item.name, bookCount: Number.isInteger(item.bookCount) ? item.bookCount : 0 })) : [],
+    topRated: mapBookStatsItems(payload?.topRated, true),
+    recentReads: mapBookStatsItems(payload?.recentReads, false),
+  }
+}
+
+function mapBookStatsItems(items, withScore) {
+  return Array.isArray(items) ? items.filter((item) => typeof item?.id === 'string' && typeof item?.title === 'string').slice(0, 5).map((item) => ({ id: item.id, title: item.title, authorsLabel: Array.isArray(item.authors) && item.authors.length ? item.authors.filter(Boolean).join(', ') : 'Author TBA', coverUrl: item.coverUrl || null, ...(withScore ? { score: Number.isFinite(item.score) ? item.score : null } : { readAt: item.readAt || null }) })) : []
+}
+
 function formatRelativeTime(value) {
   const date = new Date(value); const minutes = Math.floor((Date.now() - date.valueOf()) / 60000)
   if (Number.isNaN(date.valueOf()) || minutes < 0) return 'Recently'
@@ -6169,6 +6980,10 @@ function resolveBrowserTimeZone() {
 
 function buildActivityAxisLabels(maxMinutes) {
   return [maxMinutes, maxMinutes * 0.75, maxMinutes * 0.5, maxMinutes * 0.25].map((minutes) => formatCompactMinutes(minutes))
+}
+
+function buildBookActivityAxisLabels(maxPages) {
+  return [maxPages, maxPages * 0.75, maxPages * 0.5, maxPages * 0.25].map((pages) => `${Math.round(pages).toLocaleString()} p`)
 }
 
 function formatCompactMinutes(minutes) {
@@ -6208,6 +7023,52 @@ function mapWatchlistMoviePayload(movie, index = 0) {
     type: movie.type || 'Movies',
     posterUrl: movie.posterUrl || null,
     accent: watchlistAccentOptions[index % watchlistAccentOptions.length],
+    bookmarked: true,
+  }
+}
+
+function mapWatchlistBookPayload(book, index = 0) {
+  return {
+    id: String(book.id || ''),
+    title: book.title || 'Untitled',
+    year: book.year || 'Publication TBA',
+    meta: book.meta || 'Author TBA',
+    categoriesLabel: book.categoriesLabel || 'Category TBA',
+    type: 'Books',
+    posterUrl: book.posterUrl || null,
+    accent: watchlistAccentOptions[index % watchlistAccentOptions.length],
+    bookmarked: true,
+  }
+}
+
+function mapReadBookPayload(book, index = 0) {
+  return {
+    ...mapWatchlistBookPayload(book, index),
+    readAt: book.readAt || null,
+    coverUrl: book.posterUrl || null,
+    authorsLabel: book.meta || 'Author TBA',
+    readingFormat: ['physical', 'ebook', 'audiobook'].includes(book.readingFormat) ? book.readingFormat : 'physical',
+    completionMetadata: book.completionMetadata && typeof book.completionMetadata === 'object' && !Array.isArray(book.completionMetadata) ? book.completionMetadata : {},
+  }
+}
+
+function getSelectedReadingDetails(metadata) {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return []
+  const selectedFields = bookCompletionFields.filter(([key]) => metadata[key] === true).map(([, label]) => label)
+  const tropes = Array.isArray(metadata.tropes) ? metadata.tropes.filter((trope) => typeof trope === 'string' && trope.trim()).map((trope) => trope.trim()) : []
+  return [...new Set([...selectedFields, ...tropes])]
+}
+
+function mapBookToWatchlistItem(book) {
+  return {
+    id: String(book?.id || ''),
+    title: book?.title || 'Untitled',
+    year: book?.year || 'Publication TBA',
+    meta: book?.authorsLabel || 'Author TBA',
+    categoriesLabel: book?.categoriesLabel || 'Category TBA',
+    type: 'Books',
+    posterUrl: book?.coverUrl || null,
+    accent: watchlistAccentOptions[0],
     bookmarked: true,
   }
 }
@@ -6302,6 +7163,57 @@ function mapMovieRowToCard(movie) {
     posterUrl: resolveMoviePosterUrl(movie.poster_path),
     theme: 'theme-catalog',
   }
+}
+
+function mapBookRowToCard(book) {
+  const authors = Array.isArray(book.authors) ? book.authors.filter(Boolean) : []
+  const categories = Array.isArray(book.categories) ? book.categories.filter(Boolean).slice(0, 1) : []
+  return {
+    id: book.google_books_id,
+    title: book.title || 'Untitled',
+    authorsLabel: authors.length ? authors.join(', ') : 'Author TBA',
+    categoriesLabel: categories.length ? categories.join(', ') : 'Category TBA',
+    year: book.published_date ? String(book.published_date).slice(0, 4) : 'Publication TBA',
+    coverUrl: book.cover_image_url || null,
+  }
+}
+
+function mapGoogleBookToCard(book) {
+  const authors = Array.isArray(book.authors) ? book.authors.filter(Boolean) : []
+  const categories = Array.isArray(book.categories) ? book.categories.filter(Boolean).slice(0, 1) : []
+  return {
+    id: book.googleBooksId,
+    title: book.title || 'Untitled',
+    authorsLabel: authors.length ? authors.join(', ') : 'Author TBA',
+    categoriesLabel: categories.length ? categories.join(', ') : 'Category TBA',
+    year: book.publishedDate ? String(book.publishedDate).slice(0, 4) : 'Publication TBA',
+    coverUrl: book.coverImageUrl || null,
+  }
+}
+
+function mapBookDetailPayload(book) {
+  const card = mapBookRowToCard(book)
+  const identifiers = Array.isArray(book.isbn_identifiers) ? book.isbn_identifiers : []
+  return {
+    ...card,
+    description: stripHtml(book.description),
+    publisher: book.publisher || null,
+    publishedDate: book.published_date || null,
+    pageCount: Number.isInteger(book.page_count) ? book.page_count : null,
+    languageLabel: book.language ? String(book.language).toUpperCase() : 'Language TBA',
+    authorProfiles: Array.isArray(book.authorProfiles) ? book.authorProfiles.filter((author) => Number.isInteger(Number(author?.id)) && author?.name) : [],
+    isbn10: identifiers.find((item) => item?.type === 'ISBN_10')?.identifier || null,
+    isbn13: identifiers.find((item) => item?.type === 'ISBN_13')?.identifier || null,
+    communityRating: mapCommunityRatingPayload(book.communityRating),
+  }
+}
+
+function stripHtml(value) {
+  if (typeof value !== 'string') return null
+  const container = document.createElement('div')
+  container.innerHTML = value.replace(/<(?:br\s*\/?>|\/p\s*>|\/div\s*>|\/li\s*>)/gi, '\n')
+  const text = container.textContent?.replace(/\n{3,}/g, '\n\n').trim()
+  return text || null
 }
 
 function mapTvRowToCard(show) {
@@ -6486,6 +7398,14 @@ function createMovieCollectionState({ includeFeaturedMovie = false } = {}) {
     ...(includeFeaturedMovie ? { featuredMovie: null } : {}),
     error: '',
   }
+}
+
+function createBookCollectionState() {
+  return { status: 'idle', books: [], pagination: createPaginationState(), error: '' }
+}
+
+function createBookCollectionLoadingState(page = 1) {
+  return { status: 'loading', books: [], pagination: createPaginationState(page), error: '' }
 }
 
 function createTvCollectionState({ includeFeaturedShow = false } = {}) {
@@ -6813,11 +7733,21 @@ function readAppRoute(pathname = window.location.pathname, search = window.locat
   }
 
   const tvDetailMatch = pathname.match(/^\/tv\/(\d+)\/?$/)
+  const bookDetailMatch = pathname.match(/^\/books\/([^/]+)\/?$/)
+  const authorDetailMatch = pathname.match(/^\/authors\/(\d+)\/?$/)
   const personDetailMatch = pathname.match(/^\/people\/(\d+)\/?$/)
   const detailMatch = pathname.match(/^\/movies\/(\d+)\/?$/)
 
   if (tvDetailMatch) {
     return { kind: routeKinds.tvDetail, showId: Number.parseInt(tvDetailMatch[1], 10) }
+  }
+
+  if (bookDetailMatch) {
+    return { kind: routeKinds.bookDetail, bookId: decodeURIComponent(bookDetailMatch[1]) }
+  }
+
+  if (authorDetailMatch) {
+    return { kind: routeKinds.authorDetail, authorId: Number.parseInt(authorDetailMatch[1], 10) }
   }
 
   if (personDetailMatch) {
@@ -6843,6 +7773,14 @@ function buildSearchPath(query) {
 
 function buildMovieDetailPath(movieId) {
   return `/movies/${movieId}`
+}
+
+function buildBookDetailPath(bookId) {
+  return `/books/${encodeURIComponent(bookId)}`
+}
+
+function buildAuthorDetailPath(authorId) {
+  return `/authors/${authorId}`
 }
 
 function buildPersonDetailPath(personId) {

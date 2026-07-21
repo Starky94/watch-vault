@@ -11,6 +11,7 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "import:movies": "node server/importMoviesCli.js",
+    "import:books": "node server/importBooksCli.js",
     "import:now-playing": "node server/importNowPlayingCli.js",
     "import:upcoming": "node server/importUpcomingCli.js",
     "import:tv-popular": "node server/importPopularTvShowsCli.js",

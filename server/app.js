@@ -2,20 +2,30 @@ import express from 'express'
 import { loadConfig } from './config.js'
 import {
   addMovieToWatchlistForUser,
+  addBookToWatchlistForUser,
+  addBookToReadForUser,
   addMovieToWatchedForUser,
   countActors,
+  countBooks,
   countMovies,
   countStoredDataBytes,
   countTvShows,
+  getBookByGoogleBooksId,
+  getAuthorById,
+  getBookCommunityRating,
   ensureFavoriteActorsTable,
   ensureAchievementTables,
   ensureTvDetailTables,
   ensureMoviesTable,
+  ensureBooksTable,
   evaluateAchievementsForUser,
+  evaluateBookAchievementsForUser,
   getAchievementsForUser,
+  getBookAchievementsForUser,
   findUserByCredentials,
   findUserByUsername,
   getMovieStatsForUser,
+  getBookStatsForUser,
   getStatsInsightsForUser,
   getMovieCommunityRating,
   getTvLibraryForUser,
@@ -25,16 +35,23 @@ import {
   getMovieByTmdbId,
   listCoStarsForPerson,
   listFavoriteActorsForUser,
+  listFavoriteAuthorsForUser,
+  listAuthorsForBook,
+  listBooksForAuthor,
   listGenres,
   listMovieSummariesByTmdbIds,
   searchActors,
+  searchBooks,
   searchMovies,
   searchTvShows,
   listWatchlistMoviesForUser,
+  listWatchlistBooksForUser,
+  listReadBooksForUser,
   listCalendarEventsForUser,
   listWatchedMoviesByGenreForUser,
   listWatchedMoviesForUser,
   listMovies,
+  listBooks,
   listRecentlyReleasedMovies,
   listRecentlyAiredTvShows,
   listLatestEpisodeTvShows,
@@ -42,8 +59,11 @@ import {
   countUnreadAlertsForUser,
   markAlertsReadForUser,
   recordAchievementEventForUser,
+  recordBookAchievementEventForUser,
   removeMovieFromWatchedForUser,
   removeMovieFromWatchlistForUser,
+  removeBookFromWatchlistForUser,
+  removeBookFromReadForUser,
   listSimilarMovies,
   listTopRatedTvShows,
   listTopRatedMovies,
@@ -60,12 +80,23 @@ import {
   listUpcomingTvShows,
   listUpcomingMovies,
   toggleFavoriteActorForUser,
+  toggleFavoriteAuthorForUser,
   updateUserAlertTimezone,
+  upsertBooks,
+  upsertBookRatingForUser,
 } from './database.js'
 import { adminJobs, findAdminJob, listAdminJobs } from './adminJobs.js'
 import { fetchMovieReviews, fetchMovieVideos, fetchPersonCombinedCredits, fetchPersonDetails, fetchTvReviews, searchMovies as searchTmdbMovies, searchTvShows as searchTmdbTvShows } from './tmdbClient.js'
 import { hydrateMovieByTmdbId } from './movieImportService.js'
 import { hydrateTvShowByTmdbId } from './tvImportService.js'
+import { normalizeBook, sanitizeBookDescription } from './bookImportService.js'
+import { fetchBookById, fetchRelatedBooksByCategory, searchBooksByTitle } from './googleBooksClient.js'
+
+const bookReadingFormats = new Set(['physical', 'ebook', 'audiobook'])
+
+function sanitizeStoredBookDescription(book) {
+  return book ? { ...book, description: sanitizeBookDescription(book.description) } : book
+}
 
 export async function createApp(pool, options = {}) {
   const {
@@ -80,6 +111,7 @@ export async function createApp(pool, options = {}) {
   } = options
 
   await ensureMoviesTable(pool)
+  await ensureBooksTable(pool)
   await ensureTvDetailTables(pool)
   await ensureAchievementTables(pool)
 
@@ -95,6 +127,15 @@ export async function createApp(pool, options = {}) {
       const user = await getAuthenticatedUser(pool, request)
       if (!user) return response.status(401).json({ error: 'Authentication required' })
       const achievements = await getAchievementsForUser(pool, user.username)
+      response.json({ count: achievements.length, achievements })
+    } catch (error) { next(error) }
+  })
+
+  app.get('/api/book-achievements', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const achievements = await getBookAchievementsForUser(pool, user.username)
       response.json({ count: achievements.length, achievements })
     } catch (error) { next(error) }
   })
@@ -125,13 +166,14 @@ export async function createApp(pool, options = {}) {
     }
 
     try {
-      const [movies, shows, actors] = await Promise.all([
+      const [movies, shows, actors, books] = await Promise.all([
         searchMovies(pool, query),
         searchTvShows(pool, query),
         searchActors(pool, query),
+        searchBooks(pool, query),
       ])
 
-      response.json({ query, movies, shows, actors })
+      response.json({ query, movies, shows, actors, books })
     } catch (error) {
       next(error)
     }
@@ -160,6 +202,27 @@ export async function createApp(pool, options = {}) {
     } catch (error) {
       next(error)
     }
+  })
+
+  app.get('/api/search/books', async (request, response, next) => {
+    const query = typeof request.query.q === 'string' ? request.query.q.trim() : ''
+    if (!query) return response.status(400).json({ error: 'q is required' })
+
+    try {
+      const config = loadRuntimeConfig()
+      if (!config.googleBooksApiKey) throw new Error('Missing required environment variable: GOOGLE_BOOKS_API_KEY')
+      const payload = await searchBooksByTitle(fetch, {
+        apiKey: config.googleBooksApiKey,
+        baseUrl: config.googleBooksBaseUrl,
+        query,
+        maxResults: 20,
+      })
+      const books = (Array.isArray(payload?.items) ? payload.items : [])
+        .filter((volume) => volume?.id)
+        .slice(0, 20)
+        .map((volume, index) => normalizeBook(volume, index + 1))
+      response.json({ query, books })
+    } catch (error) { next(error) }
   })
 
   app.post('/api/auth/login', async (request, response) => {
@@ -259,11 +322,15 @@ export async function createApp(pool, options = {}) {
         return
       }
 
-      const movies = await listWatchlistMoviesForUser(pool, user.username)
+      const [movies, books] = await Promise.all([
+        listWatchlistMoviesForUser(pool, user.username),
+        listWatchlistBooksForUser(pool, user.username),
+      ])
 
       response.json({
-        count: movies.length,
+        count: movies.length + books.length,
         movies: movies.map(mapWatchlistMovie),
+        books: books.map(mapWatchlistBook),
       })
     } catch (error) {
       next(error)
@@ -356,6 +423,34 @@ export async function createApp(pool, options = {}) {
     }
   })
 
+  app.get('/api/favorite-authors', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const authors = await listFavoriteAuthorsForUser(pool, user.username)
+      response.json({ count: authors.length, authors: authors.map(mapFavoriteAuthor) })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/favorite-authors/:authorId', async (request, response, next) => {
+    const authorId = Number.parseInt(request.params.authorId, 10)
+    if (!Number.isInteger(authorId)) return response.status(400).json({ error: `Invalid author id: ${request.params.authorId}` })
+
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const result = await toggleFavoriteAuthorForUser(pool, { username: user.username, authorId })
+      if (result.status === 'missing_author') return response.status(404).json({ error: `Author ${authorId} was not found in the local database` })
+      if (result.status === 'missing_user') return response.status(401).json({ error: 'Authentication required' })
+      if (result.status === 'limit_reached') return response.status(409).json({ error: `You can favorite up to ${result.limit} authors.` })
+      response.json({ favorited: result.favorited })
+    } catch (error) {
+      next(error)
+    }
+  })
+
   app.post('/api/favorite-actors/:personId', async (request, response, next) => {
     const personId = Number.parseInt(request.params.personId, 10)
     if (!Number.isInteger(personId)) return response.status(400).json({ error: `Invalid person id: ${request.params.personId}` })
@@ -429,6 +524,86 @@ export async function createApp(pool, options = {}) {
         movie: savedMovie ? mapWatchlistMovie(savedMovie) : null,
         newlyUnlockedAchievements,
       })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/watchlist/books', async (request, response, next) => {
+    const bookId = typeof request.body?.bookId === 'string' ? request.body.bookId.trim() : ''
+    if (!bookId) return response.status(400).json({ error: 'bookId is required' })
+
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const result = await addBookToWatchlistForUser(pool, { username: user.username, bookId })
+      if (result.status === 'missing_book') return response.status(404).json({ error: `Book ${bookId} was not found in the local database` })
+      if (result.status === 'missing_user') return response.status(401).json({ error: 'Authentication required' })
+      if (result.status === 'limit_reached') return response.status(409).json({ error: `You can save up to ${result.limit} books in your watchlist.` })
+
+      const books = await listWatchlistBooksForUser(pool, user.username)
+      const savedBook = books.find((book) => book.google_books_id === bookId) ?? null
+      const newlyUnlockedBookAchievements = result.added && Number.isInteger(result.entityId) && await recordBookAchievementEventForUser(pool, { username: user.username, eventType: 'watchlisted', bookId: result.entityId }) ? await evaluateBookAchievementsForUser(pool, user.username) : []
+      response.status(200).json({ book: savedBook ? mapWatchlistBook(savedBook) : null, newlyUnlockedBookAchievements })
+    } catch (error) { next(error) }
+  })
+
+  app.delete('/api/watchlist/books/:bookId', async (request, response, next) => {
+    const bookId = String(request.params.bookId || '').trim()
+    if (!bookId) return response.status(400).json({ error: 'bookId is required' })
+
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const result = await removeBookFromWatchlistForUser(pool, { username: user.username, bookId })
+      if (result.status === 'missing_book') return response.status(404).json({ error: `Book ${bookId} was not found in the local database` })
+      if (result.status === 'missing_user') return response.status(401).json({ error: 'Authentication required' })
+      response.status(200).json({ removed: result.removed })
+    } catch (error) { next(error) }
+  })
+
+  app.get('/api/read/books', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const books = await listReadBooksForUser(pool, user.username)
+      response.json({ count: books.length, books: books.map(mapReadBook) })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/read/books', async (request, response, next) => {
+    const bookId = typeof request.body?.bookId === 'string' ? request.body.bookId.trim() : ''
+    const readingFormat = typeof request.body?.readingFormat === 'string' ? request.body.readingFormat.trim().toLowerCase() : ''
+    const completionMetadata = sanitizeBookCompletionMetadata(request.body?.completionMetadata)
+    if (!bookId) return response.status(400).json({ error: 'bookId is required' })
+    if (!bookReadingFormats.has(readingFormat)) return response.status(400).json({ error: 'readingFormat must be physical, ebook, or audiobook' })
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const result = await addBookToReadForUser(pool, { username: user.username, bookId, readingFormat, completionMetadata })
+      if (result.status === 'missing_book') return response.status(404).json({ error: `Book ${bookId} was not found in the local database` })
+      if (result.status === 'missing_user') return response.status(401).json({ error: 'Authentication required' })
+      const books = await listReadBooksForUser(pool, user.username)
+      const savedBook = books.find((book) => book.google_books_id === bookId) ?? null
+      const newlyUnlockedBookAchievements = Number.isInteger(result.entityId) ? await evaluateBookAchievementsForUser(pool, user.username) : []
+      response.status(200).json({ book: savedBook ? mapReadBook(savedBook) : null, removedFromWatchlist: result.removedFromWatchlist, newlyUnlockedBookAchievements })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.delete('/api/read/books/:bookId', async (request, response, next) => {
+    const bookId = String(request.params.bookId || '').trim()
+    if (!bookId) return response.status(400).json({ error: 'bookId is required' })
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const result = await removeBookFromReadForUser(pool, { username: user.username, bookId })
+      if (result.status === 'missing_book') return response.status(404).json({ error: `Book ${bookId} was not found in the local database` })
+      if (result.status === 'missing_user') return response.status(401).json({ error: 'Authentication required' })
+      response.status(200).json({ removed: result.removed })
     } catch (error) {
       next(error)
     }
@@ -556,6 +731,18 @@ export async function createApp(pool, options = {}) {
 
       await ensureTvDetailTables(pool)
       response.json(await getStatsInsightsForUser(pool, user.username, { period, timeZone }))
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/stats/books', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const period = readStatsPeriod(request, response)
+      if (!period) return
+      response.json(await getBookStatsForUser(pool, user.username, period))
     } catch (error) {
       next(error)
     }
@@ -755,6 +942,7 @@ export async function createApp(pool, options = {}) {
         crons: listAdminJobs(jobs),
         totals: {
           actors: await countActors(pool),
+          books: await countBooks(pool),
           movies: await countMovies(pool),
           storedDataBytes: await countStoredDataBytes(pool),
           tvShows: await countTvShows(pool),
@@ -777,11 +965,9 @@ export async function createApp(pool, options = {}) {
 
     try {
       const config = loadRuntimeConfig()
-      const result = await job.run(pool, {
-        token: config.tmdbBearerToken,
-        baseUrl: config.tmdbBaseUrl,
-        count: 30,
-      })
+      const result = await job.run(pool, job.source === 'google-books'
+        ? { apiKey: config.googleBooksApiKey, baseUrl: config.googleBooksBaseUrl }
+        : { token: config.tmdbBearerToken, baseUrl: config.tmdbBaseUrl, count: 30 })
 
       response.json({
         job: job.key,
@@ -814,6 +1000,112 @@ export async function createApp(pool, options = {}) {
     } catch (error) {
       next(error)
     }
+  })
+
+  app.get('/api/books', async (request, response, next) => {
+    try {
+      const pagination = readPaginationQuery(request, { defaultLimit: 30 })
+      const books = await listBooks(pool, { limit: pagination.limit + 1, page: pagination.page })
+      const pagedBooks = books.slice(0, pagination.limit)
+      response.json({ count: pagedBooks.length, books: pagedBooks.map(sanitizeStoredBookDescription), pagination: buildPaginationPayload(pagination, books.length > pagination.limit) })
+    } catch (error) { next(error) }
+  })
+
+  app.get('/api/books/:bookId', async (request, response, next) => {
+    try {
+      const book = await getBookByGoogleBooksId(pool, request.params.bookId)
+      if (!book) return response.status(404).json({ error: `Book ${request.params.bookId} was not found in the local database` })
+      const user = await getAuthenticatedUser(pool, request)
+      const [communityRating, authors] = await Promise.all([
+        getBookCommunityRating(pool, { bookId: request.params.bookId, username: user?.username ?? null }),
+        listAuthorsForBook(pool, request.params.bookId),
+      ])
+      response.json({
+        book: {
+          ...sanitizeStoredBookDescription(book),
+          ...(authors.length > 0 ? { authors: authors.map((author) => author.name), authorProfiles: authors.map((author) => ({ id: author.id, name: author.name })) } : {}),
+          communityRating: mapCommunityRating(communityRating),
+        },
+      })
+    } catch (error) { next(error) }
+  })
+
+  app.get('/api/authors/:authorId', async (request, response, next) => {
+    const authorId = Number.parseInt(request.params.authorId, 10)
+    if (!Number.isInteger(authorId)) return response.status(400).json({ error: `Invalid author id: ${request.params.authorId}` })
+    try {
+      const author = await getAuthorById(pool, authorId)
+      if (!author) return response.status(404).json({ error: `Author ${authorId} was not found in the local database` })
+      const books = await listBooksForAuthor(pool, authorId)
+      response.json({ author: { id: author.id, name: author.name }, count: books.length, books: books.map(sanitizeStoredBookDescription) })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/books/:bookId/related', async (request, response, next) => {
+    const bookId = String(request.params.bookId || '').trim()
+    if (!bookId) return response.status(400).json({ error: 'bookId is required' })
+
+    try {
+      const book = await getBookByGoogleBooksId(pool, bookId)
+      if (!book) return response.status(404).json({ error: `Book ${bookId} was not found in the local database` })
+
+      const category = Array.isArray(book.categories) ? book.categories.find(Boolean) : null
+      if (!category) return response.json({ count: 0, books: [] })
+
+      const config = loadRuntimeConfig()
+      if (!config.googleBooksApiKey) throw new Error('Missing required environment variable: GOOGLE_BOOKS_API_KEY')
+      const payload = await fetchRelatedBooksByCategory(fetch, {
+        apiKey: config.googleBooksApiKey,
+        baseUrl: config.googleBooksBaseUrl,
+        category,
+        maxResults: 11,
+      })
+      const books = (Array.isArray(payload?.items) ? payload.items : [])
+        .filter((volume) => volume?.id && String(volume.id) !== bookId)
+        .slice(0, 10)
+        .map((volume, index) => normalizeBook(volume, index + 1))
+
+      response.json({ count: books.length, books })
+    } catch (error) { next(error) }
+  })
+
+  app.put('/api/books/:bookId/rating', async (request, response, next) => {
+    const bookId = String(request.params.bookId || '').trim()
+    const score = typeof request.body?.score === 'number' ? request.body.score : Number.NaN
+    if (!bookId) return response.status(400).json({ error: 'bookId is required' })
+    if (!isValidMovieRating(score)) return response.status(400).json({ error: 'score must be between 1 and 5 in 0.5 increments' })
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const savedRating = await upsertBookRatingForUser(pool, { username: user.username, bookId, score })
+      if (savedRating.status === 'missing_book') return response.status(404).json({ error: `Book ${bookId} was not found in the local database` })
+      if (savedRating.status === 'missing_user') return response.status(401).json({ error: 'Authentication required' })
+      const communityRating = await getBookCommunityRating(pool, { bookId, username: user.username })
+      if (Number.isInteger(savedRating.entityId)) await recordBookAchievementEventForUser(pool, { username: user.username, eventType: 'rated', bookId: savedRating.entityId, metadata: { score } })
+      const newlyUnlockedBookAchievements = Number.isInteger(savedRating.entityId) ? await evaluateBookAchievementsForUser(pool, user.username) : []
+      response.json({ communityRating: mapCommunityRating(communityRating), ...(Number.isInteger(savedRating.entityId) ? { newlyUnlockedBookAchievements } : {}) })
+    } catch (error) { next(error) }
+  })
+
+  app.post('/api/books/:bookId', async (request, response, next) => {
+    const bookId = String(request.params.bookId || '').trim()
+    if (!bookId) return response.status(400).json({ error: 'bookId is required' })
+
+    try {
+      const config = loadRuntimeConfig()
+      if (!config.googleBooksApiKey) throw new Error('Missing required environment variable: GOOGLE_BOOKS_API_KEY')
+      const volume = await fetchBookById(fetch, {
+        apiKey: config.googleBooksApiKey,
+        baseUrl: config.googleBooksBaseUrl,
+        bookId,
+      })
+      if (!volume?.id) return response.status(404).json({ error: `Book ${bookId} was not found in Google Books` })
+      await upsertBooks(pool, [normalizeBook(volume, 0)])
+      const book = await getBookByGoogleBooksId(pool, String(volume.id))
+      response.status(201).json({ book: sanitizeStoredBookDescription(book) })
+    } catch (error) { next(error) }
   })
 
   app.get('/api/movies/recently-released', async (request, response, next) => {
@@ -1895,6 +2187,28 @@ function mapWatchlistMovie(movie) {
   }
 }
 
+function mapWatchlistBook(book) {
+  return {
+    id: book.google_books_id,
+    title: book.title,
+    year: book.published_date ? String(book.published_date).slice(0, 4) : 'Publication TBA',
+    meta: Array.isArray(book.authors) && book.authors.length > 0 ? book.authors.join(', ') : 'Author TBA',
+    categoriesLabel: Array.isArray(book.categories) && book.categories.length > 0 ? book.categories.join(', ') : 'Category TBA',
+    type: 'Books',
+    posterUrl: book.cover_image_url || null,
+    watchlistedAt: book.watchlisted_at ?? null,
+  }
+}
+
+function mapReadBook(book) {
+  return {
+    ...mapWatchlistBook(book),
+    readAt: book.read_at ?? null,
+    readingFormat: book.reading_format ?? 'physical',
+    completionMetadata: book.completion_metadata && typeof book.completion_metadata === 'object' && !Array.isArray(book.completion_metadata) ? book.completion_metadata : {},
+  }
+}
+
 function mapAlert(alert) {
   return {
     id: Number(alert.id),
@@ -1951,6 +2265,14 @@ function mapFavoriteActor(actor) {
   }
 }
 
+function mapFavoriteAuthor(author) {
+  return {
+    id: author.id,
+    name: author.name,
+    favoritedAt: author.favorited_at ?? null,
+  }
+}
+
 function mapWatchlistTvShow(show) {
   return {
     id: show.tmdb_id,
@@ -1993,6 +2315,15 @@ function mapWatchedTvEpisode(episode) {
     episodeNumber: Number(episode.episode_number),
     watchedAt: episode.watched_at ?? null,
   }
+}
+
+function sanitizeBookCompletionMetadata(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const allowed = new Set(['favorite', 'translated', 'newAuthor', 'seriesStarted', 'seriesFinished', 'classic', 'library', 'recommended', 'plotTwist', 'madeCry', 'madeLaugh', 'fictionalCrush', 'foundFamily', 'villainFavorite', 'enemiesToLovers', 'slowBurn', 'cozy', 'vacation', 'coverEnjoyed', 'coverRegretted', 'hyped', 'dnf', 'moodRead', 'adaptationWatched', 'bookWasBetter', 'adaptationWon', 'mapUsed', 'trickyNames', 'slumpEscape'])
+  const metadata = {}
+  for (const key of allowed) if (value[key] === true) metadata[key] = true
+  if (Array.isArray(value.tropes)) metadata.tropes = [...new Set(value.tropes.filter((item) => typeof item === 'string' && item.trim()).map((item) => item.trim().slice(0, 60)))].slice(0, 10)
+  return metadata
 }
 
 function mapLatestEpisodeTvShow(show) {

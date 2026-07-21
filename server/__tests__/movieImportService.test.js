@@ -19,6 +19,9 @@ import { upsertMovies } from '../database.js'
 function isSchemaSetupQuery(sql) {
   return (
     sql.includes('CREATE TABLE IF NOT EXISTS movies') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS books') ||
+    sql.includes('CREATE INDEX IF NOT EXISTS books_import_order_idx') ||
+    sql.includes('UPDATE books') ||
     sql.includes('CREATE TABLE IF NOT EXISTS genres') ||
     sql.includes('CREATE TABLE IF NOT EXISTS tv_genres') ||
     sql.includes('CREATE TABLE IF NOT EXISTS tv_shows') ||

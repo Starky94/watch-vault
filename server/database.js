@@ -1,5 +1,6 @@
 import pg from 'pg'
 import { ACHIEVEMENTS } from './achievements.js'
+import { BOOK_ACHIEVEMENTS } from './bookAchievements.js'
 
 const { Pool } = pg
 
@@ -303,6 +304,488 @@ export async function ensureMoviesTable(pool) {
 
 }
 
+export async function ensureBooksTable(pool) {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS books (
+      id BIGSERIAL PRIMARY KEY,
+      google_books_id TEXT NOT NULL UNIQUE,
+      title TEXT NOT NULL,
+      authors TEXT[] NOT NULL DEFAULT '{}',
+      description TEXT,
+      isbn_identifiers JSONB NOT NULL DEFAULT '[]'::jsonb,
+      categories TEXT[] NOT NULL DEFAULT '{}',
+      cover_image_url TEXT,
+      publisher TEXT,
+      published_date TEXT,
+      page_count INTEGER,
+      language TEXT,
+      raw_payload JSONB NOT NULL,
+      import_rank INTEGER NOT NULL,
+      imported_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `)
+  await pool.query('CREATE INDEX IF NOT EXISTS books_import_order_idx ON books (import_rank ASC, google_books_id ASC)')
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS authors (
+      id BIGSERIAL PRIMARY KEY,
+      normalized_name TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS book_authors (
+      book_id BIGINT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+      author_id BIGINT NOT NULL REFERENCES authors(id) ON DELETE CASCADE,
+      author_order INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (book_id, author_id)
+    )
+  `)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS favorite_authors (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      author_id BIGINT NOT NULL REFERENCES authors(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (user_id, author_id)
+    )
+  `)
+  await pool.query(`
+    INSERT INTO authors (normalized_name, name)
+    SELECT DISTINCT
+      LOWER(REGEXP_REPLACE(BTRIM(author_name), '\\s+', ' ', 'g')),
+      REGEXP_REPLACE(BTRIM(author_name), '\\s+', ' ', 'g')
+    FROM books
+    CROSS JOIN LATERAL UNNEST(books.authors) AS author_name
+    WHERE BTRIM(author_name) <> ''
+    ON CONFLICT (normalized_name) DO NOTHING
+  `)
+  await pool.query(`
+    INSERT INTO book_authors (book_id, author_id, author_order)
+    SELECT books.id, authors.id, author_entries.ordinality - 1
+    FROM books
+    CROSS JOIN LATERAL UNNEST(books.authors) WITH ORDINALITY AS author_entries(author_name, ordinality)
+    JOIN authors ON authors.normalized_name = LOWER(REGEXP_REPLACE(BTRIM(author_entries.author_name), '\\s+', ' ', 'g'))
+    WHERE BTRIM(author_entries.author_name) <> ''
+    ON CONFLICT (book_id, author_id) DO UPDATE SET author_order = EXCLUDED.author_order
+  `)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS book_watchlist_items (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      book_id BIGINT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (user_id, book_id)
+    )
+  `)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS read_books (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      book_id BIGINT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+      reading_format TEXT NOT NULL DEFAULT 'physical' CHECK (reading_format IN ('physical', 'ebook', 'audiobook')),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (user_id, book_id)
+    );
+    ALTER TABLE read_books ADD COLUMN IF NOT EXISTS reading_format TEXT NOT NULL DEFAULT 'physical' CHECK (reading_format IN ('physical', 'ebook', 'audiobook'));
+    UPDATE read_books SET reading_format = 'physical' WHERE reading_format IS NULL
+  `)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS book_ratings (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      book_id BIGINT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+      score NUMERIC(2, 1) NOT NULL CHECK (score >= 1.0 AND score <= 5.0 AND MOD(score * 2, 1) = 0),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (user_id, book_id)
+    )
+  `)
+  await pool.query(`
+    UPDATE books
+    SET categories = categories[1:1]
+    WHERE cardinality(categories) > 1
+  `)
+}
+
+export async function upsertBooks(pool, books) {
+  if (books.length === 0) return { insertedCount: 0, updatedCount: 0 }
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    let insertedCount = 0
+    let updatedCount = 0
+    for (const book of books) {
+      const result = await client.query(`
+        INSERT INTO books (google_books_id, title, authors, description, isbn_identifiers, categories, cover_image_url, publisher, published_date, page_count, language, raw_payload, import_rank, imported_at)
+        VALUES ($1, $2, $3::TEXT[], $4, $5::jsonb, $6::TEXT[], $7, $8, $9, $10, $11, $12::jsonb, $13, NOW())
+        ON CONFLICT (google_books_id) DO UPDATE SET
+          title = EXCLUDED.title, authors = EXCLUDED.authors, description = EXCLUDED.description,
+          isbn_identifiers = EXCLUDED.isbn_identifiers, categories = EXCLUDED.categories,
+          cover_image_url = EXCLUDED.cover_image_url, publisher = EXCLUDED.publisher,
+          published_date = EXCLUDED.published_date, page_count = EXCLUDED.page_count,
+          language = EXCLUDED.language, raw_payload = EXCLUDED.raw_payload,
+          import_rank = EXCLUDED.import_rank, imported_at = NOW()
+        RETURNING (xmax = 0) AS inserted
+      `, [book.googleBooksId, book.title, book.authors, book.description, JSON.stringify(book.isbnIdentifiers), book.categories, book.coverImageUrl, book.publisher, book.publishedDate, book.pageCount, book.language, JSON.stringify(book.rawPayload), book.importRank])
+      const storedBookId = await client.query('SELECT id FROM books WHERE google_books_id = $1 LIMIT 1', [book.googleBooksId])
+      const bookId = storedBookId.rows[0]?.id
+      if (bookId) {
+        await client.query('DELETE FROM book_authors WHERE book_id = $1', [bookId])
+        const authorNames = Array.isArray(book.authors) ? book.authors : []
+        for (const [authorOrder, rawName] of authorNames.entries()) {
+          const name = typeof rawName === 'string' ? rawName.replace(/\s+/g, ' ').trim() : ''
+          if (!name) continue
+          const normalizedName = name.toLowerCase()
+          const authorResult = await client.query(`
+            INSERT INTO authors (normalized_name, name, updated_at)
+            VALUES ($1, $2, NOW())
+            ON CONFLICT (normalized_name) DO UPDATE SET updated_at = NOW()
+            RETURNING id
+          `, [normalizedName, name])
+          await client.query('INSERT INTO book_authors (book_id, author_id, author_order) VALUES ($1, $2, $3)', [bookId, authorResult.rows[0].id, authorOrder])
+        }
+      }
+      if (result.rows[0]?.inserted) insertedCount += 1
+      else updatedCount += 1
+    }
+    await client.query('COMMIT')
+    return { insertedCount, updatedCount }
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally { client.release() }
+}
+
+export async function listBooks(pool, options = {}) {
+  const limit = Number.isInteger(options.limit) ? Math.max(1, options.limit) : 30
+  const page = Number.isInteger(options.page) ? Math.max(1, options.page) : 1
+  const result = await pool.query(`
+    SELECT google_books_id, title, authors, description, isbn_identifiers, categories, cover_image_url,
+      publisher, published_date, page_count, language, import_rank, imported_at
+    FROM books ORDER BY import_rank ASC, google_books_id ASC LIMIT $1 OFFSET $2
+  `, [limit, (page - 1) * limit])
+  return result.rows
+}
+
+export async function searchBooks(pool, query, limit = 30) {
+  const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 30
+  const result = await pool.query(
+    `
+    SELECT google_books_id, title, authors, description, isbn_identifiers, categories, cover_image_url,
+      publisher, published_date, page_count, language, import_rank, imported_at
+    FROM books
+    WHERE POSITION(LOWER($1) IN LOWER(title)) > 0
+    ORDER BY import_rank ASC, title ASC, google_books_id ASC
+    LIMIT $2
+    `,
+    [query, normalizedLimit],
+  )
+  return result.rows
+}
+
+export async function getBookByGoogleBooksId(pool, googleBooksId) {
+  const result = await pool.query(`
+    SELECT google_books_id, title, authors, description, isbn_identifiers, categories, cover_image_url,
+      publisher, published_date, page_count, language, import_rank, imported_at
+    FROM books WHERE google_books_id = $1 LIMIT 1
+  `, [googleBooksId])
+  return result.rows[0] ?? null
+}
+
+export async function getAuthorById(pool, authorId) {
+  const result = await pool.query('SELECT id, name FROM authors WHERE id = $1 LIMIT 1', [authorId])
+  return result.rows[0] ?? null
+}
+
+export async function listAuthorsForBook(pool, googleBooksId) {
+  const result = await pool.query(`
+    SELECT authors.id, authors.name
+    FROM book_authors
+    JOIN books ON books.id = book_authors.book_id
+    JOIN authors ON authors.id = book_authors.author_id
+    WHERE books.google_books_id = $1
+    ORDER BY book_authors.author_order ASC, authors.name ASC
+  `, [googleBooksId])
+  return result.rows
+}
+
+export async function listBooksForAuthor(pool, authorId) {
+  const result = await pool.query(`
+    SELECT books.google_books_id, books.title, books.authors, books.description, books.isbn_identifiers, books.categories,
+      books.cover_image_url, books.publisher, books.published_date, books.page_count, books.language, books.import_rank, books.imported_at
+    FROM book_authors
+    JOIN books ON books.id = book_authors.book_id
+    WHERE book_authors.author_id = $1
+    ORDER BY books.import_rank ASC, books.title ASC, books.google_books_id ASC
+  `, [authorId])
+  return result.rows
+}
+
+export async function listFavoriteAuthorsForUser(pool, username) {
+  const result = await pool.query(`
+    SELECT authors.id, authors.name, favorite_authors.created_at AS favorited_at
+    FROM favorite_authors
+    JOIN users ON users.id = favorite_authors.user_id
+    JOIN authors ON authors.id = favorite_authors.author_id
+    WHERE users.username = $1
+    ORDER BY favorite_authors.created_at DESC, authors.name ASC
+  `, [username])
+  return result.rows
+}
+
+export async function toggleFavoriteAuthorForUser(pool, { username, authorId }) {
+  const result = await pool.query(`
+    WITH selected_user AS (
+      SELECT id FROM users WHERE username = $1 LIMIT 1
+    ),
+    selected_author AS (
+      SELECT id FROM authors WHERE id = $2 LIMIT 1
+    ),
+    existing_favorite AS (
+      SELECT favorite_authors.id FROM favorite_authors
+      JOIN selected_user ON selected_user.id = favorite_authors.user_id
+      JOIN selected_author ON selected_author.id = favorite_authors.author_id
+    ),
+    favorite_total AS (
+      SELECT COUNT(*)::INTEGER AS total FROM favorite_authors
+      WHERE user_id IN (SELECT id FROM selected_user)
+    ),
+    removed_favorite AS (
+      DELETE FROM favorite_authors WHERE id IN (SELECT id FROM existing_favorite) RETURNING id
+    ),
+    inserted_favorite AS (
+      INSERT INTO favorite_authors (user_id, author_id)
+      SELECT selected_user.id, selected_author.id FROM selected_user CROSS JOIN selected_author CROSS JOIN favorite_total
+      WHERE NOT EXISTS (SELECT 1 FROM existing_favorite) AND favorite_total.total < 30
+      ON CONFLICT (user_id, author_id) DO NOTHING
+      RETURNING id
+    )
+    SELECT
+      EXISTS (SELECT 1 FROM selected_user) AS has_user,
+      EXISTS (SELECT 1 FROM selected_author) AS has_author,
+      (SELECT total FROM favorite_total) AS favorite_total,
+      EXISTS (SELECT 1 FROM existing_favorite) AS already_favorited,
+      EXISTS (SELECT 1 FROM inserted_favorite) AS favorited
+  `, [username, authorId])
+  const row = result.rows[0] ?? {}
+  if (!row.has_user) return { status: 'missing_user' }
+  if (!row.has_author) return { status: 'missing_author' }
+  if (!row.already_favorited && Number(row.favorite_total) >= 30) return { status: 'limit_reached', limit: 30 }
+  return { status: 'ok', favorited: Boolean(row.favorited) }
+}
+
+export async function listWatchlistBooksForUser(pool, username) {
+  const result = await pool.query(`
+    SELECT books.google_books_id, books.title, books.authors, books.categories, books.cover_image_url,
+      books.published_date, book_watchlist_items.created_at AS watchlisted_at
+    FROM book_watchlist_items
+    JOIN users ON users.id = book_watchlist_items.user_id
+    JOIN books ON books.id = book_watchlist_items.book_id
+    WHERE users.username = $1
+    ORDER BY book_watchlist_items.created_at DESC, books.google_books_id ASC
+  `, [username])
+  return result.rows
+}
+
+export async function addBookToWatchlistForUser(pool, { username, bookId }) {
+  const result = await pool.query(`
+    WITH selected_user AS (
+      SELECT id FROM users WHERE username = $1 LIMIT 1
+    ),
+    selected_book AS (
+      SELECT id FROM books WHERE google_books_id = $2 LIMIT 1
+    ),
+    watchlist_total AS (
+      SELECT COUNT(*)::INTEGER AS total FROM book_watchlist_items
+      WHERE user_id IN (SELECT id FROM selected_user)
+    ),
+    existing_watchlist AS (
+      SELECT created_at FROM book_watchlist_items
+      WHERE user_id IN (SELECT id FROM selected_user)
+        AND book_id IN (SELECT id FROM selected_book)
+      LIMIT 1
+    ),
+    inserted_watchlist AS (
+      INSERT INTO book_watchlist_items (user_id, book_id, created_at)
+      SELECT selected_user.id, selected_book.id, NOW()
+      FROM selected_user CROSS JOIN selected_book CROSS JOIN watchlist_total
+      WHERE watchlist_total.total < 30 OR EXISTS (SELECT 1 FROM existing_watchlist)
+      ON CONFLICT (user_id, book_id) DO NOTHING
+      RETURNING user_id, book_id, created_at
+    )
+    SELECT
+      EXISTS (SELECT 1 FROM selected_user) AS has_user,
+      EXISTS (SELECT 1 FROM selected_book) AS has_book,
+      (SELECT id FROM selected_book) AS entity_id,
+      (SELECT total FROM watchlist_total) AS watchlist_total,
+      EXISTS (SELECT 1 FROM existing_watchlist) AS already_saved,
+      EXISTS (SELECT 1 FROM inserted_watchlist) AS added
+  `, [username, bookId])
+  const row = result.rows[0] ?? {}
+  if (!row.has_user) return { status: 'missing_user' }
+  if (!row.has_book) return { status: 'missing_book' }
+  if (!row.already_saved && Number(row.watchlist_total) >= 30) return { status: 'limit_reached', limit: 30 }
+  return { status: 'ok', ...(Number.isFinite(Number(row.entity_id)) ? { entityId: Number(row.entity_id) } : {}), added: Boolean(row.added) }
+}
+
+export async function removeBookFromWatchlistForUser(pool, { username, bookId }) {
+  const result = await pool.query(`
+    WITH selected_user AS (
+      SELECT id FROM users WHERE username = $1 LIMIT 1
+    ),
+    selected_book AS (
+      SELECT id FROM books WHERE google_books_id = $2 LIMIT 1
+    ),
+    deleted_watchlist AS (
+      DELETE FROM book_watchlist_items
+      WHERE user_id IN (SELECT id FROM selected_user)
+        AND book_id IN (SELECT id FROM selected_book)
+      RETURNING id
+    )
+    SELECT
+      EXISTS (SELECT 1 FROM selected_user) AS has_user,
+      EXISTS (SELECT 1 FROM selected_book) AS has_book,
+      EXISTS (SELECT 1 FROM deleted_watchlist) AS removed
+  `, [username, bookId])
+  const row = result.rows[0] ?? {}
+  if (!row.has_user) return { status: 'missing_user' }
+  if (!row.has_book) return { status: 'missing_book' }
+  return { status: 'ok', removed: Boolean(row.removed) }
+}
+
+export async function listReadBooksForUser(pool, username) {
+  const result = await pool.query(`
+    SELECT books.google_books_id, books.title, books.authors, books.categories, books.cover_image_url,
+      books.published_date, read_books.reading_format, read_books.completion_metadata, read_books.created_at AS read_at
+    FROM read_books
+    JOIN users ON users.id = read_books.user_id
+    JOIN books ON books.id = read_books.book_id
+    WHERE users.username = $1
+    ORDER BY read_books.created_at DESC, books.google_books_id ASC
+  `, [username])
+  return result.rows
+}
+
+export async function addBookToReadForUser(pool, { username, bookId, readingFormat, completionMetadata = {} }) {
+  const result = await pool.query(`
+    WITH selected_user AS (
+      SELECT id FROM users WHERE username = $1 LIMIT 1
+    ),
+    selected_book AS (
+      SELECT id FROM books WHERE google_books_id = $2 LIMIT 1
+    ),
+    deleted_watchlist AS (
+      DELETE FROM book_watchlist_items
+      WHERE user_id IN (SELECT id FROM selected_user)
+        AND book_id IN (SELECT id FROM selected_book)
+      RETURNING id
+    ),
+    inserted_read AS (
+      INSERT INTO read_books (user_id, book_id, reading_format, completion_metadata, created_at)
+      SELECT selected_user.id, selected_book.id, $3, $4::jsonb, NOW()
+      FROM selected_user CROSS JOIN selected_book
+      RETURNING id, user_id, book_id, created_at
+    )
+    SELECT
+      EXISTS (SELECT 1 FROM selected_user) AS has_user,
+      EXISTS (SELECT 1 FROM selected_book) AS has_book,
+      EXISTS (SELECT 1 FROM inserted_read) AS added, (SELECT id FROM inserted_read) AS entity_id,
+      EXISTS (SELECT 1 FROM deleted_watchlist) AS removed_from_watchlist,
+      (SELECT created_at FROM inserted_read) AS created_at
+  `, [username, bookId, readingFormat, JSON.stringify(completionMetadata)])
+  const row = result.rows[0] ?? {}
+  if (!row.has_user) return { status: 'missing_user' }
+  if (!row.has_book) return { status: 'missing_book' }
+  return { status: 'ok', added: Boolean(row.added), ...(Number.isFinite(Number(row.entity_id)) ? { entityId: Number(row.entity_id) } : {}), removedFromWatchlist: Boolean(row.removed_from_watchlist), createdAt: row.created_at ?? null }
+}
+
+export async function removeBookFromReadForUser(pool, { username, bookId }) {
+  const result = await pool.query(`
+    WITH selected_user AS (
+      SELECT id FROM users WHERE username = $1 LIMIT 1
+    ),
+    selected_book AS (
+      SELECT id FROM books WHERE google_books_id = $2 LIMIT 1
+    ),
+    deleted_read AS (
+      DELETE FROM read_books
+      WHERE user_id IN (SELECT id FROM selected_user)
+        AND book_id IN (SELECT id FROM selected_book)
+      RETURNING id
+    )
+    SELECT
+      EXISTS (SELECT 1 FROM selected_user) AS has_user,
+      EXISTS (SELECT 1 FROM selected_book) AS has_book,
+      EXISTS (SELECT 1 FROM deleted_read) AS removed
+  `, [username, bookId])
+  const row = result.rows[0] ?? {}
+  if (!row.has_user) return { status: 'missing_user' }
+  if (!row.has_book) return { status: 'missing_book' }
+  return { status: 'ok', removed: Boolean(row.removed) }
+}
+
+export async function getBookCommunityRating(pool, { bookId, username = null }) {
+  const result = await pool.query(`
+    WITH selected_book AS (
+      SELECT id FROM books WHERE google_books_id = $1 LIMIT 1
+    ),
+    selected_user AS (
+      SELECT id FROM users WHERE username = $2 LIMIT 1
+    )
+    SELECT
+      EXISTS (SELECT 1 FROM selected_book) AS has_book,
+      AVG(book_ratings.score)::DOUBLE PRECISION AS average,
+      COUNT(book_ratings.id)::INTEGER AS vote_count,
+      (
+        SELECT book_ratings.score::DOUBLE PRECISION
+        FROM book_ratings
+        WHERE book_ratings.book_id IN (SELECT id FROM selected_book)
+          AND book_ratings.user_id IN (SELECT id FROM selected_user)
+        LIMIT 1
+      ) AS your_score
+    FROM selected_book
+    LEFT JOIN book_ratings ON book_ratings.book_id = selected_book.id
+  `, [bookId, username])
+  const row = result.rows[0] ?? null
+  if (!row?.has_book) return { status: 'missing_book' }
+  return {
+    status: 'ok',
+    average: row.average === null || row.average === undefined ? null : Number(row.average),
+    voteCount: Number(row.vote_count ?? 0),
+    yourScore: row.your_score === null || row.your_score === undefined ? null : Number(row.your_score),
+  }
+}
+
+export async function upsertBookRatingForUser(pool, { username, bookId, score }) {
+  const result = await pool.query(`
+    WITH selected_user AS (
+      SELECT id FROM users WHERE username = $1 LIMIT 1
+    ),
+    selected_book AS (
+      SELECT id FROM books WHERE google_books_id = $2 LIMIT 1
+    ),
+    saved_rating AS (
+      INSERT INTO book_ratings (user_id, book_id, score, created_at, updated_at)
+      SELECT selected_user.id, selected_book.id, $3, NOW(), NOW()
+      FROM selected_user CROSS JOIN selected_book
+      ON CONFLICT (user_id, book_id)
+      DO UPDATE SET score = EXCLUDED.score, updated_at = NOW()
+      RETURNING score
+    )
+    SELECT
+      EXISTS (SELECT 1 FROM selected_user) AS has_user,
+      EXISTS (SELECT 1 FROM selected_book) AS has_book,
+      (SELECT id FROM selected_book) AS entity_id,
+      (SELECT score::DOUBLE PRECISION FROM saved_rating) AS score
+  `, [username, bookId, score])
+  const row = result.rows[0] ?? null
+  if (!row?.has_user) return { status: 'missing_user' }
+  if (!row.has_book) return { status: 'missing_book' }
+  return { status: 'ok', ...(Number.isFinite(Number(row.entity_id)) ? { entityId: Number(row.entity_id) } : {}), score: Number(row.score) }
+}
+
 export async function ensureTvDetailTables(pool) {
   await pool.query(`
     ALTER TABLE tv_shows
@@ -410,7 +893,13 @@ export async function ensureTvDetailTables(pool) {
 }
 
 export async function ensureAchievementTables(pool) {
-  await pool.query(`CREATE TABLE IF NOT EXISTS achievement_tracking (user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, activated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`)
+  await pool.query(`CREATE TABLE IF NOT EXISTS achievement_tracking (user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, activated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+    CREATE TABLE IF NOT EXISTS book_achievement_baseline_items (user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, kind TEXT NOT NULL, entity_id BIGINT NOT NULL, PRIMARY KEY (user_id, kind, entity_id));
+    CREATE TABLE IF NOT EXISTS book_achievement_events (id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, event_type TEXT NOT NULL, book_id BIGINT NOT NULL REFERENCES books(id) ON DELETE CASCADE, metadata JSONB NOT NULL DEFAULT '{}'::jsonb, occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE (user_id, event_type, book_id));
+    CREATE TABLE IF NOT EXISTS user_book_achievement_unlocks (user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, achievement_id TEXT NOT NULL, unlocked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (user_id, achievement_id));
+    ALTER TABLE read_books ADD COLUMN IF NOT EXISTS completion_metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
+    ALTER TABLE read_books DROP CONSTRAINT IF EXISTS read_books_user_id_book_id_key;
+    CREATE INDEX IF NOT EXISTS read_books_user_book_created_idx ON read_books(user_id, book_id, created_at DESC)`)
   await pool.query(`CREATE TABLE IF NOT EXISTS achievement_baseline_items (user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, kind TEXT NOT NULL, entity_id BIGINT NOT NULL, PRIMARY KEY (user_id, kind, entity_id))`)
   await pool.query(`CREATE TABLE IF NOT EXISTS achievement_events (id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, event_type TEXT NOT NULL, media_type TEXT NOT NULL, entity_id BIGINT NOT NULL, metadata JSONB NOT NULL DEFAULT '{}'::jsonb, occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE (user_id, event_type, media_type, entity_id))`)
   await pool.query(`CREATE TABLE IF NOT EXISTS user_achievement_unlocks (user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, achievement_id TEXT NOT NULL, unlocked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (user_id, achievement_id))`)
@@ -422,7 +911,57 @@ export async function ensureAchievementTables(pool) {
   await pool.query(`INSERT INTO achievement_baseline_items (user_id,kind,entity_id) SELECT user_id,'tv_show',tv_show_id FROM watched_tv_shows ON CONFLICT DO NOTHING`)
   await pool.query(`INSERT INTO achievement_baseline_items (user_id,kind,entity_id) SELECT user_id,'tv_episode_rating',tv_episode_id FROM tv_episode_ratings ON CONFLICT DO NOTHING`)
   await pool.query(`INSERT INTO achievement_baseline_items (user_id,kind,entity_id) SELECT user_id,'tv_watchlist',tv_show_id FROM tv_watchlist_items ON CONFLICT DO NOTHING`)
-  await pool.query(`INSERT INTO achievement_baseline_items (user_id,kind,entity_id) SELECT user_id,'tv_episode_watch',tv_episode_id FROM watched_tv_episodes ON CONFLICT DO NOTHING`)
+  await pool.query(`INSERT INTO achievement_baseline_items (user_id,kind,entity_id) SELECT user_id,'tv_episode_watch',tv_episode_id FROM watched_tv_episodes ON CONFLICT DO NOTHING;
+    INSERT INTO book_achievement_baseline_items (user_id,kind,entity_id) SELECT user_id,'read',id FROM read_books ON CONFLICT DO NOTHING;
+    INSERT INTO book_achievement_baseline_items (user_id,kind,entity_id) SELECT user_id,'rating',book_id FROM book_ratings ON CONFLICT DO NOTHING;
+    INSERT INTO book_achievement_baseline_items (user_id,kind,entity_id) SELECT user_id,'watchlist',book_id FROM book_watchlist_items ON CONFLICT DO NOTHING`)
+}
+
+export async function recordBookAchievementEventForUser(pool, { username, eventType, bookId, metadata = {} }) {
+  const baselineKind = eventType === 'rated' ? 'rating' : eventType === 'watchlisted' ? 'watchlist' : eventType
+  const result = await pool.query(`WITH selected_user AS (SELECT id FROM users WHERE username=$1 LIMIT 1), eligible AS (
+    SELECT id FROM selected_user WHERE NOT EXISTS (SELECT 1 FROM book_achievement_baseline_items b WHERE b.user_id=selected_user.id AND b.kind=$5 AND b.entity_id=$3)
+  ), inserted AS (
+    INSERT INTO book_achievement_events (user_id,event_type,book_id,metadata)
+    SELECT id,$2,$3,$4::jsonb FROM eligible ON CONFLICT (user_id,event_type,book_id) DO UPDATE SET metadata=EXCLUDED.metadata, occurred_at=NOW() RETURNING id
+  ) SELECT EXISTS(SELECT 1 FROM inserted) AS inserted`, [username, eventType, bookId, JSON.stringify(metadata), baselineKind])
+  return Boolean(result.rows[0]?.inserted)
+}
+
+export async function getBookAchievementsForUser(pool, username) {
+  const result = await pool.query(`WITH selected_user AS (SELECT id FROM users WHERE username=$1 LIMIT 1)
+    SELECT rb.id, rb.book_id, rb.reading_format, rb.created_at, rb.completion_metadata, b.page_count, b.published_date, b.categories, b.authors,
+      EXISTS(SELECT 1 FROM book_achievement_baseline_items base WHERE base.user_id=rb.user_id AND base.kind='read' AND base.entity_id=rb.id) AS baseline,
+      EXISTS(SELECT 1 FROM book_watchlist_items wi WHERE wi.user_id=rb.user_id AND wi.book_id=rb.book_id AND wi.created_at <= rb.created_at AND NOT EXISTS(SELECT 1 FROM book_achievement_baseline_items base WHERE base.user_id=wi.user_id AND base.kind='watchlist' AND base.entity_id=wi.book_id)) AS from_tbr
+    FROM read_books rb JOIN books b ON b.id=rb.book_id WHERE rb.user_id IN (SELECT id FROM selected_user) ORDER BY rb.created_at ASC, rb.id ASC`, [username])
+  const reads = result.rows.filter((row) => !row.baseline)
+  const ratings = await pool.query(`SELECT e.metadata FROM book_achievement_events e JOIN users u ON u.id=e.user_id WHERE u.username=$1 AND e.event_type='rated' ORDER BY e.occurred_at ASC`, [username])
+  const values = { book_count: reads.length, pages_read: reads.reduce((n, row) => n + Number(row.page_count || 0), 0) }
+  const formats = new Set(reads.map((row) => row.reading_format)); values.formats = formats.size
+  values['format:audiobook'] = formats.has('audiobook') ? 1 : 0; values['format:ebook'] = formats.has('ebook') ? 1 : 0
+  const categories = new Set(reads.flatMap((row) => row.categories || []).filter(Boolean)); values.genres = categories.size
+  const decades = new Set(reads.map((row) => String(row.published_date || '').slice(0, 3)).filter(Boolean)); values.decades = decades.size
+  const authorCounts = new Map(); reads.flatMap((row) => row.authors || []).forEach((author) => authorCounts.set(author, (authorCounts.get(author) || 0) + 1)); values.author_max = Math.max(0, ...authorCounts.values())
+  values.long_book = reads.some((row) => Number(row.page_count) > 500) ? 1 : 0; values.epic_book = reads.some((row) => Number(row.page_count) > 800) ? 1 : 0; values.short_book = reads.some((row) => Number(row.page_count) > 0 && Number(row.page_count) < 150) ? 1 : 0
+  values.backlist = reads.some((row) => Number(String(row.published_date || '').slice(0, 4)) <= new Date(row.created_at).getUTCFullYear() - 20) ? 1 : 0
+  values.fresh_release = reads.some((row) => String(row.published_date || '').slice(0, 4) === new Date(row.created_at).getUTCFullYear().toString()) ? 1 : 0
+  values.seasons = new Set(reads.map((row) => Math.floor(new Date(row.created_at).getUTCMonth() / 3)).filter(Number.isFinite)).size
+  values.back_to_back = reads.some((row, index) => index > 0 && new Date(row.created_at) - new Date(reads[index - 1].created_at) <= 7 * 86400000) ? 2 : 0
+  const bookCounts = new Map(); reads.forEach((row) => bookCounts.set(String(row.book_id), (bookCounts.get(String(row.book_id)) || 0) + 1)); values.reread = [...bookCounts.values()].some((count) => count > 1) ? 1 : 0
+  values.tbr_completed = reads.filter((row) => row.from_tbr).length
+  const metas = reads.map((row) => row.completion_metadata || {}); for (const item of metas) for (const [key, value] of Object.entries(item)) if (value === true) values[`flag:${key}`] = (values[`flag:${key}`] || 0) + 1
+  values.tropes = new Set(metas.flatMap((item) => Array.isArray(item.tropes) ? item.tropes : [])).size
+  const scores = ratings.rows.map((row) => Number(row.metadata?.score)).filter(Number.isFinite); values.five_star_rating = scores.some((score) => score === 5) ? 1 : 0
+  let streak = 0; let maxStreak = 0; for (const score of scores) { streak = score === 5 ? streak + 1 : 0; maxStreak = Math.max(maxStreak, streak) }; values.five_star_streak = maxStreak
+  const unlocks = await pool.query(`SELECT achievement_id, unlocked_at FROM user_book_achievement_unlocks WHERE user_id=(SELECT id FROM users WHERE username=$1 LIMIT 1)`, [username]); const unlocked = new Map(unlocks.rows.map((row) => [row.achievement_id, row.unlocked_at]))
+  return BOOK_ACHIEVEMENTS.map((item) => ({ ...item, progress: { current: Math.min(values[item.rule] || 0, item.target), target: item.target }, unlocked: unlocked.has(item.id), unlockedAt: unlocked.get(item.id) || null }))
+}
+
+export async function evaluateBookAchievementsForUser(pool, username) {
+  const achievements = await getBookAchievementsForUser(pool, username)
+  const newlyUnlocked = achievements.filter((item) => !item.unlocked && item.progress.current >= item.progress.target)
+  for (const item of newlyUnlocked) await pool.query(`INSERT INTO user_book_achievement_unlocks (user_id,achievement_id) SELECT id,$2 FROM users WHERE username=$1 ON CONFLICT DO NOTHING`, [username, item.id])
+  return newlyUnlocked
 }
 
 export async function recordAchievementEventForUser(pool, { username, eventType, mediaType, entityId, baselineKind, metadata = {} }) {
@@ -2878,6 +3417,98 @@ export async function getMovieStatsForUser(pool, username, period = 'month') {
   }
 }
 
+export async function getBookStatsForUser(pool, username, period = 'year') {
+  const [metricsResult, readEventsResult, categoryResult, authorResult, topRatedResult, recentReadsResult] = await Promise.all([
+    pool.query(`
+      WITH selected_user AS (SELECT id FROM users WHERE username = $1 LIMIT 1),
+      period_start AS (SELECT date_trunc($2, NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS value)
+      SELECT
+        EXISTS(SELECT 1 FROM selected_user) AS has_user,
+        (SELECT COUNT(*)::INTEGER FROM read_books WHERE user_id IN (SELECT id FROM selected_user) AND created_at >= (SELECT value FROM period_start)) AS books_read,
+        (SELECT COALESCE(SUM(COALESCE(books.page_count, 0)), 0)::INTEGER FROM read_books JOIN books ON books.id = read_books.book_id WHERE read_books.user_id IN (SELECT id FROM selected_user) AND read_books.created_at >= (SELECT value FROM period_start)) AS pages_read,
+        (SELECT COUNT(*)::INTEGER FROM read_books WHERE user_id IN (SELECT id FROM selected_user) AND created_at >= (SELECT value FROM period_start) AND reading_format = 'physical') AS physical_books_read,
+        (SELECT COUNT(*)::INTEGER FROM read_books WHERE user_id IN (SELECT id FROM selected_user) AND created_at >= (SELECT value FROM period_start) AND reading_format = 'ebook') AS ebook_books_read,
+        (SELECT COUNT(*)::INTEGER FROM read_books WHERE user_id IN (SELECT id FROM selected_user) AND created_at >= (SELECT value FROM period_start) AND reading_format = 'audiobook') AS audiobook_books_read,
+        (SELECT COUNT(*)::INTEGER FROM book_watchlist_items WHERE user_id IN (SELECT id FROM selected_user) AND created_at >= (SELECT value FROM period_start)) AS watchlist_count,
+        (SELECT AVG(score)::DOUBLE PRECISION FROM book_ratings WHERE user_id IN (SELECT id FROM selected_user) AND GREATEST(created_at, updated_at) >= (SELECT value FROM period_start)) AS average_rating
+    `, [username, period]),
+    pool.query(`
+      WITH selected_user AS (SELECT id FROM users WHERE username = $1 LIMIT 1)
+      SELECT read_books.created_at AS read_at, COALESCE(books.page_count, 0)::INTEGER AS page_count
+      FROM read_books JOIN books ON books.id = read_books.book_id
+      WHERE read_books.user_id IN (SELECT id FROM selected_user)
+        AND read_books.created_at >= date_trunc($2, NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+      ORDER BY read_books.created_at ASC
+    `, [username, period]),
+    pool.query(`
+      WITH selected_user AS (SELECT id FROM users WHERE username = $1 LIMIT 1)
+      SELECT category AS name, COUNT(*)::INTEGER AS book_count, COALESCE(SUM(COALESCE(books.page_count, 0)), 0)::INTEGER AS pages
+      FROM read_books JOIN books ON books.id = read_books.book_id
+      CROSS JOIN LATERAL UNNEST(books.categories) AS category
+      WHERE read_books.user_id IN (SELECT id FROM selected_user)
+        AND read_books.created_at >= date_trunc($2, NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+        AND BTRIM(category) <> ''
+      GROUP BY category ORDER BY book_count DESC, pages DESC, name ASC LIMIT 5
+    `, [username, period]),
+    pool.query(`
+      WITH selected_user AS (SELECT id FROM users WHERE username = $1 LIMIT 1)
+      SELECT author AS name, COUNT(*)::INTEGER AS book_count
+      FROM read_books JOIN books ON books.id = read_books.book_id
+      CROSS JOIN LATERAL UNNEST(books.authors) AS author
+      WHERE read_books.user_id IN (SELECT id FROM selected_user)
+        AND read_books.created_at >= date_trunc($2, NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+        AND BTRIM(author) <> ''
+      GROUP BY author ORDER BY book_count DESC, name ASC LIMIT 4
+    `, [username, period]),
+    pool.query(`
+      WITH selected_user AS (SELECT id FROM users WHERE username = $1 LIMIT 1)
+      SELECT books.google_books_id, books.title, books.authors, books.cover_image_url, book_ratings.score::DOUBLE PRECISION AS score
+      FROM book_ratings JOIN books ON books.id = book_ratings.book_id
+      WHERE book_ratings.user_id IN (SELECT id FROM selected_user)
+        AND GREATEST(book_ratings.created_at, book_ratings.updated_at) >= date_trunc($2, NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+      ORDER BY book_ratings.score DESC, GREATEST(book_ratings.created_at, book_ratings.updated_at) DESC, books.title ASC LIMIT 4
+    `, [username, period]),
+    pool.query(`
+      WITH selected_user AS (SELECT id FROM users WHERE username = $1 LIMIT 1)
+      SELECT books.google_books_id, books.title, books.authors, books.cover_image_url, read_books.created_at AS read_at
+      FROM read_books JOIN books ON books.id = read_books.book_id
+      WHERE read_books.user_id IN (SELECT id FROM selected_user)
+        AND read_books.created_at >= date_trunc($2, NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+      ORDER BY read_books.created_at DESC, books.google_books_id ASC LIMIT 5
+    `, [username, period]),
+  ])
+
+  const metrics = metricsResult.rows[0] ?? null
+  if (!metrics?.has_user) return { status: 'missing_user' }
+  return {
+    metrics: {
+      booksRead: Number(metrics.books_read ?? 0), pagesRead: Number(metrics.pages_read ?? 0),
+      watchlistCount: Number(metrics.watchlist_count ?? 0), averageRating: metrics.average_rating == null ? null : Number(metrics.average_rating),
+    },
+    formats: {
+      physical: Number(metrics.physical_books_read ?? 0),
+      ebook: Number(metrics.ebook_books_read ?? 0),
+      audiobook: Number(metrics.audiobook_books_read ?? 0),
+    },
+    activity: buildBookStatsActivity(readEventsResult.rows, period),
+    categories: categoryResult.rows.map((row) => ({ name: row.name, bookCount: Number(row.book_count), pages: Number(row.pages) })),
+    authors: authorResult.rows.map((row) => ({ name: row.name, bookCount: Number(row.book_count) })),
+    topRated: topRatedResult.rows.map((row) => ({ id: row.google_books_id, title: row.title, authors: row.authors ?? [], coverUrl: row.cover_image_url ?? null, score: Number(row.score) })),
+    recentReads: recentReadsResult.rows.map((row) => ({ id: row.google_books_id, title: row.title, authors: row.authors ?? [], coverUrl: row.cover_image_url ?? null, readAt: row.read_at })),
+  }
+}
+
+function buildBookStatsActivity(events, period) {
+  const buckets = createStatsActivityBuckets(period, new Date())
+  for (const event of events) {
+    const date = new Date(event.read_at)
+    const bucket = getStatsActivityBucketKey(date, period, buckets)
+    const target = buckets.find((entry) => entry.key === bucket)
+    if (target) { target.totalMinutes += Number(event.page_count) || 0; target.movieMinutes += 1 }
+  }
+  return { buckets: buckets.map(({ key: _key, movieMinutes: booksRead, tvMinutes: _unused, ...bucket }) => ({ ...bucket, booksRead, pagesRead: bucket.totalMinutes })) }
+}
+
 export async function getStatsInsightsForUser(pool, username, { period = 'year', timeZone = 'UTC' } = {}) {
   const [result, topRatedThisMonth, mostWatchedActors, streamingPlatforms, recentHistory, yearInReview] = await Promise.all([
     pool.query(
@@ -3447,6 +4078,15 @@ export async function countTvShows(pool) {
   return result.rows[0]?.tv_show_count ?? 0
 }
 
+export async function countBooks(pool) {
+  const result = await pool.query(`
+    SELECT COUNT(*)::INTEGER AS book_count
+    FROM books
+  `)
+
+  return result.rows[0]?.book_count ?? 0
+}
+
 export async function countActors(pool) {
   const result = await pool.query(`
     SELECT COUNT(*)::INTEGER AS actor_count
@@ -3462,7 +4102,7 @@ export async function countStoredDataBytes(pool) {
       SUM(pg_total_relation_size(to_regclass(table_name))),
       0
     )::BIGINT AS stored_data_bytes
-    FROM UNNEST(ARRAY['movies', 'genres', 'cast_members', 'movie_cast', 'users', 'watchlist_items', 'watched_movies']) AS table_name
+    FROM UNNEST(ARRAY['movies', 'books', 'genres', 'cast_members', 'movie_cast', 'users', 'watchlist_items', 'watched_movies']) AS table_name
     WHERE to_regclass(table_name) IS NOT NULL
   `)
 

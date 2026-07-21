@@ -1,7 +1,9 @@
 import { importNowPlayingMovies, importPopularMovies, importUpcomingMovies } from './movieImportService.js'
 import { importAiringTodayTvShows, importOnTheAirTvShows, importPopularTvShows } from './tvImportService.js'
+import { importBooks } from './bookImportService.js'
 
 export const adminJobs = [
+  { key: 'books', name: 'Books Import', execution: 'Interval-based loop', frequency: 'Every hour', source: 'google-books', run: importBooks },
   {
     key: 'popular',
     name: 'Popular Movies Import',
