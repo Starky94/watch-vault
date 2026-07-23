@@ -4072,9 +4072,10 @@
     padding: 0 10px;
     border-radius: 22px;
     display: flex;
+    flex-direction: row;
     align-items: center;
     gap: 2px;
-    overflow-x: auto;
+    overflow: hidden;
     overflow-y: hidden;
     scroll-snap-type: x proximity;
     scrollbar-width: none;
@@ -4090,12 +4091,13 @@
 
   .mobile-nav-item {
     display: grid;
-    flex: 0 0 82px;
+    flex: 1 1 0;
+    min-width: 0;
     justify-items: center;
     gap: 5px;
     color: var(--text-muted);
-    font-size: 0.78rem;
-    scroll-snap-align: start;
+    font-size: clamp(0.58rem, 2.6vw, 0.78rem);
+    white-space: nowrap;
   }
 
   .mobile-nav-item.active {
