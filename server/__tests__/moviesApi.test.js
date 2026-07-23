@@ -45,12 +45,16 @@ function isSchemaSetupQuery(sql) {
     sql.includes('ALTER TABLE tv_shows')
     || sql.includes('ALTER TABLE users')
     || sql.includes('CREATE TABLE IF NOT EXISTS user_alerts')
+    || sql.includes('ALTER TABLE user_alerts')
     || sql.includes('CREATE TABLE IF NOT EXISTS alert_feature_state')
     || sql.includes('INSERT INTO alert_feature_state')
     || sql.includes('CREATE TABLE IF NOT EXISTS favorite_actors')
     || sql.includes('CREATE TABLE IF NOT EXISTS achievement_')
     || sql.includes('CREATE TABLE IF NOT EXISTS user_achievement_unlocks')
     || sql.includes('INSERT INTO achievement_')
+    || sql.includes('CREATE TABLE IF NOT EXISTS watch_together_')
+    || sql.includes('CREATE UNIQUE INDEX IF NOT EXISTS watch_together_')
+    || sql.includes('ALTER TABLE watch_together_')
   )
 }
 
@@ -1373,7 +1377,13 @@ test('watched endpoints toggle watched state, remove watchlist entries, and retu
         }
       }
 
+      if (sql.includes('FROM watch_together_pair_members')) return { rows: [] }
+      if (['BEGIN', 'COMMIT', 'ROLLBACK'].includes(sql.trim())) return { rows: [] }
+
       throw new Error(`Unexpected query: ${sql}`)
+    },
+    async connect() {
+      return { query: pool.query.bind(pool), release() {} }
     },
   }
 

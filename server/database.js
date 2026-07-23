@@ -1,6 +1,7 @@
 import pg from 'pg'
 import { ACHIEVEMENTS } from './achievements.js'
 import { BOOK_ACHIEVEMENTS } from './bookAchievements.js'
+import { WATCH_TOGETHER_ACHIEVEMENTS, WATCH_TOGETHER_ACHIEVEMENT_BY_ID } from './watchTogetherAchievements.js'
 
 const { Pool } = pg
 
@@ -190,12 +191,15 @@ export async function ensureMoviesTable(pool) {
     ADD COLUMN IF NOT EXISTS alert_timezone TEXT
   `)
 
+  await ensureWatchTogetherTables(pool)
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS user_alerts (
       id BIGSERIAL PRIMARY KEY,
       user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      kind TEXT NOT NULL CHECK (kind IN ('favorite_actor_movie', 'watchlist_movie_release', 'tv_episode_release')),
+      kind TEXT NOT NULL CHECK (kind IN ('favorite_actor_movie', 'watchlist_movie_release', 'tv_episode_release', 'watch_together_request', 'watch_together_request_accepted', 'watch_together_request_denied')),
       source_key TEXT NOT NULL UNIQUE,
+      watch_together_request_id BIGINT REFERENCES watch_together_requests(id) ON DELETE CASCADE,
       movie_id BIGINT REFERENCES movies(id) ON DELETE CASCADE,
       tv_show_id BIGINT REFERENCES tv_shows(id) ON DELETE CASCADE,
       tv_episode_id BIGINT,
@@ -205,6 +209,9 @@ export async function ensureMoviesTable(pool) {
       read_at TIMESTAMPTZ
     )
   `)
+  await pool.query(`ALTER TABLE user_alerts ADD COLUMN IF NOT EXISTS watch_together_request_id BIGINT REFERENCES watch_together_requests(id) ON DELETE CASCADE`)
+  await pool.query(`ALTER TABLE user_alerts DROP CONSTRAINT IF EXISTS user_alerts_kind_check`)
+  await pool.query(`ALTER TABLE user_alerts ADD CONSTRAINT user_alerts_kind_check CHECK (kind IN ('favorite_actor_movie', 'watchlist_movie_release', 'tv_episode_release', 'watch_together_request', 'watch_together_request_accepted', 'watch_together_request_denied'))`)
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS alert_feature_state (
@@ -304,6 +311,91 @@ export async function ensureMoviesTable(pool) {
 
 }
 
+export async function ensureWatchTogetherTables(pool) {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS watch_together_pairs (
+      id BIGSERIAL PRIMARY KEY,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS watch_together_requests (
+      id BIGSERIAL PRIMARY KEY,
+      requester_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      recipient_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'denied', 'invalidated')),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      responded_at TIMESTAMPTZ,
+      CHECK (requester_id <> recipient_id)
+    )
+  `)
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS watch_together_one_pending_requester_idx ON watch_together_requests (requester_id) WHERE status = 'pending'`)
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS watch_together_one_pending_recipient_idx ON watch_together_requests (recipient_id) WHERE status = 'pending'`)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS watch_together_pair_members (
+      pair_id BIGINT NOT NULL REFERENCES watch_together_pairs(id) ON DELETE CASCADE,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      PRIMARY KEY (pair_id, user_id),
+      UNIQUE (user_id)
+    )
+  `)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS watch_together_items (
+      id BIGSERIAL PRIMARY KEY,
+      pair_id BIGINT NOT NULL REFERENCES watch_together_pairs(id) ON DELETE CASCADE,
+      media_type TEXT NOT NULL CHECK (media_type IN ('movie', 'tv')),
+      media_id INTEGER NOT NULL,
+      is_selected BOOLEAN NOT NULL DEFAULT FALSE,
+      pick_proposed_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+      pick_proposed_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (pair_id, media_type, media_id)
+    )
+  `)
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS watch_together_one_selected_item_idx
+    ON watch_together_items (pair_id)
+    WHERE is_selected
+  `)
+  await pool.query(`ALTER TABLE watch_together_items ADD COLUMN IF NOT EXISTS pick_proposed_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL`)
+  await pool.query(`ALTER TABLE watch_together_items ADD COLUMN IF NOT EXISTS pick_proposed_at TIMESTAMPTZ`)
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS watch_together_one_pending_pick_idx ON watch_together_items (pair_id) WHERE pick_proposed_by_user_id IS NOT NULL`)
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS watch_together_one_active_pick_idx ON watch_together_items (pair_id) WHERE is_selected OR pick_proposed_by_user_id IS NOT NULL`)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS watch_together_sessions (
+      id BIGSERIAL PRIMARY KEY,
+      pair_id BIGINT NOT NULL REFERENCES watch_together_pairs(id) ON DELETE CASCADE,
+      history_key TEXT NOT NULL,
+      media_type TEXT NOT NULL CHECK (media_type IN ('movie', 'tv')),
+      media_id INTEGER NOT NULL,
+      episode_id BIGINT,
+      details JSONB NOT NULL DEFAULT '{}'::jsonb,
+      achievement_ids TEXT[] NOT NULL DEFAULT '{}',
+      created_by_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (pair_id, history_key)
+    )
+  `)
+  await pool.query(`CREATE TABLE IF NOT EXISTS watch_together_achievement_unlocks (pair_id BIGINT NOT NULL REFERENCES watch_together_pairs(id) ON DELETE CASCADE, achievement_id TEXT NOT NULL, unlocked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (pair_id, achievement_id))`)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS watch_together_item_confirmations (
+      item_id BIGINT NOT NULL REFERENCES watch_together_items(id) ON DELETE CASCADE,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      confirmed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (item_id, user_id)
+    )
+  `)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS watch_together_watched_movies (
+      pair_id BIGINT NOT NULL REFERENCES watch_together_pairs(id) ON DELETE CASCADE,
+      movie_id BIGINT NOT NULL REFERENCES movies(id) ON DELETE CASCADE,
+      watched_together_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (pair_id, movie_id)
+    )
+  `)
+}
+
 export async function ensureBooksTable(pool) {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS books (
@@ -359,7 +451,11 @@ export async function ensureBooksTable(pool) {
     FROM books
     CROSS JOIN LATERAL UNNEST(books.authors) AS author_name
     WHERE BTRIM(author_name) <> ''
-    ON CONFLICT (normalized_name) DO NOTHING
+      AND NOT EXISTS (
+        SELECT 1
+        FROM authors existing_authors
+        WHERE existing_authors.normalized_name = LOWER(REGEXP_REPLACE(BTRIM(author_name), '\\s+', ' ', 'g'))
+      )
   `)
   await pool.query(`
     INSERT INTO book_authors (book_id, author_id, author_order)
@@ -439,10 +535,18 @@ export async function upsertBooks(pool, books) {
           if (!name) continue
           const normalizedName = name.toLowerCase()
           const authorResult = await client.query(`
-            INSERT INTO authors (normalized_name, name, updated_at)
-            VALUES ($1, $2, NOW())
-            ON CONFLICT (normalized_name) DO UPDATE SET updated_at = NOW()
-            RETURNING id
+            WITH existing_author AS (
+              SELECT id FROM authors WHERE normalized_name = $1 ORDER BY id ASC LIMIT 1
+            ), inserted_author AS (
+              INSERT INTO authors (normalized_name, name, updated_at)
+              SELECT $1, $2, NOW()
+              WHERE NOT EXISTS (SELECT 1 FROM existing_author)
+              RETURNING id
+            )
+            SELECT id FROM inserted_author
+            UNION ALL
+            SELECT id FROM existing_author
+            LIMIT 1
           `, [normalizedName, name])
           await client.query('INSERT INTO book_authors (book_id, author_id, author_order) VALUES ($1, $2, $3)', [bookId, authorResult.rows[0].id, authorOrder])
         }
@@ -888,6 +992,15 @@ export async function ensureTvDetailTables(pool) {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       UNIQUE (user_id, tv_episode_id)
+    )
+  `)
+  await pool.query(`ALTER TABLE watch_together_items ADD COLUMN IF NOT EXISTS tv_episode_id BIGINT REFERENCES tv_episodes(id) ON DELETE CASCADE`)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS watch_together_watched_episodes (
+      pair_id BIGINT NOT NULL REFERENCES watch_together_pairs(id) ON DELETE CASCADE,
+      tv_episode_id BIGINT NOT NULL REFERENCES tv_episodes(id) ON DELETE CASCADE,
+      watched_together_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (pair_id, tv_episode_id)
     )
   `)
 }
@@ -1702,6 +1815,627 @@ export async function findUserByCredentials(pool, { username, password }) {
   )
 
   return result.rows[0] ?? null
+}
+
+export async function listWatchTogetherUsers(pool, username) {
+  const result = await pool.query(
+    `
+      SELECT users.username, users.full_name
+      FROM users
+      WHERE users.username <> $1
+        AND NOT EXISTS (SELECT 1 FROM watch_together_pair_members members WHERE members.user_id = users.id)
+      ORDER BY LOWER(users.full_name), users.username
+    `,
+    [username]
+  )
+  return result.rows
+}
+
+export async function listWatchTogetherWatchedMovieIdsForUser(pool, { username, movieIds }) {
+  const ids = Array.isArray(movieIds) ? movieIds.filter(Number.isInteger) : []
+  if (!ids.length) return new Set()
+  const result = await pool.query(
+    `
+      WITH pair AS (
+        SELECT mine.pair_id
+        FROM watch_together_pair_members mine
+        JOIN users ON users.id = mine.user_id
+        WHERE users.username = $1
+      )
+      SELECT DISTINCT movies.tmdb_id
+      FROM watched_movies
+      JOIN movies ON movies.id = watched_movies.movie_id
+      WHERE watched_movies.user_id IN (
+        SELECT user_id FROM watch_together_pair_members WHERE pair_id IN (SELECT pair_id FROM pair)
+      )
+        AND movies.tmdb_id = ANY($2::integer[])
+    `,
+    [username, ids]
+  )
+  return new Set(result.rows.map((row) => Number(row.tmdb_id)))
+}
+
+export async function getWatchTogetherStateForUser(pool, username) {
+  const pairResult = await pool.query(
+    `
+      SELECT pairs.id AS pair_id, mine.user_id AS current_user_id, other.user_id AS partner_user_id, partner.username AS partner_username, partner.full_name AS partner_full_name
+      FROM watch_together_pair_members mine
+      JOIN watch_together_pairs pairs ON pairs.id = mine.pair_id
+      JOIN watch_together_pair_members other ON other.pair_id = pairs.id AND other.user_id <> mine.user_id
+      JOIN users me ON me.id = mine.user_id
+      JOIN users partner ON partner.id = other.user_id
+      WHERE me.username = $1
+      LIMIT 1
+    `,
+    [username]
+  )
+  const pair = pairResult.rows[0]
+  if (!pair) {
+    const pendingResult = await pool.query(
+      `
+        SELECT requests.id, requests.requester_id, requests.recipient_id, requester.username AS requester_username, requester.full_name AS requester_full_name,
+          recipient.username AS recipient_username, recipient.full_name AS recipient_full_name
+        FROM watch_together_requests requests
+        JOIN users me ON me.username = $1
+        JOIN users requester ON requester.id = requests.requester_id
+        JOIN users recipient ON recipient.id = requests.recipient_id
+        WHERE requests.status = 'pending' AND (requests.requester_id = me.id OR requests.recipient_id = me.id)
+        LIMIT 1
+      `,
+      [username]
+    )
+    const pending = pendingResult.rows[0]
+    return {
+      partner: null,
+      pendingRequest: pending ? {
+        id: Number(pending.id),
+        direction: Number(pending.requester_id) === Number(pending.recipient_id) ? 'outgoing' : (pending.requester_username === username ? 'outgoing' : 'incoming'),
+        user: pending.requester_username === username
+          ? { username: pending.recipient_username, full_name: pending.recipient_full_name }
+          : { username: pending.requester_username, full_name: pending.requester_full_name },
+      } : null,
+      items: [], watchedMovies: [], watchedEpisodes: [], inProgressShows: [],
+    }
+  }
+
+  const itemsResult = await pool.query(
+    `
+      SELECT items.media_type, items.media_id, items.tv_episode_id, items.is_selected, items.pick_proposed_by_user_id, items.pick_proposed_at, items.created_at,
+        CASE WHEN items.pick_proposed_by_user_id IS NULL THEN NULL WHEN items.pick_proposed_by_user_id = $2 THEN 'proposed_by_current_user' ELSE 'awaiting_current_user' END AS pick_vote_status,
+        EXISTS(SELECT 1 FROM watch_together_item_confirmations confirmations WHERE confirmations.item_id = items.id AND confirmations.user_id = $2) AS confirmed_by_current_user,
+        EXISTS(SELECT 1 FROM watch_together_item_confirmations confirmations WHERE confirmations.item_id = items.id AND confirmations.user_id = $3) AS confirmed_by_partner,
+        movies.title, movies.release_date AS release_date, movies.poster_path, movies.backdrop_path, movies.vote_average,
+        NULL::TEXT AS show_name, NULL::DATE AS first_air_date, NULL::TEXT AS show_poster_path, NULL::TEXT AS show_backdrop_path, NULL::DOUBLE PRECISION AS show_vote_average,
+        NULL::INTEGER AS season_number, NULL::INTEGER AS episode_number, NULL::TEXT AS episode_name
+      FROM watch_together_items items
+      JOIN movies ON items.media_type = 'movie' AND movies.tmdb_id = items.media_id
+      WHERE items.pair_id = $1
+      UNION ALL
+      SELECT items.media_type, items.media_id, items.tv_episode_id, items.is_selected, items.pick_proposed_by_user_id, items.pick_proposed_at, items.created_at,
+        CASE WHEN items.pick_proposed_by_user_id IS NULL THEN NULL WHEN items.pick_proposed_by_user_id = $2 THEN 'proposed_by_current_user' ELSE 'awaiting_current_user' END AS pick_vote_status,
+        EXISTS(SELECT 1 FROM watch_together_item_confirmations confirmations WHERE confirmations.item_id = items.id AND confirmations.user_id = $2) AS confirmed_by_current_user,
+        EXISTS(SELECT 1 FROM watch_together_item_confirmations confirmations WHERE confirmations.item_id = items.id AND confirmations.user_id = $3) AS confirmed_by_partner,
+        NULL::TEXT AS title, NULL::DATE AS release_date, NULL::TEXT AS poster_path, NULL::TEXT AS backdrop_path, NULL::DOUBLE PRECISION AS vote_average,
+        tv_shows.name AS show_name, tv_shows.first_air_date, tv_shows.poster_path AS show_poster_path, tv_shows.backdrop_path AS show_backdrop_path, tv_shows.vote_average AS show_vote_average,
+        tv_seasons.season_number, tv_episodes.episode_number, tv_episodes.name AS episode_name
+      FROM watch_together_items items
+      JOIN tv_shows ON items.media_type = 'tv' AND tv_shows.tmdb_id = items.media_id
+      LEFT JOIN tv_episodes ON tv_episodes.id = items.tv_episode_id
+      LEFT JOIN tv_seasons ON tv_seasons.id = tv_episodes.tv_season_id
+      WHERE items.pair_id = $1
+      ORDER BY is_selected DESC, pick_proposed_at DESC NULLS LAST, created_at DESC, media_type ASC, media_id ASC
+    `,
+    [pair.pair_id, pair.current_user_id, pair.partner_user_id]
+  )
+  const watchedResult = await pool.query(
+    `
+      SELECT movies.tmdb_id, movies.title, movies.release_date, movies.poster_path, movies.backdrop_path, movies.vote_average, watched.watched_together_at,
+        session.details AS session_details, session.achievement_ids AS session_achievement_ids
+      FROM watch_together_watched_movies watched
+      JOIN movies ON movies.id = watched.movie_id
+      LEFT JOIN watch_together_sessions session ON session.pair_id=watched.pair_id AND session.history_key=('movie:' || movies.tmdb_id::text)
+      WHERE watched.pair_id = $1
+      ORDER BY watched.watched_together_at DESC, movies.tmdb_id ASC
+    `,
+    [pair.pair_id]
+  )
+  const watchedEpisodesResult = await pool.query(
+    `SELECT tv_shows.tmdb_id AS show_id, tv_shows.name AS show_name, tv_shows.poster_path AS show_poster_path,
+      tv_episodes.tmdb_id AS episode_id, tv_episodes.name AS episode_name, tv_seasons.season_number, tv_episodes.episode_number, watched.watched_together_at,
+      session.details AS session_details, session.achievement_ids AS session_achievement_ids
+     FROM watch_together_watched_episodes watched
+     JOIN tv_episodes ON tv_episodes.id = watched.tv_episode_id
+     JOIN tv_seasons ON tv_seasons.id = tv_episodes.tv_season_id
+     JOIN tv_shows ON tv_shows.id = tv_seasons.tv_show_id
+     LEFT JOIN watch_together_sessions session ON session.pair_id=watched.pair_id AND session.history_key=('tv:' || tv_episodes.id::text)
+     WHERE watched.pair_id = $1
+     ORDER BY watched.watched_together_at DESC, tv_episodes.id ASC`,
+    [pair.pair_id]
+  )
+  const inProgressShowsResult = await pool.query(
+    `SELECT DISTINCT ON (tv_shows.id)
+       tv_shows.tmdb_id AS show_id, tv_shows.name AS show_name, tv_shows.poster_path AS show_poster_path,
+       COUNT(*) OVER (PARTITION BY tv_shows.id)::INTEGER AS watched_episode_count,
+       tv_episodes.name AS latest_episode_name, tv_seasons.season_number AS latest_season_number,
+       tv_episodes.episode_number AS latest_episode_number, watched.watched_together_at AS last_watched_together_at
+     FROM watch_together_watched_episodes watched
+     JOIN tv_episodes ON tv_episodes.id = watched.tv_episode_id
+     JOIN tv_seasons ON tv_seasons.id = tv_episodes.tv_season_id
+     JOIN tv_shows ON tv_shows.id = tv_seasons.tv_show_id
+     WHERE watched.pair_id = $1
+     ORDER BY tv_shows.id, watched.watched_together_at DESC, tv_episodes.id DESC`,
+    [pair.pair_id]
+  )
+  return { partner: { username: pair.partner_username, full_name: pair.partner_full_name }, pendingRequest: null, items: itemsResult.rows, watchedMovies: watchedResult.rows, watchedEpisodes: watchedEpisodesResult.rows, inProgressShows: inProgressShowsResult.rows }
+}
+
+export async function getWatchTogetherStatsForUser(pool, username, { timeZone = 'UTC' } = {}) {
+  const pair = await getWatchTogetherPairForUser(pool, username)
+  if (!pair) return { status: 'no_pair' }
+
+  const [moviesResult, episodesResult, movieRatingsResult, episodeRatingsResult, movieActorsResult, showActorsResult] = await Promise.all([
+    pool.query(`SELECT movies.tmdb_id AS id, movies.title, movies.poster_path, watched.watched_together_at AS watched_at, COALESCE(movies.runtime_minutes, 0)::INTEGER AS runtime_minutes, MAX(watched_movies.watch_service) AS watch_service,
+      COALESCE(ARRAY_REMOVE(ARRAY_AGG(DISTINCT genres.name), NULL), '{}') AS genre_names
+      FROM watch_together_watched_movies watched JOIN movies ON movies.id=watched.movie_id
+      LEFT JOIN watched_movies ON watched_movies.movie_id=movies.id AND watched_movies.user_id IN ($2,$3)
+      LEFT JOIN LATERAL UNNEST(movies.genre_ids) selected_genre(tmdb_genre_id) ON TRUE LEFT JOIN genres ON genres.tmdb_genre_id=selected_genre.tmdb_genre_id
+      WHERE watched.pair_id=$1 GROUP BY movies.id,movies.tmdb_id,movies.title,movies.poster_path,watched.watched_together_at`, [pair.pair_id, pair.user_id, pair.partner_user_id]),
+    pool.query(`SELECT tv_shows.tmdb_id AS id, tv_shows.name AS title, tv_shows.poster_path, tv_episodes.id AS episode_id, tv_episodes.name AS episode_title, tv_seasons.season_number, tv_episodes.episode_number, watched.watched_together_at AS watched_at, COALESCE(tv_episodes.runtime_minutes,0)::INTEGER AS runtime_minutes, MAX(watched_tv_episodes.watch_service) AS watch_service,
+      COALESCE(ARRAY_REMOVE(ARRAY_AGG(DISTINCT tv_genres.name), NULL), '{}') AS genre_names
+      FROM watch_together_watched_episodes watched JOIN tv_episodes ON tv_episodes.id=watched.tv_episode_id JOIN tv_seasons ON tv_seasons.id=tv_episodes.tv_season_id JOIN tv_shows ON tv_shows.id=tv_seasons.tv_show_id
+      LEFT JOIN watched_tv_episodes ON watched_tv_episodes.tv_episode_id=tv_episodes.id AND watched_tv_episodes.user_id IN ($2,$3)
+      LEFT JOIN LATERAL UNNEST(tv_shows.genre_ids) selected_genre(tmdb_genre_id) ON TRUE LEFT JOIN tv_genres ON tv_genres.tmdb_genre_id=selected_genre.tmdb_genre_id
+      WHERE watched.pair_id=$1 AND tv_seasons.season_number > 0 GROUP BY tv_shows.id,tv_shows.tmdb_id,tv_shows.name,tv_shows.poster_path,tv_episodes.id,tv_episodes.name,tv_seasons.season_number,tv_episodes.episode_number,watched.watched_together_at`, [pair.pair_id, pair.user_id, pair.partner_user_id]),
+    pool.query(`SELECT movies.tmdb_id AS id, AVG(movie_ratings.score)::DOUBLE PRECISION AS score FROM watch_together_watched_movies watched JOIN movies ON movies.id=watched.movie_id JOIN movie_ratings ON movie_ratings.movie_id=movies.id AND movie_ratings.user_id IN ($2,$3) WHERE watched.pair_id=$1 GROUP BY movies.tmdb_id`, [pair.pair_id, pair.user_id, pair.partner_user_id]),
+    pool.query(`SELECT watched.tv_episode_id AS episode_id, AVG(tv_episode_ratings.score)::DOUBLE PRECISION AS score FROM watch_together_watched_episodes watched JOIN tv_episode_ratings ON tv_episode_ratings.tv_episode_id=watched.tv_episode_id AND tv_episode_ratings.user_id IN ($2,$3) WHERE watched.pair_id=$1 GROUP BY watched.tv_episode_id`, [pair.pair_id, pair.user_id, pair.partner_user_id]),
+    pool.query(`SELECT cast_members.tmdb_person_id::TEXT AS person_id, cast_members.name, MAX(cast_members.profile_path) AS profile_path, COUNT(DISTINCT movies.id)::INTEGER AS title_count FROM watch_together_watched_movies watched JOIN movies ON movies.id=watched.movie_id JOIN movie_cast ON movie_cast.movie_id=movies.id AND movie_cast.credit_type='actor' JOIN cast_members ON cast_members.id=movie_cast.cast_member_id WHERE watched.pair_id=$1 GROUP BY cast_members.tmdb_person_id,cast_members.name ORDER BY title_count DESC,cast_members.name ASC LIMIT 4`, [pair.pair_id]),
+    pool.query(`SELECT tv_show_credits.tmdb_person_id::TEXT AS person_id, tv_show_credits.name, MAX(tv_show_credits.profile_path) AS profile_path, COUNT(DISTINCT tv_seasons.tv_show_id)::INTEGER AS title_count FROM watch_together_watched_episodes watched JOIN tv_episodes ON tv_episodes.id=watched.tv_episode_id JOIN tv_seasons ON tv_seasons.id=tv_episodes.tv_season_id JOIN tv_show_credits ON tv_show_credits.tv_show_id=tv_seasons.tv_show_id AND tv_show_credits.credit_type='actor' WHERE watched.pair_id=$1 GROUP BY tv_show_credits.tmdb_person_id,tv_show_credits.name ORDER BY title_count DESC,tv_show_credits.name ASC LIMIT 4`, [pair.pair_id]),
+  ])
+  const movieScores = new Map(movieRatingsResult.rows.map((row) => [Number(row.id), Number(row.score)]))
+  const episodeScores = new Map(episodeRatingsResult.rows.map((row) => [Number(row.episode_id), Number(row.score)]))
+  const movies = moviesResult.rows.map((row) => ({ ...row, media_type: 'movie', score: movieScores.get(Number(row.id)) ?? null }))
+  const shows = episodesResult.rows.map((row) => ({ ...row, media_type: 'tv', score: episodeScores.get(Number(row.episode_id)) ?? null }))
+  return { status: 'ok', movies: buildWatchTogetherStats(movies, { timeZone, kind: 'movies', actors: movieActorsResult.rows }), shows: buildWatchTogetherStats(shows, { timeZone, kind: 'shows', actors: showActorsResult.rows }) }
+}
+
+export function buildWatchTogetherStats(rows = [], { timeZone = 'UTC', kind = 'movies', actors = [] } = {}) {
+  const events = rows.map((row) => ({ ...row, media_type: row.media_type || (kind === 'shows' ? 'tv' : 'movie'), watched_at: new Date(row.watched_at), runtime_minutes: Math.max(0, Number(row.runtime_minutes) || 0), genre_names: Array.isArray(row.genre_names) ? row.genre_names.filter(Boolean) : [] })).filter((row) => !Number.isNaN(row.watched_at.valueOf()))
+  const months = createAllTimeActivityBuckets(events)
+  const monthByKey = new Map(months.map((month) => [month.key, month]))
+  const genres = new Map(); const weekdays = Array(7).fill(0); const hours = Array(24).fill(0); const services = new Map()
+  const formatter = new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'short', hour: '2-digit', hourCycle: 'h23' })
+  for (const event of events) {
+    const minutes = event.runtime_minutes; const key = event.watched_at.toISOString().slice(0, 7); const month = monthByKey.get(key)
+    if (month) month.totalMinutes += minutes
+    event.genre_names.forEach((name) => genres.set(name, (genres.get(name) ?? 0) + minutes))
+    if (event.watch_service) services.set(event.watch_service, (services.get(event.watch_service) ?? 0) + minutes)
+    const parts = Object.fromEntries(formatter.formatToParts(event.watched_at).map((part) => [part.type, part.value])); const weekday = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].indexOf(parts.weekday); const hour = Number(parts.hour)
+    if (weekday >= 0) weekdays[weekday] += minutes; if (hour >= 0 && hour < 24) hours[hour] += minutes
+  }
+  const scores = events.map((event) => event.score).filter(Number.isFinite)
+  const topRated = events.filter((event) => Number.isFinite(event.score)).sort((a,b) => b.score-a.score || b.watched_at-a.watched_at).slice(0,4)
+  const recentHistory = [...events].sort((a,b) => b.watched_at-a.watched_at).slice(0,5)
+  const totalServiceMinutes = [...services.values()].reduce((sum, minutes) => sum + minutes, 0)
+  const distinctShows = new Set(events.map((event) => event.id)).size
+  const genreEntries = [...genres].sort((a,b) => b[1]-a[1] || a[0].localeCompare(b[0])).slice(0,5).map(([name, minutes]) => ({ name, minutes }))
+  const ratings = scores.map((score) => ({ score }))
+  const reviewEvents = events.map((event) => ({ media_type: event.media_type, title_key: kind === 'shows' ? event.id : event.id, watched_at: event.watched_at, runtime_minutes: event.runtime_minutes, genre_names: event.genre_names }))
+  return {
+    metrics: { titlesWatched: kind === 'movies' ? events.length : distinctShows, episodesWatched: kind === 'shows' ? events.length : 0, timeWatchedMinutes: events.reduce((sum,event) => sum + event.runtime_minutes,0), averageRating: scores.length ? scores.reduce((sum,score) => sum + score,0) / scores.length : null },
+    activity: { buckets: months.map(({ key: _key, ...month }) => month) }, genres: genreEntries,
+    habits: { weekdayMinutes: weekdays, bestWeekdayIndex: Math.max(...weekdays) > 0 ? weekdays.indexOf(Math.max(...weekdays)) : null, peakWindow: getPeakWatchWindow(hours) },
+    topRated: topRated.map(mapWatchTogetherStatEvent), streamingPlatforms: [...services].sort((a,b) => b[1]-a[1] || a[0].localeCompare(b[0])).slice(0,5).map(([name,minutes]) => ({ name, minutes, percent: totalServiceMinutes ? Math.round(minutes / totalServiceMinutes * 100) : 0 })), recentHistory: recentHistory.map(mapWatchTogetherStatEvent),
+    yearInReview: buildYearInReview(reviewEvents, ratings), actors: actors.map((actor) => ({ personId: String(actor.person_id), name: actor.name, profilePath: actor.profile_path ?? null, titleCount: Number(actor.title_count) })),
+  }
+}
+
+function createAllTimeActivityBuckets(events) {
+  if (!events.length) return []
+  const first = new Date(Math.min(...events.map((event) => event.watched_at.valueOf()))); const now = new Date(); const buckets = []
+  let cursor = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth(), 1)); const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))
+  while (cursor <= end) { buckets.push({ key: cursor.toISOString().slice(0,7), label: new Intl.DateTimeFormat('en-US',{month:'short',year:'2-digit',timeZone:'UTC'}).format(cursor), totalMinutes: 0 }); cursor = new Date(Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth()+1, 1)) }
+  return buckets
+}
+
+function mapWatchTogetherStatEvent(event) { return { id: Number(event.id), title: event.title, posterPath: event.poster_path ?? null, mediaType: event.media_type, episodeId: event.episode_id ? Number(event.episode_id) : null, episodeTitle: event.episode_title ?? null, seasonNumber: event.season_number === undefined ? null : Number(event.season_number), episodeNumber: event.episode_number === undefined ? null : Number(event.episode_number), watchedAt: event.watched_at, score: event.score } }
+
+async function getWatchTogetherPairForUser(pool, username) {
+  const result = await pool.query(`SELECT mine.pair_id, mine.user_id, other.user_id AS partner_user_id FROM watch_together_pair_members mine JOIN users ON users.id=mine.user_id JOIN watch_together_pair_members other ON other.pair_id=mine.pair_id AND other.user_id<>mine.user_id WHERE users.username=$1 LIMIT 1`, [username])
+  return result.rows[0] || null
+}
+
+export async function getWatchTogetherAchievementsForUser(pool, username) {
+  const pair = await getWatchTogetherPairForUser(pool, username)
+  if (!pair) return []
+  const [sessions, movieCount, episodeCount, unlocks] = await Promise.all([
+    pool.query(`SELECT achievement_ids FROM watch_together_sessions WHERE pair_id=$1`, [pair.pair_id]),
+    pool.query(`SELECT COUNT(*)::INTEGER AS count FROM watch_together_watched_movies WHERE pair_id=$1`, [pair.pair_id]),
+    pool.query(`SELECT COUNT(*)::INTEGER AS count FROM watch_together_watched_episodes WHERE pair_id=$1`, [pair.pair_id]),
+    pool.query(`SELECT achievement_id, unlocked_at FROM watch_together_achievement_unlocks WHERE pair_id=$1`, [pair.pair_id]),
+  ])
+  const counts = new Map()
+  for (const row of sessions.rows) for (const id of row.achievement_ids || []) counts.set(id, (counts.get(id) || 0) + 1)
+  // The core milestones progress automatically as shared history grows.
+  const auto = { 'watch-together-better-together': Number(movieCount.rows[0]?.count || 0), 'watch-together-pilot-partners': Number(episodeCount.rows[0]?.count || 0), 'watch-together-movie-night-regulars': Number(movieCount.rows[0]?.count || 0), 'watch-together-perfect-pairing': Number(movieCount.rows[0]?.count || 0), 'watch-together-cinema-companions': Number(movieCount.rows[0]?.count || 0), 'watch-together-dynamic-duo': Number(movieCount.rows[0]?.count || 0), 'watch-together-reel-soulmates': Number(movieCount.rows[0]?.count || 0), 'watch-together-long-term-relationship': Number(episodeCount.rows[0]?.count || 0), 'watch-together-episode-experts': Number(episodeCount.rows[0]?.count || 0), 'watch-together-binge-legends': Number(episodeCount.rows[0]?.count || 0) }
+  const unlocked = new Map(unlocks.rows.map((row) => [row.achievement_id, row.unlocked_at]))
+  return WATCH_TOGETHER_ACHIEVEMENTS.map((achievement) => {
+    const current = Math.max(counts.get(achievement.id) || 0, auto[achievement.id] || 0)
+    return { ...achievement, progress: { current: Math.min(current, achievement.target), target: achievement.target, complete: current >= achievement.target }, unlocked: unlocked.has(achievement.id), unlockedAt: unlocked.get(achievement.id) || null }
+  })
+}
+
+export async function evaluateWatchTogetherAchievementsForUser(pool, username) {
+  const pair = await getWatchTogetherPairForUser(pool, username)
+  if (!pair) return []
+  const achievements = await getWatchTogetherAchievementsForUser(pool, username)
+  const newly = achievements.filter((item) => item.progress.complete && !item.unlocked)
+  if (!newly.length) return []
+  const result = await pool.query(`INSERT INTO watch_together_achievement_unlocks (pair_id,achievement_id) SELECT $1,unnest($2::text[]) ON CONFLICT DO NOTHING RETURNING achievement_id,unlocked_at`, [pair.pair_id, newly.map((item) => item.id)])
+  const dates = new Map(result.rows.map((row) => [row.achievement_id, row.unlocked_at]))
+  return newly.filter((item) => dates.has(item.id)).map((item) => ({ ...item, unlocked: true, unlockedAt: dates.get(item.id) }))
+}
+
+export async function saveWatchTogetherSessionForUser(pool, { username, mediaType, mediaId, episodeId = null, achievementIds = [], details = {} }) {
+  const pair = await getWatchTogetherPairForUser(pool, username)
+  if (!pair) return { status: 'no_pair' }
+  const validIds = [...new Set(achievementIds)].filter((id) => WATCH_TOGETHER_ACHIEVEMENT_BY_ID.has(id))
+  const history = mediaType === 'movie'
+    ? await pool.query(`SELECT 1 FROM watch_together_watched_movies w JOIN movies m ON m.id=w.movie_id WHERE w.pair_id=$1 AND m.tmdb_id=$2`, [pair.pair_id, mediaId])
+    : await pool.query(`SELECT e.id AS episode_id FROM watch_together_watched_episodes w JOIN tv_episodes e ON e.id=w.tv_episode_id WHERE w.pair_id=$1 AND e.tmdb_id=$2`, [pair.pair_id, episodeId])
+  if (!history.rows[0]) return { status: 'missing_history' }
+  const historyKey = mediaType === 'tv' ? `tv:${history.rows[0].episode_id}` : `movie:${mediaId}`
+  await pool.query(`INSERT INTO watch_together_sessions (pair_id,history_key,media_type,media_id,episode_id,details,achievement_ids,created_by_user_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (pair_id,history_key) DO UPDATE SET details=EXCLUDED.details, achievement_ids=EXCLUDED.achievement_ids, created_by_user_id=EXCLUDED.created_by_user_id, updated_at=NOW()`, [pair.pair_id, historyKey, mediaType, mediaId, episodeId, details, validIds, pair.user_id])
+  return { status: 'ok', newlyUnlockedAchievements: await evaluateWatchTogetherAchievementsForUser(pool, username) }
+}
+
+export async function createWatchTogetherPartnerRequest(pool, { username, partnerUsername }) {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const users = await client.query(`SELECT id, username, full_name FROM users WHERE username = ANY($1::text[]) FOR UPDATE`, [[username, partnerUsername]])
+    const current = users.rows.find((row) => row.username === username)
+    const partner = users.rows.find((row) => row.username === partnerUsername)
+    if (!current || !partner || current.id === partner.id) {
+      await client.query('ROLLBACK')
+      return { status: !current ? 'missing_user' : !partner ? 'missing_partner' : 'same_user' }
+    }
+
+    const activePairs = await client.query(
+      `SELECT DISTINCT pair_id FROM watch_together_pair_members WHERE user_id = ANY($1::bigint[])`,
+      [[current.id, partner.id]]
+    )
+    if (activePairs.rows.length) {
+      await client.query('ROLLBACK')
+      return { status: 'already_paired' }
+    }
+    const pending = await client.query(
+      `SELECT id FROM watch_together_requests WHERE status = 'pending' AND (requester_id = ANY($1::bigint[]) OR recipient_id = ANY($1::bigint[])) LIMIT 1`,
+      [[current.id, partner.id]]
+    )
+    if (pending.rows.length) {
+      await client.query('ROLLBACK')
+      return { status: 'pending_request' }
+    }
+    const created = await client.query(
+      `INSERT INTO watch_together_requests (requester_id, recipient_id) VALUES ($1, $2) RETURNING id`,
+      [current.id, partner.id]
+    )
+    const requestId = created.rows[0].id
+    await client.query(
+      `INSERT INTO user_alerts (user_id, kind, source_key, watch_together_request_id, title, message) VALUES ($1, 'watch_together_request', $2, $3, $4, $5)`,
+      [partner.id, `watch-together-request:${requestId}`, requestId, 'Watch Together request', `${current.full_name} wants to watch together with you.`]
+    )
+    await client.query('COMMIT')
+    return { status: 'ok', request: { id: Number(requestId), direction: 'outgoing', user: partner } }
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally {
+    client.release()
+  }
+}
+
+export async function respondToWatchTogetherPartnerRequest(pool, { username, requestId, decision }) {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const requestResult = await client.query(
+      `SELECT requests.*, requester.username AS requester_username, requester.full_name AS requester_full_name, recipient.username AS recipient_username, recipient.full_name AS recipient_full_name
+       FROM watch_together_requests requests JOIN users requester ON requester.id = requests.requester_id JOIN users recipient ON recipient.id = requests.recipient_id
+       WHERE requests.id = $1 FOR UPDATE`,
+      [requestId]
+    )
+    const invite = requestResult.rows[0]
+    if (!invite || invite.recipient_username !== username) { await client.query('ROLLBACK'); return { status: 'missing_request' } }
+    if (invite.status !== 'pending') { await client.query('ROLLBACK'); return { status: 'not_pending' } }
+    if (decision === 'deny') {
+      await client.query(`UPDATE watch_together_requests SET status = 'denied', responded_at = NOW() WHERE id = $1`, [requestId])
+      await client.query(`INSERT INTO user_alerts (user_id, kind, source_key, watch_together_request_id, title, message) VALUES ($1, 'watch_together_request_denied', $2, $3, $4, $5)`, [invite.requester_id, `watch-together-request:${requestId}:denied`, requestId, 'Watch Together request declined', `${invite.recipient_full_name} declined your Watch Together request.`])
+      await client.query('COMMIT')
+      return { status: 'denied' }
+    }
+    const activePairs = await client.query(`SELECT pair_id FROM watch_together_pair_members WHERE user_id = ANY($1::bigint[])`, [[invite.requester_id, invite.recipient_id]])
+    if (activePairs.rows.length) { await client.query('ROLLBACK'); return { status: 'already_paired' } }
+    const pair = await client.query(`INSERT INTO watch_together_pairs DEFAULT VALUES RETURNING id`)
+    await client.query(`INSERT INTO watch_together_pair_members (pair_id, user_id) VALUES ($1, $2), ($1, $3)`, [pair.rows[0].id, invite.requester_id, invite.recipient_id])
+    await client.query(`UPDATE watch_together_requests SET status = CASE WHEN id = $1 THEN 'accepted' ELSE 'invalidated' END, responded_at = NOW() WHERE status = 'pending' AND (requester_id = ANY($2::bigint[]) OR recipient_id = ANY($2::bigint[]))`, [requestId, [invite.requester_id, invite.recipient_id]])
+    await client.query(`INSERT INTO user_alerts (user_id, kind, source_key, watch_together_request_id, title, message) VALUES ($1, 'watch_together_request_accepted', $2, $3, $4, $5)`, [invite.requester_id, `watch-together-request:${requestId}:accepted`, requestId, 'Watch Together request accepted', `${invite.recipient_full_name} accepted your Watch Together request.`])
+    await client.query('COMMIT')
+    return { status: 'accepted', partner: { username: invite.requester_username, full_name: invite.requester_full_name } }
+  } catch (error) { await client.query('ROLLBACK'); throw error } finally { client.release() }
+}
+
+export async function resetWatchTogetherPartnerForUser(pool, username) {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const pair = await client.query(`SELECT members.pair_id FROM watch_together_pair_members members JOIN users ON users.id = members.user_id WHERE users.username = $1 FOR UPDATE`, [username])
+    if (!pair.rows[0]) { await client.query('ROLLBACK'); return { status: 'no_pair' } }
+    await client.query(`DELETE FROM watch_together_pairs WHERE id = $1`, [pair.rows[0].pair_id])
+    await client.query('COMMIT')
+    return { status: 'ok' }
+  } catch (error) { await client.query('ROLLBACK'); throw error } finally { client.release() }
+}
+
+export async function addWatchTogetherItemForUser(pool, { username, mediaType, mediaId }) {
+  if (mediaType === 'tv') return addWatchTogetherTvEpisodeForUser(pool, { username, showId: mediaId })
+  const result = await pool.query(
+    `
+      WITH pair AS (
+        SELECT mine.pair_id FROM watch_together_pair_members mine JOIN users ON users.id = mine.user_id WHERE users.username = $1
+      ), media AS (
+        SELECT tmdb_id AS media_id FROM movies WHERE $2 = 'movie' AND tmdb_id = $3
+        UNION ALL SELECT tmdb_id FROM tv_shows WHERE $2 = 'tv' AND tmdb_id = $3
+      ), watched_by_pair AS (
+        SELECT watched_movies.id
+        FROM watched_movies
+        JOIN movies ON movies.id = watched_movies.movie_id
+        WHERE $2 = 'movie'
+          AND movies.tmdb_id = $3
+          AND watched_movies.user_id IN (SELECT user_id FROM watch_together_pair_members WHERE pair_id IN (SELECT pair_id FROM pair))
+      ), inserted AS (
+        INSERT INTO watch_together_items (pair_id, media_type, media_id)
+        SELECT pair.pair_id, $2, media.media_id FROM pair CROSS JOIN media
+        WHERE NOT EXISTS (SELECT 1 FROM watched_by_pair)
+        ON CONFLICT (pair_id, media_type, media_id) DO NOTHING
+        RETURNING id
+      )
+      SELECT EXISTS(SELECT 1 FROM pair) AS has_pair, EXISTS(SELECT 1 FROM media) AS has_media, EXISTS(SELECT 1 FROM watched_by_pair) AS watched_by_pair,
+        EXISTS(SELECT 1 FROM inserted) AS added
+    `,
+    [username, mediaType, mediaId]
+  )
+  const row = result.rows[0] ?? {}
+  if (!row.has_pair) return { status: 'no_pair' }
+  if (!row.has_media) return { status: 'missing_media' }
+  if (row.watched_by_pair) return { status: 'already_watched' }
+  return { status: 'ok', added: Boolean(row.added) }
+}
+
+export async function addWatchTogetherTvEpisodeForUser(pool, { username, showId }) {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const pairResult = await client.query(
+      `SELECT mine.pair_id, mine.user_id AS current_user_id, other.user_id AS partner_user_id, partner.username AS partner_username
+       FROM watch_together_pair_members mine
+       JOIN users current_account ON current_account.id = mine.user_id
+       JOIN watch_together_pair_members other ON other.pair_id = mine.pair_id AND other.user_id <> mine.user_id
+       JOIN users partner ON partner.id = other.user_id
+       WHERE current_account.username = $1 FOR UPDATE`, [username]
+    )
+    const pair = pairResult.rows[0]
+    if (!pair) { await client.query('ROLLBACK'); return { status: 'no_pair' } }
+    const showResult = await client.query('SELECT id, tmdb_id FROM tv_shows WHERE tmdb_id = $1 OR id = $1 ORDER BY CASE WHEN tmdb_id = $1 THEN 0 ELSE 1 END LIMIT 1', [showId])
+    const show = showResult.rows[0]
+    if (!show) { await client.query('ROLLBACK'); return { status: 'missing_media' } }
+    const episodesResult = await client.query(
+      `SELECT e.id, e.tmdb_id, s.season_number, e.episode_number, e.name
+       FROM tv_episodes e JOIN tv_seasons s ON s.id = e.tv_season_id
+       WHERE s.tv_show_id = $1 AND s.season_number > 0 AND (e.air_date IS NULL OR e.air_date <= CURRENT_DATE)
+       ORDER BY s.season_number, e.episode_number`, [show.id]
+    )
+    const episodes = episodesResult.rows
+    if (!episodes.length) { await client.query('ROLLBACK'); return { status: 'no_next_episode' } }
+    const watchedResult = await client.query(
+      `SELECT watched_tv_episodes.user_id, watched_tv_episodes.tv_episode_id
+       FROM watched_tv_episodes
+       WHERE watched_tv_episodes.user_id = ANY($1::bigint[])
+         AND watched_tv_episodes.tv_episode_id = ANY($2::bigint[])`,
+      [[pair.current_user_id, pair.partner_user_id], episodes.map((episode) => episode.id)]
+    )
+    const mine = new Set(watchedResult.rows.filter((row) => Number(row.user_id) === Number(pair.current_user_id)).map((row) => Number(row.tv_episode_id)))
+    const partner = new Set(watchedResult.rows.filter((row) => Number(row.user_id) === Number(pair.partner_user_id)).map((row) => Number(row.tv_episode_id)))
+    const matches = mine.size === partner.size && [...mine].every((id) => partner.has(id))
+    if (!matches) {
+      const behindIsPartner = mine.size > partner.size
+      await client.query('ROLLBACK')
+      return { status: 'progress_mismatch', behindUsername: behindIsPartner ? pair.partner_username : username }
+    }
+    const next = episodes.find((episode) => !mine.has(Number(episode.id)))
+    if (!next) { await client.query('ROLLBACK'); return { status: 'no_next_episode' } }
+    const inserted = await client.query(
+      `INSERT INTO watch_together_items (pair_id, media_type, media_id, tv_episode_id)
+       VALUES ($1, 'tv', $2, $3) ON CONFLICT (pair_id, media_type, media_id) DO NOTHING RETURNING id`,
+      [pair.pair_id, show.tmdb_id, next.id]
+    )
+    await client.query('COMMIT')
+    return { status: 'ok', added: Boolean(inserted.rows[0]), episode: next }
+  } catch (error) { await client.query('ROLLBACK'); throw error } finally { client.release() }
+}
+
+export async function removeWatchTogetherItemForUser(pool, { username, mediaType, mediaId }) {
+  const result = await pool.query(
+    `WITH pair AS (SELECT mine.pair_id FROM watch_together_pair_members mine JOIN users ON users.id = mine.user_id WHERE users.username = $1), target AS (SELECT * FROM watch_together_items WHERE pair_id IN (SELECT pair_id FROM pair) AND media_type = $2 AND media_id = $3), deleted AS (DELETE FROM watch_together_items WHERE id IN (SELECT id FROM target WHERE NOT is_selected AND pick_proposed_by_user_id IS NULL) RETURNING id) SELECT EXISTS(SELECT 1 FROM pair) AS has_pair, EXISTS(SELECT 1 FROM target WHERE is_selected OR pick_proposed_by_user_id IS NOT NULL) AS active, EXISTS(SELECT 1 FROM deleted) AS removed`,
+    [username, mediaType, mediaId]
+  )
+  const row = result.rows[0] ?? {}
+  if (!row.has_pair) return { status: 'no_pair' }
+  if (row.active) return { status: 'active_pick' }
+  return { status: 'ok', removed: Boolean(row.removed) }
+}
+
+export async function proposeWatchTogetherItemForUser(pool, { username, mediaType, mediaId }) {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const pair = await client.query(`SELECT mine.pair_id, mine.user_id FROM watch_together_pair_members mine JOIN users ON users.id = mine.user_id JOIN watch_together_pairs pairs ON pairs.id = mine.pair_id WHERE users.username = $1 FOR UPDATE OF pairs`, [username])
+    const context = pair.rows[0]
+    if (!context) {
+      await client.query('ROLLBACK')
+      return { status: 'no_pair' }
+    }
+    const item = await client.query(`SELECT id FROM watch_together_items WHERE pair_id = $1 AND media_type = $2 AND media_id = $3 FOR UPDATE`, [context.pair_id, mediaType, mediaId])
+    if (!item.rows[0]) {
+      await client.query('ROLLBACK')
+      return { status: 'missing_item' }
+    }
+    const active = await client.query(`SELECT id FROM watch_together_items WHERE pair_id = $1 AND (is_selected OR pick_proposed_by_user_id IS NOT NULL) FOR UPDATE`, [context.pair_id])
+    if (active.rows.length) {
+      await client.query('ROLLBACK')
+      return { status: 'active_pick' }
+    }
+    await client.query(`UPDATE watch_together_items SET pick_proposed_by_user_id = $2, pick_proposed_at = NOW() WHERE id = $1`, [item.rows[0].id, context.user_id])
+    await client.query('COMMIT')
+    return { status: 'ok' }
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally { client.release() }
+}
+
+export async function respondToWatchTogetherPickForUser(pool, { username, mediaType, mediaId, decision }) {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const context = await client.query(`SELECT mine.pair_id, mine.user_id FROM watch_together_pair_members mine JOIN users ON users.id = mine.user_id JOIN watch_together_pairs pairs ON pairs.id = mine.pair_id WHERE users.username = $1 FOR UPDATE OF pairs`, [username])
+    const pair = context.rows[0]
+    if (!pair) { await client.query('ROLLBACK'); return { status: 'no_pair' } }
+    const item = await client.query(`SELECT id, pick_proposed_by_user_id FROM watch_together_items WHERE pair_id = $1 AND media_type = $2 AND media_id = $3 FOR UPDATE`, [pair.pair_id, mediaType, mediaId])
+    const proposed = item.rows[0]
+    if (!proposed?.pick_proposed_by_user_id) { await client.query('ROLLBACK'); return { status: 'missing_proposal' } }
+    if (Number(proposed.pick_proposed_by_user_id) === Number(pair.user_id)) { await client.query('ROLLBACK'); return { status: 'proposer_cannot_vote' } }
+    if (decision === 'accept') await client.query(`UPDATE watch_together_items SET is_selected = TRUE, pick_proposed_by_user_id = NULL, pick_proposed_at = NULL WHERE id = $1`, [proposed.id])
+    else await client.query(`UPDATE watch_together_items SET pick_proposed_by_user_id = NULL, pick_proposed_at = NULL WHERE id = $1`, [proposed.id])
+    await client.query('COMMIT')
+    return { status: decision === 'accept' ? 'accepted' : 'denied' }
+  } catch (error) { await client.query('ROLLBACK'); throw error } finally { client.release() }
+}
+
+export async function clearWatchTogetherSelectionForUser(pool, username) {
+  const result = await pool.query(`WITH pair AS (SELECT mine.pair_id, mine.user_id FROM watch_together_pair_members mine JOIN users ON users.id = mine.user_id WHERE users.username = $1), active AS (SELECT * FROM watch_together_items WHERE pair_id IN (SELECT pair_id FROM pair) AND (is_selected OR pick_proposed_by_user_id IS NOT NULL)), updated AS (UPDATE watch_together_items SET is_selected = FALSE, pick_proposed_by_user_id = NULL, pick_proposed_at = NULL WHERE id IN (SELECT id FROM active WHERE is_selected OR pick_proposed_by_user_id = (SELECT user_id FROM pair)) RETURNING id) SELECT EXISTS(SELECT 1 FROM pair) AS has_pair, EXISTS(SELECT 1 FROM active) AS has_active, EXISTS(SELECT 1 FROM updated) AS cleared`, [username])
+  const row = result.rows[0] ?? {}
+  if (!row.has_pair) return { status: 'no_pair' }
+  if (!row.has_active) return { status: 'no_active_pick' }
+  return row.cleared ? { status: 'ok' } : { status: 'not_proposer' }
+}
+
+export async function isSelectedWatchTogetherMovieForUser(pool, { username, movieId }) {
+  const result = await pool.query(
+    `SELECT EXISTS(SELECT 1 FROM watch_together_pair_members members JOIN users ON users.id = members.user_id JOIN watch_together_items items ON items.pair_id = members.pair_id AND items.media_type = 'movie' AND items.is_selected JOIN movies ON movies.tmdb_id = items.media_id WHERE users.username = $1 AND (movies.tmdb_id = $2 OR movies.id = $2)) AS selected`,
+    [username, movieId]
+  )
+  return Boolean(result.rows[0]?.selected)
+}
+
+export async function confirmWatchTogetherMovieForUser(pool, { username, movieId }) {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const context = await client.query(
+      `
+        SELECT members.pair_id, members.user_id, movies.id AS movie_id
+        FROM watch_together_pair_members members
+        JOIN users ON users.id = members.user_id
+        JOIN movies ON movies.tmdb_id = $2 OR movies.id = $2
+        WHERE users.username = $1
+        ORDER BY CASE WHEN movies.tmdb_id = $2 THEN 0 ELSE 1 END
+        LIMIT 1
+      `,
+      [username, movieId]
+    )
+    const row = context.rows[0]
+    if (!row) {
+      await client.query('ROLLBACK')
+      return { status: 'not_shared' }
+    }
+    const item = await client.query(
+      `SELECT items.id FROM watch_together_items items JOIN movies ON movies.tmdb_id = items.media_id WHERE items.pair_id = $1 AND items.media_type = 'movie' AND items.is_selected AND movies.id = $2 FOR UPDATE`,
+      [row.pair_id, row.movie_id]
+    )
+    const itemId = item.rows[0]?.id
+    if (!itemId) {
+      await client.query('ROLLBACK')
+      return { status: 'not_selected' }
+    }
+    await client.query(`INSERT INTO watch_together_item_confirmations (item_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [itemId, row.user_id])
+    const confirmations = await client.query(`SELECT COUNT(*)::INTEGER AS count FROM watch_together_item_confirmations WHERE item_id = $1`, [itemId])
+    if (Number(confirmations.rows[0]?.count) < 2) {
+      await client.query('COMMIT')
+      return { status: 'waiting_for_partner' }
+    }
+    const history = await client.query(
+      `INSERT INTO watch_together_watched_movies (pair_id, movie_id) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING watched_together_at`,
+      [row.pair_id, row.movie_id]
+    )
+    await client.query(`DELETE FROM watch_together_items WHERE id = $1`, [itemId])
+    await client.query('COMMIT')
+    return { status: 'completed', watchedTogetherAt: history.rows[0]?.watched_together_at ?? null }
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally { client.release() }
+}
+
+export async function confirmWatchTogetherEpisodeForUser(pool, { username, episodeId, watchService = null }) {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const contextResult = await client.query(
+      `SELECT mine.pair_id, mine.user_id, other.user_id AS partner_user_id
+       FROM watch_together_pair_members mine
+       JOIN users ON users.id = mine.user_id
+       JOIN watch_together_pair_members other ON other.pair_id = mine.pair_id AND other.user_id <> mine.user_id
+       WHERE users.username = $1 FOR UPDATE`, [username]
+    )
+    const context = contextResult.rows[0]
+    if (!context) { await client.query('ROLLBACK'); return { status: 'no_pair' } }
+    const itemResult = await client.query(
+      `SELECT items.id, items.tv_episode_id, tv_seasons.tv_show_id
+       FROM watch_together_items items
+       JOIN tv_episodes ON tv_episodes.id = items.tv_episode_id
+       JOIN tv_seasons ON tv_seasons.id = tv_episodes.tv_season_id
+       WHERE items.pair_id = $1 AND items.media_type = 'tv' AND items.tv_episode_id = $2 AND items.is_selected
+       FOR UPDATE`, [context.pair_id, episodeId]
+    )
+    const item = itemResult.rows[0]
+    if (!item) { await client.query('ROLLBACK'); return { status: 'not_selected' } }
+    const priorConfirmation = await client.query('SELECT 1 FROM watch_together_item_confirmations WHERE item_id = $1 AND user_id = $2', [item.id, context.user_id])
+    const alreadyWatched = await client.query('SELECT 1 FROM watched_tv_episodes WHERE user_id = $1 AND tv_episode_id = $2', [context.user_id, item.tv_episode_id])
+    if (alreadyWatched.rows[0] && !priorConfirmation.rows[0]) { await client.query('ROLLBACK'); return { status: 'already_watched' } }
+    let updatedCount = 0
+    if (!priorConfirmation.rows[0]) {
+      const inserted = await client.query(
+        'INSERT INTO watched_tv_episodes (user_id, tv_episode_id, watch_service) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
+        [context.user_id, item.tv_episode_id, normalizeWatchService(watchService)]
+      )
+      updatedCount = inserted.rowCount ?? 0
+      await client.query('INSERT INTO watch_together_item_confirmations (item_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [item.id, context.user_id])
+    }
+    const confirmations = await client.query('SELECT COUNT(*)::INTEGER AS count FROM watch_together_item_confirmations WHERE item_id = $1', [item.id])
+    const completion = updatedCount ? await syncTvShowWatchCompletion(client, username, item.tv_show_id) : null
+    if (Number(confirmations.rows[0]?.count) < 2) {
+      await client.query('COMMIT')
+      return { status: 'waiting_for_partner', updatedCount, ...(completion?.newlyCompletedShowId ? { newlyCompletedShowId: completion.newlyCompletedShowId } : {}) }
+    }
+    const history = await client.query(
+      'INSERT INTO watch_together_watched_episodes (pair_id, tv_episode_id) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING watched_together_at',
+      [context.pair_id, item.tv_episode_id]
+    )
+    await client.query('DELETE FROM watch_together_items WHERE id = $1', [item.id])
+    await client.query('COMMIT')
+    return { status: 'completed', updatedCount, watchedTogetherAt: history.rows[0]?.watched_together_at ?? null, ...(completion?.newlyCompletedShowId ? { newlyCompletedShowId: completion.newlyCompletedShowId } : {}) }
+  } catch (error) { await client.query('ROLLBACK'); throw error } finally { client.release() }
 }
 
 export async function findUserByUsername(pool, username) {
@@ -2756,12 +3490,15 @@ export async function listAlertsForUser(pool, username, { limit = 50 } = {}) {
         user_alerts.message,
         user_alerts.created_at,
         user_alerts.read_at,
+        user_alerts.watch_together_request_id,
+        watch_together_requests.status AS watch_together_request_status,
         movies.tmdb_id AS movie_tmdb_id,
         tv_shows.tmdb_id AS tv_show_tmdb_id
       FROM user_alerts
       JOIN users ON users.id = user_alerts.user_id
       LEFT JOIN movies ON movies.id = user_alerts.movie_id
       LEFT JOIN tv_shows ON tv_shows.id = user_alerts.tv_show_id
+      LEFT JOIN watch_together_requests ON watch_together_requests.id = user_alerts.watch_together_request_id
       WHERE users.username = $1
       ORDER BY user_alerts.created_at DESC, user_alerts.id DESC
       LIMIT $2

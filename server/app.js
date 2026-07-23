@@ -24,6 +24,24 @@ import {
   getBookAchievementsForUser,
   findUserByCredentials,
   findUserByUsername,
+  listWatchTogetherUsers,
+  listWatchTogetherWatchedMovieIdsForUser,
+  getWatchTogetherStateForUser,
+  getWatchTogetherStatsForUser,
+  createWatchTogetherPartnerRequest,
+  respondToWatchTogetherPartnerRequest,
+  resetWatchTogetherPartnerForUser,
+  addWatchTogetherItemForUser,
+  removeWatchTogetherItemForUser,
+  proposeWatchTogetherItemForUser,
+  respondToWatchTogetherPickForUser,
+  clearWatchTogetherSelectionForUser,
+  isSelectedWatchTogetherMovieForUser,
+  confirmWatchTogetherMovieForUser,
+  confirmWatchTogetherEpisodeForUser,
+  getWatchTogetherAchievementsForUser,
+  evaluateWatchTogetherAchievementsForUser,
+  saveWatchTogetherSessionForUser,
   getMovieStatsForUser,
   getBookStatsForUser,
   getStatsInsightsForUser,
@@ -126,8 +144,8 @@ export async function createApp(pool, options = {}) {
     try {
       const user = await getAuthenticatedUser(pool, request)
       if (!user) return response.status(401).json({ error: 'Authentication required' })
-      const achievements = await getAchievementsForUser(pool, user.username)
-      response.json({ count: achievements.length, achievements })
+      const [achievements, watchTogetherAchievements] = await Promise.all([getAchievementsForUser(pool, user.username), getWatchTogetherAchievementsForUser(pool, user.username)])
+      response.json({ count: achievements.length + watchTogetherAchievements.length, achievements: [...achievements, ...watchTogetherAchievements] })
     } catch (error) { next(error) }
   })
 
@@ -309,6 +327,223 @@ export async function createApp(pool, options = {}) {
     } catch (error) {
       next(error)
     }
+  })
+
+  app.get('/api/watch-together', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const [state, users] = await Promise.all([
+        getWatchTogetherStateForUser(pool, user.username),
+        listWatchTogetherUsers(pool, user.username),
+      ])
+      response.json({
+        partner: state.partner ? mapWatchTogetherUser(state.partner) : null,
+        pendingRequest: state.pendingRequest ? { id: state.pendingRequest.id, direction: state.pendingRequest.direction, user: mapWatchTogetherUser(state.pendingRequest.user) } : null,
+        users: users.map(mapWatchTogetherUser),
+        items: state.items.map(mapWatchTogetherItem),
+        watchedMovies: state.watchedMovies.map(mapWatchedTogetherMovie),
+        watchedEpisodes: state.watchedEpisodes.map(mapWatchedTogetherEpisode),
+        inProgressShows: state.inProgressShows.map(mapWatchTogetherInProgressShow),
+      })
+    } catch (error) { next(error) }
+  })
+
+  app.get('/api/watch-together/achievements', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const achievements = await getWatchTogetherAchievementsForUser(pool, user.username)
+      response.json({ count: achievements.length, achievements })
+    } catch (error) { next(error) }
+  })
+
+  app.get('/api/watch-together/stats', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const timeZone = readStatsTimeZone(request, response)
+      if (!timeZone) return
+      const stats = await getWatchTogetherStatsForUser(pool, user.username, { timeZone })
+      if (stats.status === 'no_pair') return response.status(409).json({ error: 'No active partner connection' })
+      response.json(mapWatchTogetherStats(stats))
+    } catch (error) { next(error) }
+  })
+
+  app.post('/api/watch-together/sessions', async (request, response, next) => {
+    const mediaType = request.body?.mediaType
+    const mediaId = Number.parseInt(request.body?.mediaId, 10)
+    const episodeId = request.body?.episodeId === null || request.body?.episodeId === undefined ? null : Number.parseInt(request.body.episodeId, 10)
+    const achievementIds = Array.isArray(request.body?.achievementIds) ? request.body.achievementIds.filter((id) => typeof id === 'string') : []
+    const details = request.body?.details && typeof request.body.details === 'object' && !Array.isArray(request.body.details) ? request.body.details : {}
+    if (!['movie', 'tv'].includes(mediaType) || !Number.isInteger(mediaId) || (mediaType === 'tv' && !Number.isInteger(episodeId))) return response.status(400).json({ error: 'A completed shared movie or episode is required' })
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const result = await saveWatchTogetherSessionForUser(pool, { username: user.username, mediaType, mediaId, episodeId, achievementIds, details })
+      if (result.status === 'no_pair') return response.status(409).json({ error: 'No active partner connection' })
+      if (result.status === 'missing_history') return response.status(409).json({ error: 'Session details can only be logged for a completed shared title' })
+      response.json({ saved: true, newlyUnlockedAchievements: result.newlyUnlockedAchievements })
+    } catch (error) { next(error) }
+  })
+
+  app.post('/api/watch-together/requests', async (request, response, next) => {
+    const partnerUsername = typeof request.body?.username === 'string' ? request.body.username.trim() : ''
+    if (!partnerUsername) return response.status(400).json({ error: 'username is required' })
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      if (partnerUsername === user.username) return response.status(400).json({ error: 'You cannot select yourself as a partner' })
+      const result = await createWatchTogetherPartnerRequest(pool, { username: user.username, partnerUsername })
+      if (result.status === 'same_user') return response.status(400).json({ error: 'You cannot select yourself as a partner' })
+      if (result.status === 'missing_partner') return response.status(404).json({ error: 'Selected user was not found' })
+      if (result.status === 'already_paired') return response.status(409).json({ error: 'Both users must be unpaired before sending a request' })
+      if (result.status === 'pending_request') return response.status(409).json({ error: 'One of these users already has a pending Watch Together request' })
+      if (result.status !== 'ok') return response.status(401).json({ error: 'Authentication required' })
+      response.status(201).json({ pendingRequest: { id: result.request.id, direction: result.request.direction, user: mapWatchTogetherUser(result.request.user) } })
+    } catch (error) { next(error) }
+  })
+
+  app.post('/api/watch-together/requests/:requestId/respond', async (request, response, next) => {
+    const requestId = Number.parseInt(request.params.requestId, 10)
+    const decision = request.body?.decision
+    if (!Number.isInteger(requestId) || !['accept', 'deny'].includes(decision)) return response.status(400).json({ error: 'A valid request and decision are required' })
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const result = await respondToWatchTogetherPartnerRequest(pool, { username: user.username, requestId, decision })
+      if (result.status === 'missing_request') return response.status(404).json({ error: 'Watch Together request was not found' })
+      if (result.status === 'not_pending') return response.status(409).json({ error: 'This Watch Together request has already been handled' })
+      if (result.status === 'already_paired') return response.status(409).json({ error: 'One of these users is already paired' })
+      response.json({ status: result.status })
+    } catch (error) { next(error) }
+  })
+
+  app.delete('/api/watch-together/partner', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const result = await resetWatchTogetherPartnerForUser(pool, user.username)
+      if (result.status === 'no_pair') return response.status(409).json({ error: 'No active partner connection' })
+      response.json({ reset: true })
+    } catch (error) { next(error) }
+  })
+
+  app.get('/api/watch-together/search', async (request, response, next) => {
+    const query = typeof request.query.q === 'string' ? request.query.q.trim() : ''
+    const mediaType = typeof request.query.type === 'string' ? request.query.type.trim() : 'all'
+    if (!query) return response.status(400).json({ error: 'q is required' })
+    if (!['all', 'movie', 'tv'].includes(mediaType)) return response.status(400).json({ error: 'type must be all, movie, or tv' })
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const [movies, shows] = await Promise.all([
+        mediaType === 'tv' ? [] : searchMovies(pool, query, 20),
+        mediaType === 'movie' ? [] : searchTvShows(pool, query, 20),
+      ])
+      const watchedMovieIds = await listWatchTogetherWatchedMovieIdsForUser(pool, { username: user.username, movieIds: movies.map((movie) => Number(movie.tmdb_id)) })
+      response.json({ items: [...movies.filter((movie) => !watchedMovieIds.has(Number(movie.tmdb_id))).map(mapWatchTogetherMovie), ...shows.map(mapWatchTogetherTvShow)] })
+    } catch (error) { next(error) }
+  })
+
+  app.post('/api/watch-together/items', async (request, response, next) => {
+    const mediaType = request.body?.mediaType
+    const mediaId = Number.parseInt(request.body?.mediaId, 10)
+    if (!['movie', 'tv'].includes(mediaType) || !Number.isInteger(mediaId)) return response.status(400).json({ error: 'mediaType and mediaId are required' })
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      if (mediaType === 'tv') {
+        const show = await getTvShowByTmdbId(pool, mediaId)
+        if (!show) return response.status(404).json({ error: 'Title was not found' })
+        if (!show.detail_hydrated_at) {
+          const config = loadRuntimeConfig()
+          await hydrateTvShow(pool, { token: config.tmdbBearerToken, baseUrl: config.tmdbBaseUrl, tvShowId: mediaId, importRank: show.import_rank ?? 1 })
+        }
+      }
+      const result = await addWatchTogetherItemForUser(pool, { username: user.username, mediaType, mediaId })
+      if (result.status === 'no_pair') return response.status(409).json({ error: 'Choose a partner before adding titles' })
+      if (result.status === 'missing_media') return response.status(404).json({ error: 'Title was not found' })
+      if (result.status === 'already_watched') return response.status(409).json({ error: 'This movie has already been watched by you or your partner.' })
+      if (result.status === 'progress_mismatch') return response.status(409).json({ error: `Progress must match before sharing an episode. @${result.behindUsername} is behind on this show.` })
+      if (result.status === 'no_next_episode') return response.status(409).json({ error: 'This show has no unwatched aired episode available to add.' })
+      response.json({ added: result.added })
+    } catch (error) { next(error) }
+  })
+
+  app.post('/api/watch-together/episodes/:episodeId/watched', async (request, response, next) => {
+    const episodeId = Number.parseInt(request.params.episodeId, 10)
+    if (!Number.isInteger(episodeId)) return response.status(400).json({ error: 'episodeId must be valid' })
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const result = await confirmWatchTogetherEpisodeForUser(pool, { username: user.username, episodeId, watchService: request.body?.watchService })
+      if (result.status === 'no_pair') return response.status(409).json({ error: 'No active partner connection' })
+      if (result.status === 'not_selected') return response.status(409).json({ error: 'Only the accepted shared episode can be marked watched together' })
+      if (result.status === 'already_watched') return response.status(409).json({ error: 'You already watched this episode independently. Remove it and add the show again to choose the new next episode.' })
+      if (result.updatedCount > 0) await recordAchievementEventForUser(pool, { username: user.username, eventType: 'tv_episode_watched', mediaType: 'tv', entityId: episodeId, baselineKind: 'tv_episode_watch' })
+      if (result.newlyCompletedShowId) await recordAchievementEventForUser(pool, { username: user.username, eventType: 'tv_show_completed', mediaType: 'tv', entityId: result.newlyCompletedShowId, baselineKind: 'tv_show' })
+      const newlyUnlockedAchievements = result.updatedCount > 0 || result.newlyCompletedShowId ? await evaluateAchievementsForUser(pool, user.username) : []
+      const newlyUnlockedWatchTogetherAchievements = result.status === 'completed' ? await evaluateWatchTogetherAchievementsForUser(pool, user.username) : []
+      response.json({ watchTogether: result, newlyUnlockedAchievements: [...newlyUnlockedAchievements, ...newlyUnlockedWatchTogetherAchievements] })
+    } catch (error) { next(error) }
+  })
+
+  app.delete('/api/watch-together/items/:mediaType/:mediaId', async (request, response, next) => {
+    const mediaType = request.params.mediaType
+    const mediaId = Number.parseInt(request.params.mediaId, 10)
+    if (!['movie', 'tv'].includes(mediaType) || !Number.isInteger(mediaId)) return response.status(400).json({ error: 'Invalid title' })
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const result = await removeWatchTogetherItemForUser(pool, { username: user.username, mediaType, mediaId })
+      if (result.status === 'no_pair') return response.status(409).json({ error: 'No active partner connection' })
+      if (result.status === 'active_pick') return response.status(409).json({ error: 'Clear or resolve this Tonight’s pick before removing it' })
+      response.json({ removed: result.removed })
+    } catch (error) { next(error) }
+  })
+
+  app.put('/api/watch-together/selection', async (request, response, next) => {
+    const mediaType = request.body?.mediaType
+    const mediaId = Number.parseInt(request.body?.mediaId, 10)
+    if (!['movie', 'tv'].includes(mediaType) || !Number.isInteger(mediaId)) return response.status(400).json({ error: 'mediaType and mediaId are required' })
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const result = await proposeWatchTogetherItemForUser(pool, { username: user.username, mediaType, mediaId })
+      if (result.status === 'no_pair') return response.status(409).json({ error: 'No active partner connection' })
+      if (result.status === 'missing_item') return response.status(404).json({ error: 'Title is not in this shared shortlist' })
+      if (result.status === 'active_pick') return response.status(409).json({ error: 'Resolve the current Tonight’s pick before proposing another title' })
+      response.json({ proposed: true })
+    } catch (error) { next(error) }
+  })
+
+  app.post('/api/watch-together/selection/:mediaType/:mediaId/respond', async (request, response, next) => {
+    const mediaType = request.params.mediaType
+    const mediaId = Number.parseInt(request.params.mediaId, 10)
+    const decision = request.body?.decision
+    if (!['movie', 'tv'].includes(mediaType) || !Number.isInteger(mediaId) || !['accept', 'deny'].includes(decision)) return response.status(400).json({ error: 'A valid title and decision are required' })
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const result = await respondToWatchTogetherPickForUser(pool, { username: user.username, mediaType, mediaId, decision })
+      if (result.status === 'no_pair') return response.status(409).json({ error: 'No active partner connection' })
+      if (result.status === 'missing_proposal') return response.status(404).json({ error: 'This pick proposal is no longer available' })
+      if (result.status === 'proposer_cannot_vote') return response.status(403).json({ error: 'Only your partner can vote on this proposal' })
+      response.json({ status: result.status })
+    } catch (error) { next(error) }
+  })
+
+  app.delete('/api/watch-together/selection', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const result = await clearWatchTogetherSelectionForUser(pool, user.username)
+      if (result.status === 'no_pair') return response.status(409).json({ error: 'No active partner connection' })
+      if (result.status === 'no_active_pick') return response.status(404).json({ error: 'There is no active Tonight’s pick' })
+      if (result.status === 'not_proposer') return response.status(403).json({ error: 'Only the proposer can cancel a pending pick' })
+      response.json({ cleared: true })
+    } catch (error) { next(error) }
   })
 
   app.get('/api/watchlist', async (request, response, next) => {
@@ -770,6 +1005,10 @@ export async function createApp(pool, options = {}) {
         return
       }
 
+      if (request.body?.watchTogether === true && !await isSelectedWatchTogetherMovieForUser(pool, { username: user.username, movieId })) {
+        return response.status(409).json({ error: 'Only the accepted Tonight’s pick can be marked watched together' })
+      }
+
       const result = await addMovieToWatchedForUser(pool, {
         username: user.username,
         movieId,
@@ -790,6 +1029,9 @@ export async function createApp(pool, options = {}) {
         return
       }
 
+      const watchTogether = request.body?.watchTogether === true
+        ? await confirmWatchTogetherMovieForUser(pool, { username: user.username, movieId })
+        : { status: 'not_requested' }
       const [movies, stats] = await Promise.all([
         listWatchedMoviesForUser(pool, user.username),
         getMovieStatsForUser(pool, user.username, period),
@@ -797,11 +1039,13 @@ export async function createApp(pool, options = {}) {
       const watchedMovie = movies.find((movie) => Number(movie.tmdb_id) === movieId) ?? null
       const newlyUnlockedAchievements = result.added && await recordAchievementEventForUser(pool, { username: user.username, eventType: 'movie_watched', mediaType: 'movie', entityId: result.entityId, baselineKind: 'movie_watch', metadata: { fromWatchlist: result.removedFromWatchlist } }) ? await evaluateAchievementsForUser(pool, user.username) : []
 
+      const newlyUnlockedWatchTogetherAchievements = watchTogether.status === 'completed' ? await evaluateWatchTogetherAchievementsForUser(pool, user.username) : []
       response.status(200).json({
         movie: watchedMovie ? mapWatchedMovie(watchedMovie) : null,
         removedFromWatchlist: result.removedFromWatchlist,
+        watchTogether,
         stats: mapMovieStats(stats),
-        newlyUnlockedAchievements,
+        newlyUnlockedAchievements: [...newlyUnlockedAchievements, ...newlyUnlockedWatchTogetherAchievements],
       })
     } catch (error) {
       next(error)
@@ -2187,6 +2431,94 @@ function mapWatchlistMovie(movie) {
   }
 }
 
+function mapWatchTogetherUser(user) {
+  return { username: user.username, fullName: user.full_name }
+}
+
+function mapWatchTogetherMovie(movie) {
+  return {
+    mediaType: 'movie',
+    id: Number(movie.tmdb_id),
+    title: movie.title,
+    year: formatMovieYear(movie.release_date),
+    rating: typeof movie.vote_average === 'number' ? movie.vote_average : 0,
+    posterUrl: resolvePosterPath(movie.poster_path),
+    backdropUrl: resolveBackdropPath(movie.backdrop_path),
+  }
+}
+
+function mapWatchTogetherTvShow(show) {
+  return {
+    mediaType: 'tv',
+    id: Number(show.tmdb_id),
+    title: show.name,
+    year: formatMovieYear(show.first_air_date),
+    rating: typeof show.vote_average === 'number' ? show.vote_average : 0,
+    posterUrl: resolvePosterPath(show.poster_path),
+    backdropUrl: resolveBackdropPath(show.backdrop_path),
+  }
+}
+
+function mapWatchTogetherItem(item) {
+  return item.media_type === 'tv'
+    ? {
+        mediaType: 'tv', id: Number(item.media_id), title: item.show_name,
+        year: formatMovieYear(item.first_air_date), rating: typeof item.show_vote_average === 'number' ? item.show_vote_average : 0,
+        posterUrl: resolvePosterPath(item.show_poster_path), backdropUrl: resolveBackdropPath(item.show_backdrop_path),
+        episodeId: item.tv_episode_id === null || item.tv_episode_id === undefined ? null : Number(item.tv_episode_id),
+        episodeTitle: item.episode_name || 'Episode', seasonNumber: Number(item.season_number) || 0, episodeNumber: Number(item.episode_number) || 0,
+        selected: Boolean(item.is_selected), pickVoteStatus: item.pick_vote_status || null, pickProposedAt: item.pick_proposed_at ?? null, addedAt: item.created_at, confirmedByCurrentUser: Boolean(item.confirmed_by_current_user), confirmedByPartner: Boolean(item.confirmed_by_partner),
+      }
+    : {
+        mediaType: 'movie', id: Number(item.media_id), title: item.title,
+        year: formatMovieYear(item.release_date), rating: typeof item.vote_average === 'number' ? item.vote_average : 0,
+        posterUrl: resolvePosterPath(item.poster_path), backdropUrl: resolveBackdropPath(item.backdrop_path),
+        selected: Boolean(item.is_selected), pickVoteStatus: item.pick_vote_status || null, pickProposedAt: item.pick_proposed_at ?? null, addedAt: item.created_at, confirmedByCurrentUser: Boolean(item.confirmed_by_current_user), confirmedByPartner: Boolean(item.confirmed_by_partner),
+      }
+}
+
+function mapWatchedTogetherMovie(movie) {
+  return {
+    mediaType: 'movie', id: Number(movie.tmdb_id), title: movie.title,
+    year: formatMovieYear(movie.release_date), rating: typeof movie.vote_average === 'number' ? movie.vote_average : 0,
+    posterUrl: resolvePosterPath(movie.poster_path), backdropUrl: resolveBackdropPath(movie.backdrop_path),
+    watchedTogetherAt: movie.watched_together_at,
+    sessionDetails: movie.session_details || null,
+    sessionAchievementIds: Array.isArray(movie.session_achievement_ids) ? movie.session_achievement_ids : [],
+  }
+}
+
+function mapWatchedTogetherEpisode(episode) {
+  return {
+    mediaType: 'tv', id: Number(episode.show_id), title: episode.show_name,
+    posterUrl: resolvePosterPath(episode.show_poster_path), episodeId: Number(episode.episode_id),
+    episodeTitle: episode.episode_name || 'Episode', seasonNumber: Number(episode.season_number), episodeNumber: Number(episode.episode_number),
+    watchedTogetherAt: episode.watched_together_at,
+    sessionDetails: episode.session_details || null,
+    sessionAchievementIds: Array.isArray(episode.session_achievement_ids) ? episode.session_achievement_ids : [],
+  }
+}
+
+function mapWatchTogetherInProgressShow(show) {
+  return {
+    id: Number(show.show_id), title: show.show_name, posterUrl: resolvePosterPath(show.show_poster_path),
+    watchedEpisodeCount: Number(show.watched_episode_count), latestEpisodeTitle: show.latest_episode_name || 'Episode',
+    latestSeasonNumber: Number(show.latest_season_number), latestEpisodeNumber: Number(show.latest_episode_number),
+    lastWatchedTogetherAt: show.last_watched_together_at,
+  }
+}
+
+function mapWatchTogetherStats(stats) {
+  const mapDashboard = (dashboard) => ({
+    ...dashboard,
+    topRated: dashboard.topRated.map(mapItem),
+    recentHistory: dashboard.recentHistory.map(mapItem),
+    actors: dashboard.actors.map((actor) => ({ ...actor, profileUrl: resolvePosterPath(actor.profilePath), profilePath: undefined })),
+  })
+  const mapItem = (item) => ({ ...item, posterUrl: resolvePosterPath(item.posterPath), posterPath: undefined })
+  return { movies: mapDashboard(stats.movies), shows: mapDashboard(stats.shows) }
+}
+
 function mapWatchlistBook(book) {
   return {
     id: book.google_books_id,
@@ -2219,6 +2551,8 @@ function mapAlert(alert) {
     readAt: alert.read_at,
     movieId: alert.movie_tmdb_id === null || alert.movie_tmdb_id === undefined ? null : Number(alert.movie_tmdb_id),
     showId: alert.tv_show_tmdb_id === null || alert.tv_show_tmdb_id === undefined ? null : Number(alert.tv_show_tmdb_id),
+    watchTogetherRequestId: alert.watch_together_request_id === null || alert.watch_together_request_id === undefined ? null : Number(alert.watch_together_request_id),
+    watchTogetherRequestStatus: alert.watch_together_request_status || null,
   }
 }
 

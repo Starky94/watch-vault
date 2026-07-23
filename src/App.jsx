@@ -10,6 +10,7 @@ const primaryViews = {
   calendar: 'Calendar',
   stats: 'Stats',
   achievements: 'Achievements',
+  watchTogether: 'Watch Together',
 }
 
 const navItems = [
@@ -21,6 +22,7 @@ const navItems = [
   { label: 'Calendar', icon: CalendarIcon, view: primaryViews.calendar },
   { label: 'Stats', icon: BarsIcon, view: primaryViews.stats },
   { label: 'Achievements', icon: TrophyIcon, view: primaryViews.achievements },
+  { label: 'Watch Together', icon: UserIcon, view: primaryViews.watchTogether },
 ]
 
 const movieTabs = ['All Movies', 'Popular', 'Now Playing', 'Upcoming', 'Top Rated']
@@ -72,11 +74,13 @@ const mobileNavItems = [
   { label: 'Watchlist', icon: BookmarkIcon, view: primaryViews.watchlist },
   { label: 'Calendar', icon: CalendarIcon, view: primaryViews.calendar },
   { label: 'Stats', icon: BarsIcon, view: primaryViews.stats },
+  { label: 'Together', icon: UserIcon, view: primaryViews.watchTogether },
 ]
 
 const watchlistTabs = ['All', 'Movies', 'TV Shows', 'Books', 'Actors', 'Authors']
 const moviesPageSize = 30
 const statsWatchedMoviesPageSize = 30
+const watchTogetherHistoryPageSize = 20
 const genreAccentPalette = ['#ff6b7a', '#7c8dff', '#ffd86f', '#84b3ff', '#ff6cb6', '#67e8f9', '#9ae66e']
 const statsActorColors = ['#c99a75', '#8f5e48', '#5e7792', '#a47265']
 
@@ -335,6 +339,12 @@ function App() {
   const [tvWatchlistIds, setTvWatchlistIds] = useState(() => new Set(initialTvWatchlistIds))
   const [tvWatchlistShows, setTvWatchlistShows] = useState([])
   const [tvWatchedIds, setTvWatchedIds] = useState(() => new Set(initialTvWatchedIds))
+  const [watchTogetherState, setWatchTogetherState] = useState({ status: 'idle', partner: null, pendingRequest: null, users: [], items: [], watchedMovies: [], watchedEpisodes: [], inProgressShows: [], error: '' })
+  const [watchTogetherSearch, setWatchTogetherSearch] = useState({ query: '', type: 'all', status: 'idle', items: [], error: '' })
+  const [watchTogetherAction, setWatchTogetherAction] = useState({ status: 'idle', key: null, error: '' })
+  const [watchTogetherTab, setWatchTogetherTab] = useState('movies')
+  const [watchTogetherAchievementsState, setWatchTogetherAchievementsState] = useState({ status: 'idle', achievements: [], error: '' })
+  const [watchTogetherStatsState, setWatchTogetherStatsState] = useState({ status: 'idle', stats: null, error: '' })
 
   useEffect(() => {
     function handlePopState() {
@@ -1023,23 +1033,11 @@ function App() {
       return
     }
 
-    if (!user) {
-      handleOpenLogin()
-      return
-    }
-
-    setActiveView(primaryViews.movies)
     setActiveMovieTab('All Movies')
     setSelectedGenre(genre)
     setGenreMoviesPage(1)
     setMoviesScreenMode(movieScreenModes.genreList)
-
-    if (currentRoute.kind === routeKinds.movieDetail || currentRoute.kind === routeKinds.personDetail) {
-      handleNavigateToPath('/', { kind: routeKinds.home }, primaryViews.movies)
-    } else if (window.location.pathname !== '/') {
-      window.history.pushState({}, '', '/')
-      setCurrentRoute({ kind: routeKinds.home })
-    }
+    handleNavigateToPath('/', { kind: routeKinds.home }, primaryViews.movies)
   }
 
   async function loadWatchlistForUser(nextUser) {
@@ -1521,6 +1519,148 @@ function App() {
     }
   }
 
+  async function loadWatchTogetherForUser(nextUser) {
+    if (!nextUser?.username) {
+      setWatchTogetherState({ status: 'idle', partner: null, pendingRequest: null, users: [], items: [], watchedMovies: [], watchedEpisodes: [], inProgressShows: [], error: '' })
+      return
+    }
+    setWatchTogetherState((state) => ({ ...state, status: 'loading', error: '' }))
+    try {
+      const response = await fetch('/api/watch-together', { headers: buildAuthHeaders(nextUser) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || 'Unable to load Watch Together.')
+      setWatchTogetherState({ status: 'success', partner: payload.partner || null, pendingRequest: payload.pendingRequest || null, users: Array.isArray(payload.users) ? payload.users : [], items: Array.isArray(payload.items) ? payload.items : [], watchedMovies: Array.isArray(payload.watchedMovies) ? payload.watchedMovies : [], watchedEpisodes: Array.isArray(payload.watchedEpisodes) ? payload.watchedEpisodes : [], inProgressShows: Array.isArray(payload.inProgressShows) ? payload.inProgressShows : [], error: '' })
+    } catch (error) {
+      setWatchTogetherState((state) => ({ ...state, status: 'error', error: error instanceof Error ? error.message : 'Unable to load Watch Together.' }))
+    }
+  }
+
+  async function loadWatchTogetherAchievements(nextUser) {
+    if (!nextUser?.username) return setWatchTogetherAchievementsState({ status: 'idle', achievements: [], error: '' })
+    setWatchTogetherAchievementsState((state) => ({ ...state, status: 'loading', error: '' }))
+    try {
+      const response = await fetch('/api/watch-together/achievements', { headers: buildAuthHeaders(nextUser) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || 'Unable to load shared achievements.')
+      setWatchTogetherAchievementsState({ status: 'success', achievements: Array.isArray(payload.achievements) ? payload.achievements : [], error: '' })
+    } catch (error) { setWatchTogetherAchievementsState({ status: 'error', achievements: [], error: error instanceof Error ? error.message : 'Unable to load shared achievements.' }) }
+  }
+
+  async function loadWatchTogetherStats(nextUser) {
+    if (!nextUser?.username) return setWatchTogetherStatsState({ status: 'idle', stats: null, error: '' })
+    setWatchTogetherStatsState((state) => ({ ...state, status: 'loading', error: '' }))
+    try {
+      const timeZone = resolveBrowserTimeZone()
+      const response = await fetch(`/api/watch-together/stats?timeZone=${encodeURIComponent(timeZone)}`, { headers: buildAuthHeaders(nextUser) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || 'Unable to load shared stats.')
+      setWatchTogetherStatsState({ status: 'success', stats: payload, error: '' })
+    } catch (error) { setWatchTogetherStatsState({ status: 'error', stats: null, error: error instanceof Error ? error.message : 'Unable to load shared stats.' }) }
+  }
+
+  async function handleSaveWatchTogetherSession(item, achievementIds, details = {}) {
+    if (!user?.username) return false
+    const response = await fetch('/api/watch-together/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json', ...buildAuthHeaders(user) }, body: JSON.stringify({ mediaType: item.mediaType, mediaId: item.id, episodeId: item.episodeId || null, achievementIds, details }) })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(payload.error || 'Unable to save shared session details.')
+    receiveAchievementUnlocks(payload.newlyUnlockedAchievements)
+    await loadWatchTogetherAchievements(user)
+    return true
+  }
+
+  async function handleChooseWatchTogetherPartner(username) {
+    if (!user?.username || !username) return
+    setWatchTogetherAction({ status: 'loading', key: 'partner', error: '' })
+    try {
+      const response = await fetch('/api/watch-together/requests', { method: 'POST', headers: { 'Content-Type': 'application/json', ...buildAuthHeaders(user) }, body: JSON.stringify({ username }) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || 'Unable to send your Watch Together request.')
+      setWatchTogetherSearch((state) => ({ ...state, items: [], status: 'idle', error: '' }))
+      setWatchTogetherTab('movies')
+      await loadWatchTogetherForUser(user)
+      setWatchTogetherAction({ status: 'success', key: 'partner', error: '' })
+    } catch (error) { setWatchTogetherAction({ status: 'error', key: 'partner', error: error instanceof Error ? error.message : 'Unable to send your Watch Together request.' }) }
+  }
+
+  async function handleWatchTogetherRequestResponse(requestId, decision) {
+    if (!user?.username) return
+    setWatchTogetherAction({ status: 'loading', key: `request-${requestId}`, error: '' })
+    try {
+      const response = await fetch(`/api/watch-together/requests/${requestId}/respond`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...buildAuthHeaders(user) }, body: JSON.stringify({ decision }) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || 'Unable to respond to the Watch Together request.')
+      await Promise.all([loadAlertsForUser(user), loadWatchTogetherForUser(user)])
+      setWatchTogetherAction({ status: 'success', key: `request-${requestId}`, error: '' })
+    } catch (error) { setWatchTogetherAction({ status: 'error', key: `request-${requestId}`, error: error instanceof Error ? error.message : 'Unable to respond to the Watch Together request.' }) }
+  }
+
+  async function handleResetWatchTogether() {
+    if (!user?.username) return false
+    setWatchTogetherAction({ status: 'loading', key: 'reset', error: '' })
+    try {
+      const response = await fetch('/api/watch-together/partner', { method: 'DELETE', headers: buildAuthHeaders(user) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || 'Unable to reset Watch Together.')
+      setWatchTogetherSearch({ query: '', type: 'all', status: 'idle', items: [], error: '' })
+      await loadWatchTogetherForUser(user)
+      setWatchTogetherAction({ status: 'success', key: 'reset', error: '' })
+      return true
+    } catch (error) { setWatchTogetherAction({ status: 'error', key: 'reset', error: error instanceof Error ? error.message : 'Unable to reset Watch Together.' }); return false }
+  }
+
+  async function handleWatchTogetherSearch() {
+    const query = watchTogetherSearch.query.trim()
+    if (!query || !user?.username) return
+    setWatchTogetherSearch((state) => ({ ...state, status: 'loading', error: '' }))
+    try {
+      const response = await fetch(`/api/watch-together/search?q=${encodeURIComponent(query)}&type=${watchTogetherSearch.type}`, { headers: buildAuthHeaders(user) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || 'Unable to search titles.')
+      setWatchTogetherSearch((state) => ({ ...state, status: 'success', items: Array.isArray(payload.items) ? payload.items : [], error: '' }))
+    } catch (error) { setWatchTogetherSearch((state) => ({ ...state, status: 'error', items: [], error: error instanceof Error ? error.message : 'Unable to search titles.' })) }
+  }
+
+  async function handleWatchTogetherItem(action, item = null) {
+    if (!user?.username) return
+    const key = item ? `${action}-${item.mediaType}-${item.id}` : action
+    setWatchTogetherAction({ status: 'loading', key, error: '' })
+    try {
+      let path = '/api/watch-together/selection'; let method = 'DELETE'; let body
+      if (action === 'add') { path = '/api/watch-together/items'; method = 'POST'; body = { mediaType: item.mediaType, mediaId: item.id } }
+      if (action === 'remove') { path = `/api/watch-together/items/${item.mediaType}/${item.id}`; method = 'DELETE' }
+      if (action === 'select') { path = '/api/watch-together/selection'; method = 'PUT'; body = { mediaType: item.mediaType, mediaId: item.id } }
+      if (action === 'accept' || action === 'deny') { path = `/api/watch-together/selection/${item.mediaType}/${item.id}/respond`; method = 'POST'; body = { decision: action } }
+      const response = await fetch(path, { method, headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...buildAuthHeaders(user) }, ...(body ? { body: JSON.stringify(body) } : {}) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || 'Unable to update the shared shortlist.')
+      await loadWatchTogetherForUser(user)
+      setWatchTogetherAction({ status: 'success', key, error: '' })
+    } catch (error) { setWatchTogetherAction({ status: 'error', key, error: error instanceof Error ? error.message : 'Unable to update the shared shortlist.' }) }
+  }
+
+  async function handleWatchTogetherEpisodeWatched(item, watchService) {
+    if (!user?.username || !Number.isInteger(Number(item?.episodeId))) return false
+    const key = `watch-tv-${item.episodeId}`
+    setWatchTogetherAction({ status: 'loading', key, error: '' })
+    try {
+      const response = await fetch(`/api/watch-together/episodes/${item.episodeId}/watched`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...buildAuthHeaders(user) }, body: JSON.stringify({ watchService }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || 'Unable to mark this shared episode watched.')
+      await Promise.all([loadTvLibraryForUser(user), loadTvWatchedHistoryForUser(user)])
+      receiveAchievementUnlocks(payload.newlyUnlockedAchievements)
+      const confirmationStatus = payload.watchTogether?.status || 'waiting_for_partner'
+      if (confirmationStatus !== 'completed') await loadWatchTogetherForUser(user)
+      await loadWatchTogetherAchievements(user)
+      setWatchTogetherAction({ status: 'success', key, error: '' })
+      return confirmationStatus
+    } catch (error) {
+      setWatchTogetherAction({ status: 'error', key, error: error instanceof Error ? error.message : 'Unable to mark this shared episode watched.' })
+      return false
+    }
+  }
+
   useEffect(() => {
     loadWatchlistForUser(user)
     loadReadBooksForUser(user)
@@ -1530,6 +1670,14 @@ function App() {
     loadFavoriteAuthorsForUser(user)
     loadAlertsForUser(user)
   }, [user, statsPeriod])
+
+  useEffect(() => {
+    if (activeView === primaryViews.watchTogether) { loadWatchTogetherForUser(user); loadWatchTogetherAchievements(user) }
+  }, [activeView, user])
+
+  useEffect(() => {
+    if (activeView === primaryViews.watchTogether && watchTogetherTab === 'stats') loadWatchTogetherStats(user)
+  }, [activeView, watchTogetherTab, user])
 
   useEffect(() => {
     loadTvWatchedHistoryForUser(user)
@@ -1619,7 +1767,7 @@ function App() {
     window.setTimeout(() => setAchievementToast(null), 4500)
   }
 
-  async function handleAddMovieToWatched(movie, watchService = null) {
+  async function handleAddMovieToWatched(movie, watchService = null, { deferWatchTogetherRefresh = false, watchTogether = false } = {}) {
     const normalizedMovieId = Number(movie?.id)
 
     if (!Number.isInteger(normalizedMovieId)) {
@@ -1647,6 +1795,7 @@ function App() {
         body: JSON.stringify({
           movieId: normalizedMovieId,
           watchService,
+          ...(watchTogether ? { watchTogether: true } : {}),
         }),
       })
       const payload = await response.json().catch(() => ({}))
@@ -1681,12 +1830,18 @@ function App() {
         error: '',
       })
       receiveAchievementUnlocks(payload.newlyUnlockedAchievements)
+      // Do not unmount the completed title before the confirming partner can
+      // rate it. The rating dialog refreshes the shared state when it closes.
+      if (activeView === primaryViews.watchTogether && !deferWatchTogetherRefresh && payload.watchTogether?.status !== 'completed') void loadWatchTogetherForUser(user)
+      if (payload.watchTogether?.status === 'completed') void loadWatchTogetherAchievements(user)
+      return true
     } catch (error) {
       setWatchedActionState({
         status: 'error',
         movieId: normalizedMovieId,
         error: error instanceof Error ? error.message : 'Unable to mark this movie as watched right now.',
       })
+      return false
     }
   }
 
@@ -1751,11 +1906,10 @@ function App() {
     const isWatched = watchedState.movies.some((watchedMovie) => Number(watchedMovie.id) === normalizedMovieId)
 
     if (isWatched) {
-      await handleRemoveMovieFromWatched(movie)
-      return
+      return handleRemoveMovieFromWatched(movie)
     }
 
-    await handleAddMovieToWatched(movie, watchService)
+    return handleAddMovieToWatched(movie, watchService)
   }
 
   async function handleSubmitMovieRating(movie, score) {
@@ -2869,9 +3023,9 @@ function App() {
       setGenreMoviesState(createMovieCollectionLoadingState({ page: genreMoviesPage }))
 
       try {
-        const response = await fetch(buildMoviesApiPath('/api/watched/by-genre', genreMoviesPage, moviesPageSize, {
+        const response = await fetch(buildMoviesApiPath('/api/movies', genreMoviesPage, moviesPageSize, {
           genre: selectedGenre.name,
-        }), { headers: buildAuthHeaders(user) })
+        }))
 
         if (!response.ok) {
           throw new Error(`Request failed with status ${response.status}`)
@@ -2879,7 +3033,7 @@ function App() {
 
         const payload = await response.json()
         const movies = Array.isArray(payload.movies)
-          ? payload.movies.map((movie) => ({ ...mapWatchedMoviePayload(movie), theme: 'theme-catalog' }))
+          ? payload.movies.map(mapMovieRowToCard)
           : []
         const pagination = mapPaginationPayload(payload.pagination, genreMoviesPage)
 
@@ -2908,7 +3062,7 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [activeView, genreMoviesPage, moviesScreenMode, selectedGenre, user])
+  }, [activeView, genreMoviesPage, moviesScreenMode, selectedGenre])
 
   useEffect(() => {
     if (currentRoute.kind !== routeKinds.authorDetail) {
@@ -3020,6 +3174,7 @@ function App() {
               alertsState={alertsState}
               onOpenAlert={handleOpenAlert}
               onOpenAlerts={handleOpenAlerts}
+              onRespondToWatchTogetherRequest={handleWatchTogetherRequestResponse}
               user={user}
             />
             <MobileHeader
@@ -3035,6 +3190,7 @@ function App() {
               alertsState={alertsState}
               onOpenAlert={handleOpenAlert}
               onOpenAlerts={handleOpenAlerts}
+              onRespondToWatchTogetherRequest={handleWatchTogetherRequestResponse}
               user={user}
             />
 
@@ -3084,6 +3240,7 @@ function App() {
                 isSignedIn={Boolean(user)}
                 watchlistIds={tvWatchlistIds}
                 tvEpisodeRatingActionState={tvEpisodeRatingActionState}
+                onOpenTvShow={handleOpenTvDetail}
               />
             ) : currentRoute.kind === routeKinds.continueWatching ? (
               <ContinueWatchingPage
@@ -3168,6 +3325,34 @@ function App() {
                 watchlistState={watchlistState}
                 tvWatchlistShows={tvWatchlistShows}
                 onOpenAuthor={handleOpenAuthorDetail}
+              />
+            ) : activeView === primaryViews.watchTogether ? (
+              <WatchTogetherScreen
+                isSignedIn={Boolean(user)}
+                state={watchTogetherState}
+                search={watchTogetherSearch}
+                action={watchTogetherAction}
+                activeTab={watchTogetherTab}
+                onOpenLogin={handleOpenLogin}
+                onChoosePartner={handleChooseWatchTogetherPartner}
+                onReset={handleResetWatchTogether}
+                onSearchChange={(patch) => setWatchTogetherSearch((state) => ({ ...state, ...patch }))}
+                onSearch={handleWatchTogetherSearch}
+                onItemAction={handleWatchTogetherItem}
+                onTabChange={setWatchTogetherTab}
+                onMarkWatched={(movie, watchService) => handleAddMovieToWatched(movie, watchService, { watchTogether: true })}
+                onMarkEpisodeWatched={handleWatchTogetherEpisodeWatched}
+                watchedActionState={watchedActionState}
+                onSubmitMovieRating={handleSubmitMovieRating}
+                movieRatingActionState={movieRatingActionState}
+                onSubmitEpisodeRating={handleSubmitTvEpisodeRating}
+                tvEpisodeRatingActionState={tvEpisodeRatingActionState}
+                onOpenMovie={handleOpenMovieDetail}
+                onOpenTvShow={handleOpenTvDetail}
+                onRefresh={() => loadWatchTogetherForUser(user)}
+                achievementsState={watchTogetherAchievementsState}
+                statsState={watchTogetherStatsState}
+                onSaveSession={handleSaveWatchTogetherSession}
               />
             ) : activeView === primaryViews.tvShows ? (
               <TvShowsScreen
@@ -3315,7 +3500,7 @@ function Brand() {
   )
 }
 
-function DesktopTopbar({ alertsState, onOpenAdmin, onOpenAccount, onOpenAlert, onOpenAlerts, onOpenLogin, onLogout, onSearchInputChange, onSearchSubmit, searchError, searchInput, user }) {
+function DesktopTopbar({ alertsState, onOpenAdmin, onOpenAccount, onOpenAlert, onOpenAlerts, onOpenLogin, onLogout, onRespondToWatchTogetherRequest, onSearchInputChange, onSearchSubmit, searchError, searchInput, user }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef(null)
 
@@ -3371,7 +3556,7 @@ function DesktopTopbar({ alertsState, onOpenAdmin, onOpenAccount, onOpenAlert, o
       </form>
 
       <div className="topbar-actions">
-        <AlertInbox alertsState={alertsState} onOpenAlert={onOpenAlert} onOpenAlerts={onOpenAlerts} onOpenLogin={onOpenLogin} user={user} />
+        <AlertInbox alertsState={alertsState} onOpenAlert={onOpenAlert} onOpenAlerts={onOpenAlerts} onOpenLogin={onOpenLogin} onRespondToWatchTogetherRequest={onRespondToWatchTogetherRequest} user={user} />
 
         {user ? (
           <div className={`profile-menu${menuOpen ? ' open' : ''}`} ref={menuRef}>
@@ -3423,7 +3608,7 @@ function DesktopTopbar({ alertsState, onOpenAdmin, onOpenAccount, onOpenAlert, o
   )
 }
 
-function MobileHeader({ alertsState, onOpenAccount, onOpenAlert, onOpenAlerts, onOpenLogin, onSearchInputChange, onSearchSubmit, searchError, searchInput, user }) {
+function MobileHeader({ alertsState, onOpenAccount, onOpenAlert, onOpenAlerts, onOpenLogin, onRespondToWatchTogetherRequest, onSearchInputChange, onSearchSubmit, searchError, searchInput, user }) {
   const [searchOpen, setSearchOpen] = useState(false)
 
   return (
@@ -3435,7 +3620,7 @@ function MobileHeader({ alertsState, onOpenAccount, onOpenAlert, onOpenAlerts, o
           <button type="button" className="icon-button" aria-label="Search" aria-expanded={searchOpen} onClick={() => setSearchOpen((value) => !value)}>
             <SearchIcon />
           </button>
-          <AlertInbox alertsState={alertsState} onOpenAlert={onOpenAlert} onOpenAlerts={onOpenAlerts} onOpenLogin={onOpenLogin} user={user} />
+          <AlertInbox alertsState={alertsState} onOpenAlert={onOpenAlert} onOpenAlerts={onOpenAlerts} onOpenLogin={onOpenLogin} onRespondToWatchTogetherRequest={onRespondToWatchTogetherRequest} user={user} />
           {user ? (
             <button type="button" className="avatar-button" aria-label={`Open ${user.fullName}'s profile`} onClick={onOpenAccount}>
               <div className="avatar small">{getUserInitial(user.fullName)}</div>
@@ -3462,7 +3647,7 @@ function MobileHeader({ alertsState, onOpenAccount, onOpenAlert, onOpenAlerts, o
   )
 }
 
-function AlertInbox({ alertsState, onOpenAlert, onOpenAlerts, onOpenLogin, user }) {
+function AlertInbox({ alertsState, onOpenAlert, onOpenAlerts, onOpenLogin, onRespondToWatchTogetherRequest, user }) {
   const [open, setOpen] = useState(false)
   const inboxRef = useRef(null)
 
@@ -3495,7 +3680,13 @@ function AlertInbox({ alertsState, onOpenAlert, onOpenAlerts, onOpenLogin, user 
           {alertsState.status === 'error' ? <p className="alert-empty alert-error">{alertsState.error}</p> : null}
           {alertsState.status !== 'loading' && alertsState.status !== 'error' && !alertsState.alerts.length ? <p className="alert-empty">No alerts yet.</p> : null}
           <div className="alert-list">
-            {alertsState.alerts.map((alert) => <button key={alert.id} type="button" className="alert-item" onClick={() => { setOpen(false); onOpenAlert(alert) }}><strong>{alert.title}</strong><span>{alert.message}</span><small>{formatAlertTime(alert.createdAt)}</small></button>)}
+            {alertsState.alerts.map((alert) => {
+              const actionable = alert.kind === 'watch_together_request' && alert.watchTogetherRequestStatus === 'pending' && alert.watchTogetherRequestId
+              return <div key={alert.id} className="alert-item">
+                <button type="button" className="alert-item-main" onClick={() => { if (!actionable) { setOpen(false); onOpenAlert(alert) } }}><strong>{alert.title}</strong><span>{alert.message}</span><small>{formatAlertTime(alert.createdAt)}</small></button>
+                {actionable ? <div className="alert-item-actions"><button type="button" className="secondary-button" onClick={() => onRespondToWatchTogetherRequest(alert.watchTogetherRequestId, 'deny')}>Deny</button><button type="button" className="primary-button" onClick={() => onRespondToWatchTogetherRequest(alert.watchTogetherRequestId, 'accept')}>Accept</button></div> : null}
+              </div>
+            })}
           </div>
         </section>
       ) : null}
@@ -4081,7 +4272,7 @@ function MoviesScreen({
         <h1>Movies</h1>
         <p>
           {isGenreListMode
-            ? `Browse movies you watched in ${selectedGenre.name}, 30 titles at a time.`
+            ? `Browse all ${selectedGenre.name} movies in your local database, 30 titles at a time.`
             : isPopularListMode
             ? 'Browse popular movies imported from your local database, 30 titles at a time.'
             : isNowPlayingListMode
@@ -4614,6 +4805,149 @@ function TvShowsScreen({
       </section>
     </section>
   )
+}
+
+function WatchTogetherScreen({ isSignedIn, state, search, action, activeTab, onOpenLogin, onChoosePartner, onReset, onSearchChange, onSearch, onItemAction, onTabChange, onMarkWatched, onMarkEpisodeWatched, watchedActionState, onSubmitMovieRating, movieRatingActionState, onSubmitEpisodeRating, tvEpisodeRatingActionState, onOpenTvShow, onOpenMovie, onRefresh, achievementsState, statsState, onSaveSession }) {
+  const [resetOpen, setResetOpen] = useState(false)
+  const [historyTab, setHistoryTab] = useState('movies')
+  const [movieHistoryPage, setMovieHistoryPage] = useState(1)
+  const [showHistoryPage, setShowHistoryPage] = useState(1)
+  const movieHistoryPageCount = Math.max(1, Math.ceil(state.watchedMovies.length / watchTogetherHistoryPageSize))
+  const showHistoryPageCount = Math.max(1, Math.ceil(state.watchedEpisodes.length / watchTogetherHistoryPageSize))
+
+  useEffect(() => {
+    setMovieHistoryPage((page) => Math.min(page, movieHistoryPageCount))
+  }, [movieHistoryPageCount])
+
+  useEffect(() => {
+    setShowHistoryPage((page) => Math.min(page, showHistoryPageCount))
+  }, [showHistoryPageCount])
+
+  if (!isSignedIn) return <section className="watch-together-screen"><div className="watch-together-hero"><div><h1>Watch Together</h1><p>Sign in to choose a partner and build a shared shortlist.</p></div></div><SectionMessage message="Sign in to start watching together." /><button type="button" className="primary-button" onClick={onOpenLogin}>Sign In</button></section>
+
+  const selected = state.items.find((item) => item.selected)
+  const pendingPick = state.items.find((item) => item.pickVoteStatus)
+  const movieItems = state.items.filter((item) => item.mediaType === 'movie')
+  const tvItems = state.items.filter((item) => item.mediaType === 'tv')
+  const tabItems = activeTab === 'movies' ? movieItems : tvItems
+  const searchItems = search.items.filter((item) => activeTab === 'movies' ? item.mediaType === 'movie' : item.mediaType === 'tv')
+  const saved = new Set(tabItems.map((item) => `${item.mediaType}-${item.id}`))
+  const pending = state.pendingRequest
+  const isBusy = state.status === 'loading' || action.status === 'loading'
+  const historyItems = historyTab === 'movies' ? state.watchedMovies : state.watchedEpisodes
+  const historyPage = historyTab === 'movies' ? movieHistoryPage : showHistoryPage
+  const historyPageCount = historyTab === 'movies' ? movieHistoryPageCount : showHistoryPageCount
+  const visibleHistoryItems = historyItems.slice((historyPage - 1) * watchTogetherHistoryPageSize, historyPage * watchTogetherHistoryPageSize)
+  const historyPagination = {
+    page: historyPage,
+    pageSize: watchTogetherHistoryPageSize,
+    hasPreviousPage: historyPage > 1,
+    hasNextPage: historyPage < historyPageCount,
+  }
+  return <section className="watch-together-screen">
+    <div className="watch-together-hero">
+      <div><span className="watch-together-eyebrow">ONE-ON-ONE</span><h1>Watch Together</h1><p>{state.partner ? `Build your next watch night with ${state.partner.fullName}.` : pending?.direction === 'outgoing' ? `Waiting for ${pending.user.fullName} to respond to your request.` : pending ? `${pending.user.fullName} invited you to Watch Together. Respond in Alerts.` : 'Choose someone to start a shared movie and TV shortlist.'}</p></div>
+      {state.partner ? <button type="button" className="secondary-button watch-together-reset" disabled={isBusy} onClick={() => setResetOpen(true)}>Reset</button> : <label className="watch-together-partner"><span>Your partner</span><select value="" disabled={isBusy || Boolean(pending)} onChange={(event) => event.target.value && onChoosePartner(event.target.value)}><option value="">{pending ? 'Request pending…' : 'Choose a user…'}</option>{state.users.map((candidate) => <option key={candidate.username} value={candidate.username}>{candidate.fullName} (@{candidate.username})</option>)}</select></label>}
+    </div>
+    {state.status === 'loading' ? <SectionMessage message="Loading your shared watchlist..." /> : null}
+    {state.status === 'error' ? <SectionMessage tone="error" message={state.error} /> : null}
+    {action.status === 'error' ? <SectionMessage tone="error" message={action.error} /> : null}
+    {!state.partner && state.status === 'success' ? <section className="watch-together-empty"><UserIcon /><h2>{pending?.direction === 'outgoing' ? 'Request sent' : pending ? 'Request awaiting your choice' : 'Pick your watch partner'}</h2><p>{pending?.direction === 'outgoing' ? `${pending.user.fullName} will receive an alert with options to accept or deny.` : pending ? `Open Alerts to accept or deny ${pending.user.fullName}'s request.` : 'Select another WatchVault user above to send them a Watch Together request.'}</p></section> : null}
+    {state.partner ? <>
+      <section className="watch-together-picked">
+        <div><span>Tonight’s pick</span>{selected ? <><strong>{selected.title}</strong><p>{selected.mediaType === 'tv' ? `${formatWatchTogetherEpisode(selected)} · TV Episode` : `Movie · ${selected.year}`}</p></> : pendingPick ? <><strong>{pendingPick.title}</strong><p>{pendingPick.pickVoteStatus === 'proposed_by_current_user' ? 'Waiting for your partner to vote.' : 'Your partner proposed this title.'}</p></> : <p>No title selected yet.</p>}</div>
+        <div className="watch-together-picked-actions">{selected?.mediaType === 'movie' ? <WatchTogetherMarkWatched movie={selected} onMarkWatched={onMarkWatched} watchedActionState={watchedActionState} onSubmitMovieRating={onSubmitMovieRating} movieRatingActionState={movieRatingActionState} onRefresh={onRefresh} /> : null}{selected?.mediaType === 'tv' ? <WatchTogetherMarkEpisode episode={selected} onMarkWatched={onMarkEpisodeWatched} action={action} onSubmitRating={onSubmitEpisodeRating} ratingActionState={tvEpisodeRatingActionState} onRefresh={onRefresh} /> : null}{pendingPick?.pickVoteStatus === 'awaiting_current_user' ? <><button type="button" className="secondary-button" disabled={action.status === 'loading'} onClick={() => onItemAction('deny', pendingPick)}>Deny</button><button type="button" className="primary-button" disabled={action.status === 'loading'} onClick={() => onItemAction('accept', pendingPick)}>Accept</button></> : null}{(selected || pendingPick?.pickVoteStatus === 'proposed_by_current_user') ? <button type="button" className="secondary-button" disabled={action.status === 'loading'} onClick={() => onItemAction('clear')}>{selected ? 'Clear pick' : 'Cancel proposal'}</button> : null}</div>
+      </section>
+      <div className="watch-together-tabs" role="tablist" aria-label="Watch Together content"><button type="button" className={activeTab === 'movies' ? 'active' : ''} onClick={() => { onTabChange('movies'); onSearchChange({ type: 'movie' }) }}>Movies <span>{movieItems.length}</span></button><button type="button" className={activeTab === 'tv' ? 'active' : ''} onClick={() => { onTabChange('tv'); onSearchChange({ type: 'tv' }) }}>TV Episodes <span>{tvItems.length}</span></button><button type="button" className={activeTab === 'history' ? 'active' : ''} onClick={() => onTabChange('history')}>History <span>{state.watchedMovies.length + state.watchedEpisodes.length}</span></button><button type="button" className={activeTab === 'stats' ? 'active' : ''} onClick={() => onTabChange('stats')}>Stats</button><button type="button" className={activeTab === 'achievements' ? 'active' : ''} onClick={() => onTabChange('achievements')}>Achievements <span>{achievementsState?.achievements?.filter((item) => item.unlocked).length || 0}</span></button></div>
+      {activeTab === 'stats' ? <WatchTogetherStatsTab state={statsState} onOpenMovie={onOpenMovie} onOpenTvShow={onOpenTvShow} /> : activeTab === 'achievements' ? <WatchTogetherAchievementsTab state={achievementsState} /> : activeTab === 'history' ? <section className="watch-together-history"><div className="section-heading"><div><h2>History</h2><p>Titles and episodes you both confirmed watching.</p></div></div><div className="watch-together-history-tabs" role="tablist" aria-label="Watch Together history"><button type="button" role="tab" aria-selected={historyTab === 'movies'} className={historyTab === 'movies' ? 'active' : ''} onClick={() => { setHistoryTab('movies'); setMovieHistoryPage(1) }}>Movies <span>{state.watchedMovies.length}</span></button><button type="button" role="tab" aria-selected={historyTab === 'shows'} className={historyTab === 'shows' ? 'active' : ''} onClick={() => { setHistoryTab('shows'); setShowHistoryPage(1) }}>Shows <span>{state.watchedEpisodes.length}</span></button></div>{visibleHistoryItems.length ? <><div className="watch-together-results">{visibleHistoryItems.map((item) => <WatchTogetherHistoryRow key={historyTab === 'movies' ? `movie-${item.id}` : `episode-${item.episodeId}`} item={item} achievements={achievementsState?.achievements || []} onLogSession={(ids, details) => onSaveSession(item, ids, details)} />)}</div><PaginationControls pagination={historyPagination} onPageChange={historyTab === 'movies' ? setMovieHistoryPage : setShowHistoryPage} /></> : <SectionMessage message={historyTab === 'movies' ? 'No shared movies yet.' : 'No shared episodes yet.'} />}</section> : <section className="watch-together-workspace">
+        <div className="watch-together-search-panel"><div className="section-heading"><div><h2>Find a {activeTab === 'movies' ? 'movie' : 'TV show'}</h2><p>{activeTab === 'movies' ? 'Add movies to your shared shortlist.' : 'Add a show to select your next shared episode.'}</p></div></div><form className="watch-together-search-form" onSubmit={(event) => { event.preventDefault(); onSearch() }}><input value={search.query} onChange={(event) => onSearchChange({ query: event.target.value, type: activeTab === 'movies' ? 'movie' : 'tv' })} placeholder={activeTab === 'movies' ? 'Search movies' : 'Search TV shows'} /><button type="submit" className="primary-button" disabled={!search.query.trim() || search.status === 'loading'}>{search.status === 'loading' ? 'Searching...' : 'Search'}</button></form>{search.status === 'error' ? <SectionMessage tone="error" message={search.error} /> : null}<div className="watch-together-results">{searchItems.map((item) => <WatchTogetherTitleRow key={`${item.mediaType}-${item.id}`} item={item} actionLabel={saved.has(`${item.mediaType}-${item.id}`) ? 'Added' : 'Add'} disabled={saved.has(`${item.mediaType}-${item.id}`) || action.status === 'loading'} onAction={() => onItemAction('add', item)} />)}</div></div>
+        <div className="watch-together-shortlist"><div className="section-heading"><div><h2>{activeTab === 'movies' ? 'Movie shortlist' : 'TV episode shortlist'}</h2><p>{activeTab === 'tv' ? 'Each entry is the next episode you can watch together.' : `${movieItems.length} movie${movieItems.length === 1 ? '' : 's'} to choose from.`}</p></div></div>{tabItems.length ? <div className="watch-together-results">{tabItems.map((item) => <WatchTogetherTitleRow key={`${item.mediaType}-${item.id}`} item={item} selected={item.selected} actionLabel={item.selected ? null : item.pickVoteStatus ? 'Proposal pending' : 'Propose tonight'} disabled={action.status === 'loading' || Boolean(selected) || Boolean(pendingPick)} onAction={() => onItemAction('select', item)} onRemove={!item.selected && !item.pickVoteStatus ? () => onItemAction('remove', item) : null} />)}</div> : <SectionMessage message={activeTab === 'movies' ? 'Search for a movie to start the shortlist.' : 'Search for a show to choose your next shared episode.'} />}</div>
+        {activeTab === 'tv' ? <section className="watch-together-in-progress"><div className="section-heading"><div><h2>Jointly in progress</h2><p>Shows with at least one episode watched together.</p></div></div>{state.inProgressShows.length ? <div className="watch-together-results">{state.inProgressShows.map((show) => <WatchTogetherInProgressShowRow key={show.id} show={show} onOpen={() => onOpenTvShow(show)} />)}</div> : <SectionMessage message="Shared TV shows will appear here after your first episode together." />}</section> : null}
+      </section>}
+    </> : null}
+    {resetOpen ? <WatchTogetherResetDialog isSaving={action.status === 'loading' && action.key === 'reset'} onCancel={() => setResetOpen(false)} onConfirm={async () => { if (await onReset()) setResetOpen(false) }} /> : null}
+  </section>
+}
+
+function WatchTogetherResetDialog({ isSaving, onCancel, onConfirm }) {
+  return <div className="movie-rating-dialog-backdrop" role="presentation" onMouseDown={isSaving ? undefined : onCancel}>
+    <section className="movie-rating-dialog" role="dialog" aria-modal="true" aria-labelledby="watch-together-reset-title" onMouseDown={(event) => event.stopPropagation()}>
+      <p className="movie-rating-dialog-kicker">Reset Watch Together</p><h2 id="watch-together-reset-title">Disconnect your partner?</h2><p>This permanently deletes your shared shortlist and Watched Together history for both users.</p>
+      <div className="movie-rating-dialog-actions"><button type="button" className="secondary-button" onClick={onCancel} disabled={isSaving}>Cancel</button><button type="button" className="primary-button" onClick={onConfirm} disabled={isSaving}>{isSaving ? 'Resetting...' : 'Reset connection'}</button></div>
+    </section>
+  </div>
+}
+
+function WatchTogetherStatsTab({ state, onOpenMovie, onOpenTvShow }) {
+  const [tab, setTab] = useState('movies')
+  if (state?.status === 'idle' || state?.status === 'loading') return <section className="watch-together-history"><SectionMessage message="Loading shared stats..." /></section>
+  if (state?.status === 'error') return <section className="watch-together-history"><SectionMessage tone="error" message={state.error || 'Unable to load shared stats.'} /></section>
+  const dashboard = tab === 'movies' ? state.stats?.movies : state.stats?.shows
+  if (!dashboard) return <section className="watch-together-history"><SectionMessage message="Connect with a partner to view shared stats." /></section>
+  const { metrics, activity, genres, habits, topRated, streamingPlatforms, recentHistory, yearInReview, actors = [] } = dashboard
+  const maxActivity = Math.max(...activity.buckets.map((bucket) => bucket.totalMinutes), 0)
+  const maxGenre = Math.max(...genres.map((genre) => genre.minutes), 0)
+  const weekdayLabels = ['M', 'T', 'W', 'T', 'F', 'S', 'S']
+  const weekdayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+  const openItem = (item) => item.mediaType === 'tv' ? onOpenTvShow(item) : onOpenMovie(item)
+  const cards = tab === 'movies'
+    ? [{ label: 'Shared Movies', value: metrics.titlesWatched, tone: 'violet', icon: ClapperIcon }, { label: 'Hours Together', value: formatMinutesAsHoursAndMinutes(metrics.timeWatchedMinutes), tone: 'blue', icon: ClockIcon }, { label: 'Average Rating', value: metrics.averageRating?.toFixed(1) ?? '—', suffix: '/5', tone: 'gold', icon: StarOutlineIcon }]
+    : [{ label: 'Shared Shows', value: metrics.titlesWatched, tone: 'violet', icon: TvIcon }, { label: 'Episodes Together', value: metrics.episodesWatched, tone: 'teal', icon: TvIcon }, { label: 'Hours Together', value: formatMinutesAsHoursAndMinutes(metrics.timeWatchedMinutes), tone: 'blue', icon: ClockIcon }, { label: 'Average Rating', value: metrics.averageRating?.toFixed(1) ?? '—', suffix: '/5', tone: 'gold', icon: StarOutlineIcon }]
+  return <section className="watch-together-history watch-together-stats"><div className="section-heading"><div><h2>Shared Stats</h2><p>All-time stats for titles you both confirmed watching.</p></div></div><div className="watch-together-history-tabs" role="tablist" aria-label="Shared statistics"><button type="button" role="tab" aria-selected={tab === 'movies'} className={tab === 'movies' ? 'active' : ''} onClick={() => setTab('movies')}>Movies</button><button type="button" role="tab" aria-selected={tab === 'shows'} className={tab === 'shows' ? 'active' : ''} onClick={() => setTab('shows')}>Shows</button></div>{metrics.titlesWatched === 0 ? <SectionMessage message={tab === 'movies' ? 'No shared movies yet.' : 'No shared episodes yet.'} /> : <div className="stats-page watch-together-stats-dashboard"><div className="stats-metric-grid">{cards.map(({ icon: Icon, label, value, suffix, tone }) => <article key={label} className={`stats-metric-card ${tone}`}><div className="stats-metric-icon"><Icon /></div><div><span>{label}</span><strong>{value}<small>{suffix}</small></strong></div></article>)}</div><div className="stats-insights-grid"><section className="stats-surface stats-activity-card"><StatsSectionTitle title="Watch Activity" /><div className="stats-chart-axis">{buildActivityAxisLabels(maxActivity).map((label) => <span key={label}>{label}</span>)}</div><div className="stats-activity-bars watch-together-activity-bars" style={{ '--bar-count': activity.buckets.length }}>{activity.buckets.map((bucket) => <div key={bucket.label} className="stats-activity-bar-wrap"><span style={{ height: `${Math.max(3, (bucket.totalMinutes / maxActivity) * 100)}%` }} title={`${bucket.label}: ${formatMinutesAsHoursAndMinutes(bucket.totalMinutes)}`} /><small>{bucket.label}</small></div>)}</div></section><section className="stats-surface stats-genres-card"><StatsSectionTitle title="Top Genres" />{genres.length ? <div className="stats-genre-list">{genres.map((genre) => <div key={genre.name}><span>{genre.name}</span><div><i style={{ width: `${(genre.minutes / maxGenre) * 100}%` }} /></div><b>{formatCompactMinutes(genre.minutes)}</b></div>)}</div> : <SectionMessage message="No genre data yet." />}</section><section className="stats-surface stats-habits-card"><StatsSectionTitle title="Weekly Habits" />{habits.bestWeekdayIndex === null ? <SectionMessage message="No watch habits yet." /> : <><p className="stats-label-copy">Best Days</p><div className="stats-weekdays">{weekdayLabels.map((day, index) => <span key={`${day}-${index}`} className={index === habits.bestWeekdayIndex ? 'active' : ''}>{day}</span>)}</div><p className="stats-highlight-copy">{weekdayNames[habits.bestWeekdayIndex]} is your top day!</p><p className="stats-label-copy">Peak Watch Time</p><strong className="stats-peak-time"><ClockIcon />{formatPeakWatchWindow(habits.peakWindow)}</strong></>}</section></div><div className="stats-detail-grid"><section className="stats-surface stats-rated-card"><StatsSectionTitle title="Top Rated Together" />{topRated.length ? <div className="stats-rated-list">{topRated.map((item) => <StatsTitleRow key={`${item.mediaType}-${item.id}-${item.episodeId || ''}`} item={item} onOpenMovie={onOpenMovie} onOpenTvShow={onOpenTvShow} />)}</div> : <SectionMessage message="No shared ratings yet." />}</section><section className="stats-surface stats-actors-card"><StatsSectionTitle title="Most Watched Actors" />{actors.length ? <div className="stats-actors-list">{actors.map((actor, index) => <div key={actor.personId}><span className={`stats-actor-avatar${actor.profileUrl ? ' has-image' : ''}`} style={actor.profileUrl ? { backgroundImage: `url(${actor.profileUrl})` } : { '--avatar-color': statsActorColors[index % statsActorColors.length] }}>{actor.profileUrl ? null : actor.name.split(' ').map((part) => part[0]).join('').slice(0,2)}</span><p><b>{actor.name}</b><small>{actor.titleCount} {actor.titleCount === 1 ? 'title' : 'titles'}</small></p><em>#{index + 1}</em></div>)}</div> : <SectionMessage message="No shared cast data yet." />}</section><section className="stats-surface stats-platforms-card"><StatsSectionTitle title="Streaming Platforms" />{streamingPlatforms.length ? <div className="stats-platform-list">{streamingPlatforms.map((platform) => <div key={platform.name}><span className="stats-platform-mark">{platform.name.slice(0,1)}</span><p><b>{platform.name}</b><i><span style={{ width: `${platform.percent}%` }} /></i></p><strong>{formatMinutesAsHoursAndMinutes(platform.minutes)}<small>{platform.percent}%</small></strong></div>)}</div> : <SectionMessage message="No watch services recorded yet." />}</section><section className="stats-surface stats-history-card"><StatsSectionTitle title="Recent Shared History" />{recentHistory.length ? <div className="stats-history-list">{recentHistory.map((item) => <button type="button" className="stats-history-item" key={`${item.mediaType}-${item.id}-${item.episodeId || ''}`} onClick={() => openItem(item)}><div className="stats-title-art">{item.posterUrl ? <img src={item.posterUrl} alt={`${item.title} poster`} loading="lazy" /> : null}</div><b>{item.title}</b><small>{item.mediaType === 'tv' ? `S${item.seasonNumber} E${item.episodeNumber}` : 'Movie'}</small><em>{formatRelativeTime(item.watchedAt)}</em></button>)}</div> : null}</section></div><div className="stats-bottom-grid"><section className="stats-surface stats-review-card"><StatsSectionTitle title="All-Time Review" /><div className="stats-review-metrics"><span>Titles Watched<b>{yearInReview.titlesWatched}</b></span><span>Hours Watched<b>{formatCompactMinutes(yearInReview.minutes)}</b></span><span>Episodes Watched<b>{yearInReview.episodesWatched}</b></span><span>Avg Rating<b>{yearInReview.averageRating?.toFixed(1) ?? '—'}<small>/5</small></b></span></div><div className="stats-review-highlights"><span>Top Genre<b>{yearInReview.topGenre || '—'}</b></span><span>Longest Streak<b>{yearInReview.longestStreak ? `${yearInReview.longestStreak} days` : '—'}</b></span><span>Most Watched Month<b>{yearInReview.mostWatchedMonth || '—'}</b></span><span>New Favorites<b>{yearInReview.newFavorites}</b></span></div></section></div></div>}</section>
+}
+
+function WatchTogetherTitleRow({ item, selected = false, actionLabel, disabled, onAction, onRemove }) {
+  const pending = item.pickVoteStatus === 'proposed_by_current_user' ? ' · Waiting for partner' : item.pickVoteStatus === 'awaiting_current_user' ? ' · Your vote is needed' : ''
+  return <article className={`watch-together-title${selected ? ' selected' : ''}`}><div className="watch-together-title-main"><span className={`watch-together-art${item.posterUrl ? ' has-image' : ''}`} style={item.posterUrl ? { backgroundImage: `url(${item.posterUrl})` } : undefined} /><span><b>{item.title}</b><small>{item.mediaType === 'tv' && item.episodeId ? `${formatWatchTogetherEpisode(item)} · ${item.episodeTitle}` : item.mediaType === 'tv' ? 'TV Show' : `Movie · ${item.year || 'TBA'}`}{pending}</small></span></div><div className="watch-together-title-actions">{actionLabel ? <button type="button" className={selected ? 'primary-button' : 'secondary-button'} disabled={disabled} onClick={onAction}>{actionLabel}</button> : null}{onRemove ? <button type="button" className="watch-together-remove" disabled={disabled} onClick={onRemove} aria-label={`Remove ${item.title}`}>×</button> : null}</div></article>
+}
+
+function formatWatchTogetherEpisode(item) {
+  return `S${item?.seasonNumber || 0} E${item?.episodeNumber || 0}`
+}
+
+function WatchTogetherMarkWatched({ movie, onMarkWatched, watchedActionState, onSubmitMovieRating, movieRatingActionState, onRefresh }) {
+  const [watchServiceOpen, setWatchServiceOpen] = useState(false)
+  const [ratingOpen, setRatingOpen] = useState(false)
+  const [selectedRating, setSelectedRating] = useState(5)
+  const waitingForPartner = movie.confirmedByCurrentUser && !movie.confirmedByPartner
+  const isWatchingUpdate = watchedActionState.status === 'loading' && Number(watchedActionState.movieId) === Number(movie.id)
+  const isRatingSaving = movieRatingActionState?.status === 'loading' && Number(movieRatingActionState.movieId) === Number(movie.id)
+  const closeRating = () => { setRatingOpen(false); onRefresh?.() }
+  return <><button type="button" className="secondary-button" disabled={isWatchingUpdate || waitingForPartner} onClick={() => setWatchServiceOpen(true)}>{isWatchingUpdate ? 'Updating...' : waitingForPartner ? 'Waiting for partner' : 'Mark watched'}</button>{watchServiceOpen ? <WatchServiceDialog title={movie.title} onCancel={() => setWatchServiceOpen(false)} onSelect={async (watchService) => { const saved = await onMarkWatched(movie, watchService); setWatchServiceOpen(false); if (saved) { setSelectedRating(5); setRatingOpen(true) } }} /> : null}{ratingOpen ? <MovieRatingDialog movie={movie} selectedRating={selectedRating} onSelectRating={setSelectedRating} onCancel={closeRating} onSubmit={async () => { if (await onSubmitMovieRating(movie, selectedRating)) closeRating() }} isSaving={isRatingSaving} error={movieRatingActionState?.status === 'error' && Number(movieRatingActionState.movieId) === Number(movie.id) ? movieRatingActionState.error : ''} cancelLabel="Skip" /> : null}</>
+}
+
+function WatchTogetherMarkEpisode({ episode, onMarkWatched, action, onSubmitRating, ratingActionState, onRefresh }) {
+  const [open, setOpen] = useState(false)
+  const [ratingOpen, setRatingOpen] = useState(false)
+  const [selectedRating, setSelectedRating] = useState(5)
+  const waiting = episode.confirmedByCurrentUser && !episode.confirmedByPartner
+  const saving = action.status === 'loading' && action.key === `watch-tv-${episode.episodeId}`
+  const ratingEpisode = { id: episode.episodeId, name: `${episode.title} · ${episode.episodeTitle}` }
+  function closeRating() { setRatingOpen(false); onRefresh?.() }
+  return <>{action.status === 'error' && action.key === `watch-tv-${episode.episodeId}` ? <span className="tmdb-search-error">{action.error}</span> : null}<button type="button" className="secondary-button" disabled={saving || waiting} onClick={() => setOpen(true)}>{saving ? 'Updating...' : waiting ? 'Waiting for partner' : 'Mark watched'}</button>{open ? <WatchServiceDialog title={`${episode.title} · ${formatWatchTogetherEpisode(episode)}`} onCancel={() => setOpen(false)} onSelect={async (service) => { const status = await onMarkWatched(episode, service); if (status) { setOpen(false); setSelectedRating(5); setRatingOpen(true) } }} /> : null}{ratingOpen ? <MovieRatingDialog movie={ratingEpisode} selectedRating={selectedRating} onSelectRating={setSelectedRating} onCancel={closeRating} onSubmit={async () => { if (await onSubmitRating(ratingEpisode, selectedRating)) closeRating() }} isSaving={ratingActionState?.status === 'loading' && Number(ratingActionState.episodeId) === Number(episode.episodeId)} error={ratingActionState?.status === 'error' && Number(ratingActionState.episodeId) === Number(episode.episodeId) ? ratingActionState.error : ''} kicker="Your Episode Rating" cancelLabel="Skip" /> : null}</>
+}
+
+function WatchTogetherHistoryRow({ item, onLogSession, achievements = [] }) {
+  const [logging, setLogging] = useState(false)
+  const isEpisode = item.mediaType === 'tv'
+  return <><article className="watch-together-title watched"><div className="watch-together-title-main"><span className={`watch-together-art${item.posterUrl ? ' has-image' : ''}`} style={item.posterUrl ? { backgroundImage: `url(${item.posterUrl})` } : undefined} /><span><b>{isEpisode ? `${item.title} · ${item.episodeTitle}` : item.title}</b><small>{isEpisode ? `${formatWatchTogetherEpisode(item)} · ` : `Movie · ${item.year || 'TBA'} · `}Watched together {formatLongDate(item.watchedTogetherAt)}{item.sessionDetails ? ' · Session logged' : ''}</small></span></div><button type="button" className="secondary-button" onClick={() => setLogging(true)}>{item.sessionDetails ? 'Edit session' : 'Log session'}</button><CheckCircleIcon /></article>{logging ? <WatchTogetherSessionDialog item={item} achievements={achievements} onCancel={() => setLogging(false)} onSave={async (ids, details) => { await onLogSession(ids, details); setLogging(false) }} /> : null}</>
+}
+
+function WatchTogetherSessionDialog({ item, achievements, onCancel, onSave }) {
+  const [selected, setSelected] = useState(() => Array.isArray(item.sessionAchievementIds) ? item.sessionAchievementIds : []); const [notes, setNotes] = useState(() => item.sessionDetails?.notes || ''); const [saving, setSaving] = useState(false)
+  return <div className="movie-rating-dialog-backdrop"><section className="movie-rating-dialog watch-together-session-dialog" role="dialog" aria-modal="true"><p className="movie-rating-dialog-kicker">Shared session</p><h2>What happened during {item.title}?</h2><p>Record any shared moments. The watch itself is already confirmed by both partners.</p><textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Optional notes, mood, snack, location, quiz or prediction details" /><div className="watch-together-session-badges">{achievements.map((achievement) => <label key={achievement.id}><input type="checkbox" checked={selected.includes(achievement.id)} onChange={(event) => setSelected((ids) => event.target.checked ? [...ids, achievement.id] : ids.filter((id) => id !== achievement.id))} />{achievement.name}</label>)}</div><div className="movie-rating-dialog-actions"><button type="button" className="secondary-button" disabled={saving} onClick={onCancel}>Cancel</button><button type="button" className="primary-button" disabled={saving} onClick={async () => { setSaving(true); try { await onSave(selected, { notes }); } finally { setSaving(false) } }}>{saving ? 'Saving…' : 'Save session'}</button></div></section></div>
+}
+
+function WatchTogetherAchievementsTab({ state }) {
+  const [category, setCategory] = useState('All'); const [status, setStatus] = useState('all')
+  if (state?.status === 'loading' || state?.status === 'idle') return <SectionMessage message="Loading shared achievements..." />
+  if (state?.status === 'error') return <SectionMessage tone="error" message={state.error} />
+  const items = Array.isArray(state?.achievements) ? state.achievements : []; const categories = ['All', ...new Set(items.map((item) => item.category))]; const visible = items.filter((item) => (category === 'All' || item.category === category) && (status === 'all' || (status === 'unlocked' ? item.unlocked : !item.unlocked)))
+  return <section className="watch-together-history"><div className="section-heading"><div><h2>Achievements</h2><p>{items.filter((item) => item.unlocked).length} of {items.length} shared achievements unlocked.</p></div></div><div className="achievement-filters"><select value={category} onChange={(event) => setCategory(event.target.value)}>{categories.map((value) => <option key={value}>{value}</option>)}</select><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">All badges</option><option value="unlocked">Unlocked</option><option value="locked">Locked</option></select></div><div className="achievement-grid">{visible.map((item) => <AchievementCard key={item.id} item={item} />)}</div></section>
+}
+
+function WatchTogetherInProgressShowRow({ show, onOpen }) {
+  return <button type="button" className="watch-together-title watch-together-in-progress-row" onClick={onOpen} aria-label={`Open ${show.title}`}><span className="watch-together-title-main"><span className={`watch-together-art${show.posterUrl ? ' has-image' : ''}`} style={show.posterUrl ? { backgroundImage: `url(${show.posterUrl})` } : undefined} /><span><b>{show.title}</b><small>{show.watchedEpisodeCount} shared {show.watchedEpisodeCount === 1 ? 'episode' : 'episodes'} · Latest: S{show.latestSeasonNumber} E{show.latestEpisodeNumber} · {show.latestEpisodeTitle}</small></span></span><ChevronRight /></button>
 }
 
 function WatchlistScreen({
@@ -5348,7 +5682,7 @@ function MovieDetailPage({
         />
       ) : null}
 
-      {isWatchServiceDialogOpen ? <WatchServiceDialog title={movie.title} onCancel={() => setIsWatchServiceDialogOpen(false)} onSelect={(watchService) => { setIsWatchServiceDialogOpen(false); void onToggleWatched(movie, watchService) }} /> : null}
+      {isWatchServiceDialogOpen ? <WatchServiceDialog title={movie.title} onCancel={() => setIsWatchServiceDialogOpen(false)} onSelect={async (watchService) => { const saved = await onToggleWatched(movie, watchService); setIsWatchServiceDialogOpen(false); if (saved) { setSelectedRating(communityRating.yourScore ?? 5); setIsRatingDialogOpen(true) } }} /> : null}
 
       {trailerState.status === 'success' && trailerState.trailer ? (
         <MovieTrailerDialog movie={movie} trailer={trailerState.trailer} onClose={closeTrailer} />
@@ -5678,6 +6012,25 @@ function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOp
       }
     : undefined
 
+  async function handleShare() {
+    const shareData = {
+      title: `${person.name} | WatchVault`,
+      text: `Check out ${person.name} on WatchVault.`,
+      url: window.location.href,
+    }
+
+    try {
+      if (navigator.share) {
+        await navigator.share(shareData)
+        return
+      }
+
+      await navigator.clipboard?.writeText(shareData.url)
+    } catch {
+      // Dismissing the native share dialog should not affect the detail page.
+    }
+  }
+
   return (
     <section className="person-detail-page">
       <button type="button" className="movie-detail-back mobile-only" onClick={onBackToMovies}>
@@ -5717,15 +6070,11 @@ function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOp
           <p className="person-detail-summary">{person.biography}</p>
 
           <div className="movie-detail-actions">
-            <button type="button" className="primary-button movie-detail-primary">
-              <PlusIcon />
-              <span>Follow</span>
-            </button>
             <button type="button" className="secondary-button movie-detail-secondary" onClick={() => onToggleFavorite(person)}>
               <StarOutlineIcon />
               <span>{isFavorite ? 'Favorited' : isSignedIn ? 'Favorite' : 'Sign in to Favorite'}</span>
             </button>
-            <button type="button" className="secondary-button movie-detail-secondary ghost">
+            <button type="button" className="secondary-button movie-detail-secondary ghost" onClick={handleShare}>
               <ShareIcon />
               <span>Share</span>
             </button>
@@ -6742,7 +7091,7 @@ function GenreMoviesGrid({ genreMoviesState, onOpenMovie, watchedMovieIds = new 
   }
 
   if (genreMoviesState.movies.length === 0) {
-    return <SectionMessage message="You have not watched any movies in this genre yet." />
+    return <SectionMessage message="No movies in this genre are available in the local database yet." />
   }
 
   return (
