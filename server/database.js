@@ -124,6 +124,24 @@ export async function replaceMovieKeywordCombinations(pool, combinations) {
   }
 }
 
+export async function listMovieKeywordSuggestions(pool, query, limit = 10) {
+  const normalizedQuery = typeof query === 'string' ? query.trim() : ''
+  if (!normalizedQuery) return []
+  const normalizedLimit = Math.min(Math.max(Number(limit) || 10, 1), 20)
+  const result = await pool.query(
+    `
+      SELECT tmdb_keyword_id, COALESCE(tmdb_name, name) AS name
+      FROM movie_keywords
+      WHERE tmdb_keyword_id IS NOT NULL
+        AND POSITION(LOWER($1) IN normalized_name) > 0
+      ORDER BY POSITION(LOWER($1) IN normalized_name), normalized_name ASC
+      LIMIT $2
+    `,
+    [normalizedQuery, normalizedLimit]
+  )
+  return result.rows
+}
+
 export async function ensureMoviesTable(pool) {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS genres (

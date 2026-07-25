@@ -14,6 +14,7 @@ import {
   getAuthorById,
   getBookCommunityRating,
   ensureFavoriteActorsTable,
+  ensureMovieKeywordTables,
   ensureAchievementTables,
   ensureTvDetailTables,
   ensureMoviesTable,
@@ -69,6 +70,7 @@ import {
   listWatchedMoviesByGenreForUser,
   listWatchedMoviesForUser,
   listMovies,
+  listMovieKeywordSuggestions,
   listBooks,
   listRecentlyReleasedMovies,
   listRecentlyAiredTvShows,
@@ -104,7 +106,7 @@ import {
   upsertBookRatingForUser,
 } from './database.js'
 import { adminJobs, findAdminJob, listAdminJobs } from './adminJobs.js'
-import { discoverTitles, fetchMovieReviews, fetchMovieVideos, fetchPersonCombinedCredits, fetchPersonDetails, fetchTvReviews, searchMovieKeywords, searchMovies as searchTmdbMovies, searchPeople, searchTvShows as searchTmdbTvShows } from './tmdbClient.js'
+import { discoverTitles, fetchMovieReviews, fetchMovieVideos, fetchPersonCombinedCredits, fetchPersonDetails, fetchTvReviews, searchMovies as searchTmdbMovies, searchPeople, searchTvShows as searchTmdbTvShows } from './tmdbClient.js'
 import { hydrateMovieByTmdbId } from './movieImportService.js'
 import { hydrateTvShowByTmdbId } from './tvImportService.js'
 import { normalizeBook, sanitizeBookDescription } from './bookImportService.js'
@@ -129,6 +131,7 @@ export async function createApp(pool, options = {}) {
   } = options
 
   await ensureMoviesTable(pool)
+  await ensureMovieKeywordTables(pool)
   await ensureBooksTable(pool)
   await ensureTvDetailTables(pool)
   await ensureAchievementTables(pool)
@@ -238,9 +241,8 @@ export async function createApp(pool, options = {}) {
     if (!query) return response.status(400).json({ error: 'q is required' })
 
     try {
-      const config = loadRuntimeConfig()
-      const payload = await searchMovieKeywords(fetch, { token: config.tmdbBearerToken, baseUrl: config.tmdbBaseUrl, query })
-      response.json({ query, keywords: (Array.isArray(payload?.results) ? payload.results : []).filter((keyword) => Number.isInteger(keyword?.id)).slice(0, 10).map(mapTmdbKeywordSuggestion) })
+      const keywords = await listMovieKeywordSuggestions(pool, query)
+      response.json({ query, keywords: keywords.map(mapStoredKeywordSuggestion) })
     } catch (error) { next(error) }
   })
 
@@ -1874,8 +1876,8 @@ function mapTmdbPersonSuggestion(person) {
   }
 }
 
-function mapTmdbKeywordSuggestion(keyword) {
-  return { id: keyword.id, name: keyword.name || 'Unnamed keyword' }
+function mapStoredKeywordSuggestion(keyword) {
+  return { id: keyword.tmdb_keyword_id, name: keyword.name || 'Unnamed keyword' }
 }
 
 function parseOptionalDiscoverId(value) {

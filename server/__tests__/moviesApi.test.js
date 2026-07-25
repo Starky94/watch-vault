@@ -6,6 +6,7 @@ import { buildStatsInsights, countMovies, countStoredDataBytes, ensureMoviesTabl
 function isSchemaSetupQuery(sql) {
   return (
     sql.includes('CREATE TABLE IF NOT EXISTS movies') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS movie_keyword') ||
     sql.includes('CREATE TABLE IF NOT EXISTS books') ||
     sql.includes('CREATE TABLE IF NOT EXISTS authors') ||
     sql.includes('CREATE TABLE IF NOT EXISTS book_authors') ||
@@ -4950,7 +4951,16 @@ test('discover endpoints proxy TMDB suggestions and apply validated filters', as
     if (value.includes('/search/keyword')) return { ok: true, async json() { return { results: [{ id: 9, name: 'time travel' }] } } }
     return { ok: true, async json() { return { results: [{ id: 88, title: 'Tailored Film', release_date: '2026-01-01', vote_average: 7.5, vote_count: 42, poster_path: null }] } } }
   }
-  const pool = { async query(sql) { if (isSchemaSetupQuery(sql)) return { rowCount: null }; throw new Error(`Unexpected query: ${sql}`) } }
+  const pool = {
+    async query(sql, params) {
+      if (isSchemaSetupQuery(sql)) return { rowCount: null }
+      if (sql.includes('FROM movie_keywords')) {
+        assert.deepEqual(params, ['time', 10])
+        return { rows: [{ tmdb_keyword_id: 9, name: 'time travel' }] }
+      }
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
   const app = await createApp(pool, { loadRuntimeConfig: () => ({ tmdbBearerToken: 'token', tmdbBaseUrl: 'https://example.test' }) })
   const server = app.listen(0)
 
