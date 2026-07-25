@@ -1515,7 +1515,7 @@ test('listRecentlyReleasedMovies supports page offsets without a hard 30-title c
   assert.deepEqual(executedParams, [50, 50])
 })
 
-test('listTopRatedMovies requests paged released titles ordered by score descending', async () => {
+test('listTopRatedMovies requests paged released titles ordered by a vote-weighted score', async () => {
   let executedSql = ''
   let executedParams = []
   const pool = {
@@ -1531,10 +1531,29 @@ test('listTopRatedMovies requests paged released titles ordered by score descend
   assert.deepEqual(movies, [])
   assert.match(executedSql, /WHERE movies\.release_date IS NOT NULL/i)
   assert.match(executedSql, /movies\.release_date <= CURRENT_DATE/i)
-  assert.match(executedSql, /ORDER BY movies\.vote_average DESC NULLS LAST, movies\.vote_count DESC NULLS LAST, movies\.tmdb_id ASC/i)
+  assert.match(executedSql, /WITH top_rated_catalog AS/i)
+  assert.match(executedSql, /AVG\(vote_average\)::DOUBLE PRECISION AS average_vote/i)
+  assert.match(executedSql, /COALESCE\(movies\.vote_count, 0\) \+ 5000/i)
+  assert.match(executedSql, /ORDER BY \([\s\S]*?\) DESC NULLS LAST, movies\.vote_count DESC NULLS LAST, movies\.tmdb_id ASC/i)
   assert.match(executedSql, /LIMIT \$1/i)
   assert.match(executedSql, /OFFSET \$2/i)
   assert.deepEqual(executedParams, [30, 0])
+})
+
+test('top rated movie ranking favors a well-rated consensus over a tiny perfect sample', () => {
+  const catalogAverage = 7
+  const weightedScore = (voteAverage, voteCount) => (
+    (voteCount / (voteCount + 5000)) * voteAverage
+    + (5000 / (voteCount + 5000)) * catalogAverage
+  )
+
+  const tinyPerfectSample = weightedScore(10, 2)
+  const broadlyRatedMovie = weightedScore(8, 10000)
+  const highVolumeFavorite = weightedScore(8.6, 100000)
+  const highVolumeLowerRatedMovie = weightedScore(6.5, 100000)
+
+  assert.ok(broadlyRatedMovie > tinyPerfectSample)
+  assert.ok(highVolumeFavorite > highVolumeLowerRatedMovie)
 })
 
 test('listTopRatedMovies supports page offsets without a hard 30-title ceiling', async () => {
@@ -3798,7 +3817,7 @@ test('GET /api/movies/top-rated returns the top-rated released movies payload fr
         return { rowCount: null }
       }
 
-      if (sql.includes('ORDER BY movies.vote_average DESC')) {
+      if (sql.includes('WITH top_rated_catalog AS')) {
         topRatedQueryCount += 1
         return { rows }
       }
@@ -3843,7 +3862,7 @@ test('GET /api/movies/top-rated forwards a requested limit', async () => {
         return { rowCount: null }
       }
 
-      if (sql.includes('ORDER BY movies.vote_average DESC')) {
+      if (sql.includes('WITH top_rated_catalog AS')) {
         capturedParams.push(params)
         return { rows: [] }
       }
@@ -4914,6 +4933,41 @@ test('GET /api/movies/:movieId/trailer selects a transient playable YouTube trai
     assert.equal(response.status, 400)
     assert.match((await response.json()).error, /Invalid movie id/)
     assert.deepEqual(nonSchemaQueries, [])
+  } finally {
+    global.fetch = originalFetch
+    await closeServer(server)
+  }
+})
+
+test('discover endpoints proxy TMDB suggestions and apply validated filters', async () => {
+  const originalFetch = global.fetch
+  const requestedUrls = []
+  global.fetch = async (url, options) => {
+    const value = String(url)
+    if (!value.startsWith('https://example.test')) return originalFetch(url, options)
+    requestedUrls.push(value)
+    if (value.includes('/search/person')) return { ok: true, async json() { return { results: [{ id: 4, name: 'Ada Actor', profile_path: null, known_for: [{ title: 'Example Film' }] }] } } }
+    if (value.includes('/search/keyword')) return { ok: true, async json() { return { results: [{ id: 9, name: 'time travel' }] } } }
+    return { ok: true, async json() { return { results: [{ id: 88, title: 'Tailored Film', release_date: '2026-01-01', vote_average: 7.5, vote_count: 42, poster_path: null }] } } }
+  }
+  const pool = { async query(sql) { if (isSchemaSetupQuery(sql)) return { rowCount: null }; throw new Error(`Unexpected query: ${sql}`) } }
+  const app = await createApp(pool, { loadRuntimeConfig: () => ({ tmdbBearerToken: 'token', tmdbBaseUrl: 'https://example.test' }) })
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const baseUrl = `http://127.0.0.1:${address.port}/api/discover`
+    const actorResponse = await originalFetch(`${baseUrl}/actors?q=Ada`)
+    assert.deepEqual((await actorResponse.json()).actors[0], { id: 4, name: 'Ada Actor', profileUrl: null, knownFor: ['Example Film'] })
+    const keywordResponse = await originalFetch(`${baseUrl}/keywords?q=time`)
+    assert.deepEqual((await keywordResponse.json()).keywords, [{ id: 9, name: 'time travel' }])
+    const resultResponse = await originalFetch(`${baseUrl}?type=movie&runtime=long&actorId=4&keywordIds=9,10`)
+    const payload = await resultResponse.json()
+    assert.equal(resultResponse.status, 200)
+    assert.equal(payload.results[0].title, 'Tailored Film')
+    assert.ok(requestedUrls.some((url) => url.includes('/discover/movie?sort_by=popularity.desc&with_runtime.gte=120&with_cast=4&with_keywords=9%7C10&page=1')))
+    const invalidResponse = await originalFetch(`${baseUrl}?type=movie&runtime=long&keywordIds=1,2,3,4`)
+    assert.equal(invalidResponse.status, 400)
   } finally {
     global.fetch = originalFetch
     await closeServer(server)

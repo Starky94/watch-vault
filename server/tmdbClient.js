@@ -109,6 +109,48 @@ export async function searchMovies(fetchImpl, options) {
   })
 }
 
+export async function searchMovieKeywords(fetchImpl, options) {
+  const { token, baseUrl, query } = options
+
+  return tmdbRequest(fetchImpl, {
+    token,
+    baseUrl,
+    path: 'search/keyword',
+    searchParams: { query, page: 1 },
+  })
+}
+
+export async function searchPeople(fetchImpl, options) {
+  const { token, baseUrl, query } = options
+
+  return tmdbRequest(fetchImpl, {
+    token,
+    baseUrl,
+    path: 'search/person',
+    searchParams: { query, page: 1 },
+  })
+}
+
+export async function discoverTitles(fetchImpl, options) {
+  const { token, baseUrl, mediaType, runtime, actorId, keywordIds } = options
+  const path = mediaType === 'tv' ? 'discover/tv' : 'discover/movie'
+  const runtimeParam = runtime === 'short' ? 'with_runtime.lte' : 'with_runtime.gte'
+  const runtimeMinutes = mediaType === 'tv' ? 35 : 120
+
+  return tmdbRequest(fetchImpl, {
+    token,
+    baseUrl,
+    path,
+    searchParams: {
+      sort_by: 'popularity.desc',
+      [runtimeParam]: runtimeMinutes,
+      with_cast: actorId,
+      with_keywords: Array.isArray(keywordIds) && keywordIds.length ? keywordIds.join('|') : undefined,
+      page: 1,
+    },
+  })
+}
+
 export async function searchTvShows(fetchImpl, options) {
   const { token, baseUrl, query } = options
 

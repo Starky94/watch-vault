@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  discoverTitles,
   fetchAiringTodayTvShowsPage,
   fetchMovieCredits,
   fetchMovieReviews,
@@ -11,6 +12,8 @@ import {
   fetchPopularMoviesPage,
   fetchPopularTvShowsPage,
   searchMovies,
+  searchMovieKeywords,
+  searchPeople,
   searchTvShows,
   fetchTvDetails,
   fetchUpcomingMoviesPage,
@@ -81,6 +84,58 @@ test('TMDB title searches request first-page movie and TV matches', async () => 
 
   assert.ok(requestedUrls.some((url) => /\/search\/movie\?query=Dune&page=1$/.test(url)))
   assert.ok(requestedUrls.some((url) => /\/search\/tv\?query=Dune&page=1$/.test(url)))
+})
+
+test('searchMovieKeywords requests the TMDB keyword search endpoint', async () => {
+  let requestedUrl = ''
+  const fetchImpl = async (url) => {
+    requestedUrl = String(url)
+    return { ok: true, async json() { return { results: [] } } }
+  }
+
+  await searchMovieKeywords(fetchImpl, {
+    token: 'token',
+    baseUrl: 'https://api.themoviedb.org/3',
+    query: 'time travel',
+  })
+
+  assert.match(requestedUrl, /\/search\/keyword\?query=time\+travel&page=1$/)
+})
+
+test('searchPeople requests the TMDB person search endpoint', async () => {
+  let requestedUrl = ''
+  const fetchImpl = async (url) => {
+    requestedUrl = String(url)
+    return { ok: true, async json() { return { results: [] } } }
+  }
+
+  await searchPeople(fetchImpl, { token: 'token', baseUrl: 'https://api.themoviedb.org/3', query: 'Pedro Pascal' })
+
+  assert.match(requestedUrl, /\/search\/person\?query=Pedro\+Pascal&page=1$/)
+})
+
+test('discoverTitles applies movie filters including OR keywords', async () => {
+  let requestedUrl = ''
+  const fetchImpl = async (url) => {
+    requestedUrl = String(url)
+    return { ok: true, async json() { return { results: [] } } }
+  }
+
+  await discoverTitles(fetchImpl, { token: 'token', baseUrl: 'https://api.themoviedb.org/3', mediaType: 'movie', runtime: 'long', actorId: 42, keywordIds: [10, 20] })
+
+  assert.match(requestedUrl, /\/discover\/movie\?sort_by=popularity.desc&with_runtime.gte=120&with_cast=42&with_keywords=10%7C20&page=1$/)
+})
+
+test('discoverTitles applies TV short-runtime filtering', async () => {
+  let requestedUrl = ''
+  const fetchImpl = async (url) => {
+    requestedUrl = String(url)
+    return { ok: true, async json() { return { results: [] } } }
+  }
+
+  await discoverTitles(fetchImpl, { token: 'token', baseUrl: 'https://api.themoviedb.org/3', mediaType: 'tv', runtime: 'short', keywordIds: [] })
+
+  assert.match(requestedUrl, /\/discover\/tv\?sort_by=popularity.desc&with_runtime.lte=35&page=1$/)
 })
 
 test('fetchPopularTvShowsPage requests the TMDB popular TV endpoint', async () => {

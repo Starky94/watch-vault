@@ -14,6 +14,7 @@
     "import:books": "node server/importBooksCli.js",
     "import:now-playing": "node server/importNowPlayingCli.js",
     "import:upcoming": "node server/importUpcomingCli.js",
+    "import:movie-keywords": "node server/importMovieKeywordsCli.js",
     "import:tv-popular": "node server/importPopularTvShowsCli.js",
     "import:tv-airing-today": "node server/importAiringTodayTvShowsCli.js",
     "import:tv-on-the-air": "node server/importOnTheAirTvShowsCli.js",

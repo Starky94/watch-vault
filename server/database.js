@@ -11,6 +11,119 @@ export function createPool(databaseUrl) {
   })
 }
 
+export async function ensureMovieKeywordTables(pool) {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS movie_keywords (
+      id BIGSERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      normalized_name TEXT NOT NULL UNIQUE,
+      tmdb_keyword_id INTEGER UNIQUE,
+      tmdb_name TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `)
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS movie_keyword_groups (
+      id BIGSERIAL PRIMARY KEY,
+      source_key TEXT NOT NULL UNIQUE,
+      label TEXT NOT NULL,
+      group_type TEXT NOT NULL CHECK (group_type IN ('category', 'mood')),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `)
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS movie_keyword_group_items (
+      group_id BIGINT NOT NULL REFERENCES movie_keyword_groups(id) ON DELETE CASCADE,
+      keyword_id BIGINT NOT NULL REFERENCES movie_keywords(id) ON DELETE CASCADE,
+      position INTEGER NOT NULL,
+      PRIMARY KEY (group_id, keyword_id),
+      UNIQUE (group_id, position)
+    )
+  `)
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS movie_keyword_combinations (
+      id BIGSERIAL PRIMARY KEY,
+      position INTEGER NOT NULL UNIQUE,
+      operator TEXT NOT NULL CHECK (operator IN ('AND', 'OR')),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `)
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS movie_keyword_combination_items (
+      combination_id BIGINT NOT NULL REFERENCES movie_keyword_combinations(id) ON DELETE CASCADE,
+      keyword_id BIGINT NOT NULL REFERENCES movie_keywords(id) ON DELETE CASCADE,
+      position INTEGER NOT NULL,
+      PRIMARY KEY (combination_id, keyword_id),
+      UNIQUE (combination_id, position)
+    )
+  `)
+}
+
+export async function upsertMovieKeyword(pool, keyword) {
+  const normalizedName = keyword.name.trim().toLocaleLowerCase()
+  const result = await pool.query(
+    `
+      INSERT INTO movie_keywords (name, normalized_name, tmdb_keyword_id, tmdb_name, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, NOW(), NOW())
+      ON CONFLICT (normalized_name)
+      DO UPDATE SET
+        name = EXCLUDED.name,
+        tmdb_keyword_id = EXCLUDED.tmdb_keyword_id,
+        tmdb_name = EXCLUDED.tmdb_name,
+        updated_at = NOW()
+      RETURNING id
+    `,
+    [keyword.name, normalizedName, keyword.tmdbKeywordId ?? null, keyword.tmdbName ?? null]
+  )
+  return result.rows[0].id
+}
+
+export async function replaceMovieKeywordGroup(pool, group, keywordIds) {
+  const groupResult = await pool.query(
+    `
+      INSERT INTO movie_keyword_groups (source_key, label, group_type, created_at, updated_at)
+      VALUES ($1, $2, $3, NOW(), NOW())
+      ON CONFLICT (source_key)
+      DO UPDATE SET label = EXCLUDED.label, group_type = EXCLUDED.group_type, updated_at = NOW()
+      RETURNING id
+    `,
+    [group.sourceKey, group.label, group.groupType]
+  )
+  const groupId = groupResult.rows[0].id
+  await pool.query('DELETE FROM movie_keyword_group_items WHERE group_id = $1', [groupId])
+
+  for (const [position, keywordId] of keywordIds.entries()) {
+    await pool.query(
+      'INSERT INTO movie_keyword_group_items (group_id, keyword_id, position) VALUES ($1, $2, $3)',
+      [groupId, keywordId, position]
+    )
+  }
+}
+
+export async function replaceMovieKeywordCombinations(pool, combinations) {
+  await pool.query('DELETE FROM movie_keyword_combinations')
+
+  for (const [position, combination] of combinations.entries()) {
+    const result = await pool.query(
+      'INSERT INTO movie_keyword_combinations (position, operator) VALUES ($1, $2) RETURNING id',
+      [position, combination.operator]
+    )
+    const combinationId = result.rows[0].id
+    for (const [keywordPosition, keywordId] of combination.keywordIds.entries()) {
+      await pool.query(
+        'INSERT INTO movie_keyword_combination_items (combination_id, keyword_id, position) VALUES ($1, $2, $3)',
+        [combinationId, keywordId, keywordPosition]
+      )
+    }
+  }
+}
+
 export async function ensureMoviesTable(pool) {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS genres (
@@ -2736,6 +2849,15 @@ export async function listTopRatedMovies(pool, options = {}) {
 
   const result = await pool.query(
     `
+    WITH top_rated_catalog AS (
+      SELECT AVG(vote_average)::DOUBLE PRECISION AS average_vote
+      FROM movies
+      WHERE release_date IS NOT NULL
+        AND release_date <= CURRENT_DATE
+        AND vote_average IS NOT NULL
+        AND vote_count IS NOT NULL
+        AND vote_count >= 0
+    )
     SELECT
       movies.tmdb_id,
       movies.title,
@@ -2764,10 +2886,14 @@ export async function listTopRatedMovies(pool, options = {}) {
     FROM movies
     LEFT JOIN LATERAL UNNEST(movies.genre_ids) WITH ORDINALITY AS genre_ids(tmdb_genre_id, ordinality) ON TRUE
     LEFT JOIN genres ON genres.tmdb_genre_id = genre_ids.tmdb_genre_id
+    CROSS JOIN top_rated_catalog
     WHERE movies.release_date IS NOT NULL
       AND movies.release_date <= CURRENT_DATE
-    GROUP BY movies.id
-    ORDER BY movies.vote_average DESC NULLS LAST, movies.vote_count DESC NULLS LAST, movies.tmdb_id ASC
+    GROUP BY movies.id, top_rated_catalog.average_vote
+    ORDER BY (
+      (COALESCE(movies.vote_count, 0)::DOUBLE PRECISION / (COALESCE(movies.vote_count, 0) + 5000)) * movies.vote_average
+      + (5000.0 / (COALESCE(movies.vote_count, 0) + 5000)) * top_rated_catalog.average_vote
+    ) DESC NULLS LAST, movies.vote_count DESC NULLS LAST, movies.tmdb_id ASC
     LIMIT $1
     OFFSET $2
   `,

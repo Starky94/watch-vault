@@ -104,7 +104,7 @@ import {
   upsertBookRatingForUser,
 } from './database.js'
 import { adminJobs, findAdminJob, listAdminJobs } from './adminJobs.js'
-import { fetchMovieReviews, fetchMovieVideos, fetchPersonCombinedCredits, fetchPersonDetails, fetchTvReviews, searchMovies as searchTmdbMovies, searchTvShows as searchTmdbTvShows } from './tmdbClient.js'
+import { discoverTitles, fetchMovieReviews, fetchMovieVideos, fetchPersonCombinedCredits, fetchPersonDetails, fetchTvReviews, searchMovieKeywords, searchMovies as searchTmdbMovies, searchPeople, searchTvShows as searchTmdbTvShows } from './tmdbClient.js'
 import { hydrateMovieByTmdbId } from './movieImportService.js'
 import { hydrateTvShowByTmdbId } from './tvImportService.js'
 import { normalizeBook, sanitizeBookDescription } from './bookImportService.js'
@@ -220,6 +220,48 @@ export async function createApp(pool, options = {}) {
     } catch (error) {
       next(error)
     }
+  })
+
+  app.get('/api/discover/actors', async (request, response, next) => {
+    const query = typeof request.query.q === 'string' ? request.query.q.trim() : ''
+    if (!query) return response.status(400).json({ error: 'q is required' })
+
+    try {
+      const config = loadRuntimeConfig()
+      const payload = await searchPeople(fetch, { token: config.tmdbBearerToken, baseUrl: config.tmdbBaseUrl, query })
+      response.json({ query, actors: (Array.isArray(payload?.results) ? payload.results : []).filter((person) => Number.isInteger(person?.id)).slice(0, 10).map(mapTmdbPersonSuggestion) })
+    } catch (error) { next(error) }
+  })
+
+  app.get('/api/discover/keywords', async (request, response, next) => {
+    const query = typeof request.query.q === 'string' ? request.query.q.trim() : ''
+    if (!query) return response.status(400).json({ error: 'q is required' })
+
+    try {
+      const config = loadRuntimeConfig()
+      const payload = await searchMovieKeywords(fetch, { token: config.tmdbBearerToken, baseUrl: config.tmdbBaseUrl, query })
+      response.json({ query, keywords: (Array.isArray(payload?.results) ? payload.results : []).filter((keyword) => Number.isInteger(keyword?.id)).slice(0, 10).map(mapTmdbKeywordSuggestion) })
+    } catch (error) { next(error) }
+  })
+
+  app.get('/api/discover', async (request, response, next) => {
+    const mediaType = request.query.type === 'tv' ? 'tv' : request.query.type === 'movie' ? 'movie' : null
+    const runtime = request.query.runtime === 'short' || request.query.runtime === 'long' ? request.query.runtime : null
+    const actorId = parseOptionalDiscoverId(request.query.actorId)
+    const keywordIds = parseDiscoverKeywordIds(request.query.keywordIds)
+
+    if (!mediaType) return response.status(400).json({ error: 'type must be movie or tv' })
+    if (!runtime) return response.status(400).json({ error: 'runtime must be short or long' })
+    if (request.query.actorId !== undefined && actorId === null) return response.status(400).json({ error: 'actorId must be a positive integer' })
+    if (keywordIds === null) return response.status(400).json({ error: 'keywordIds must contain up to three positive integer IDs' })
+
+    try {
+      const config = loadRuntimeConfig()
+      const payload = await discoverTitles(fetch, { token: config.tmdbBearerToken, baseUrl: config.tmdbBaseUrl, mediaType, runtime, actorId, keywordIds })
+      const mapper = mediaType === 'movie' ? mapTmdbMovieSearchResult : mapTmdbTvSearchResult
+      const results = (Array.isArray(payload?.results) ? payload.results : []).filter((item) => Number.isInteger(item?.id)).slice(0, 10).map(mapper)
+      response.json({ type: mediaType, results })
+    } catch (error) { next(error) }
   })
 
   app.get('/api/search/books', async (request, response, next) => {
@@ -1821,6 +1863,33 @@ function mapTmdbTvSearchResult(show) {
     backdropUrl: resolveBackdropPath(show?.backdrop_path),
     theme: 'theme-catalog',
   }
+}
+
+function mapTmdbPersonSuggestion(person) {
+  return {
+    id: person.id,
+    name: person.name || 'Unknown performer',
+    profileUrl: resolveProfilePath(person.profile_path),
+    knownFor: Array.isArray(person.known_for) ? person.known_for.map((title) => title.title || title.name).filter(Boolean).slice(0, 2) : [],
+  }
+}
+
+function mapTmdbKeywordSuggestion(keyword) {
+  return { id: keyword.id, name: keyword.name || 'Unnamed keyword' }
+}
+
+function parseOptionalDiscoverId(value) {
+  if (value === undefined || value === '') return undefined
+  const id = Number.parseInt(String(value), 10)
+  return Number.isInteger(id) && id > 0 && String(id) === String(value) ? id : null
+}
+
+function parseDiscoverKeywordIds(value) {
+  if (value === undefined || value === '') return []
+  const values = String(value).split(',')
+  if (!values.length || values.length > 3 || values.some((item) => !item)) return null
+  const ids = values.map((item) => parseOptionalDiscoverId(item))
+  return ids.every((id) => typeof id === 'number') && new Set(ids).size === ids.length ? ids : null
 }
 
 function mapFeaturedTvShow(show) {

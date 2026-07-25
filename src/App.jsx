@@ -46,6 +46,7 @@ const routeKinds = {
   home: 'home',
   stats: 'stats',
   search: 'search',
+  discover: 'discover',
   continueWatching: 'continueWatching',
   calendar: 'calendar',
   movieDetail: 'movieDetail',
@@ -507,6 +508,10 @@ function App() {
     setSearchError('')
     handleNavigateToPath(buildSearchPath(query), { kind: routeKinds.search, query })
     return true
+  }
+
+  function handleOpenDiscover() {
+    handleNavigateToPath('/discover', { kind: routeKinds.discover })
   }
 
   async function handleSearchTmdb() {
@@ -3226,6 +3231,11 @@ function App() {
                 watchedTvIds={tvWatchedIds}
                 watchlistTvIds={tvWatchlistIds}
               />
+            ) : currentRoute.kind === routeKinds.discover ? (
+              <DiscoverScreen
+                onOpenMovie={handleOpenMovieDetail}
+                onOpenTvShow={handleOpenTvDetail}
+              />
             ) : currentRoute.kind === routeKinds.tvDetail ? (
               <TvDetailPage
                 tvDetailState={tvDetailState}
@@ -3297,6 +3307,7 @@ function App() {
                 onOpenMovie={handleOpenMovieDetail}
                 onOpenPopularMovies={handleOpenPopularMovies}
                 onOpenWatchlist={handleOpenWatchlistCta}
+                onOpenDiscover={handleOpenDiscover}
                 stats={homeStats}
                 statsPeriod={statsPeriod}
                 onStatsPeriodChange={setStatsPeriod}
@@ -3786,7 +3797,149 @@ function SearchResultGroup({ children, emptyMessage, error, isLoading, items, ti
   )
 }
 
-function HomeScreen({ user, onOpenMovie, onOpenPopularMovies, onOpenWatchlist, stats, statsPeriod, onStatsPeriodChange, watchlistState, popularMoviesState, continueWatchingState, onOpenContinueWatching, onOpenTvShow, latestEpisodesState, onOpenLatestEpisodes, tvWatchlistIds, tvWatchedIds }) {
+function DiscoverScreen({ onOpenMovie, onOpenTvShow }) {
+  const [step, setStep] = useState(1)
+  const [type, setType] = useState(null)
+  const [runtime, setRuntime] = useState(null)
+  const [actorQuery, setActorQuery] = useState('')
+  const [actorState, setActorState] = useState({ status: 'idle', actors: [], error: '' })
+  const [actor, setActor] = useState(null)
+  const [keywordQuery, setKeywordQuery] = useState('')
+  const [keywordState, setKeywordState] = useState({ status: 'idle', keywords: [], error: '' })
+  const [keywords, setKeywords] = useState([])
+  const [resultsState, setResultsState] = useState({ status: 'idle', results: [], error: '' })
+
+  useEffect(() => {
+    if (step !== 3 || !actorQuery.trim()) {
+      setActorState({ status: 'idle', actors: [], error: '' })
+      return undefined
+    }
+    let cancelled = false
+    const timer = window.setTimeout(async () => {
+      setActorState({ status: 'loading', actors: [], error: '' })
+      try {
+        const response = await fetch(`/api/discover/actors?q=${encodeURIComponent(actorQuery.trim())}`)
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(payload.error || 'Unable to look up actors.')
+        if (!cancelled) setActorState({ status: 'success', actors: Array.isArray(payload.actors) ? payload.actors : [], error: '' })
+      } catch (error) {
+        if (!cancelled) setActorState({ status: 'error', actors: [], error: error instanceof Error ? error.message : 'Unable to look up actors.' })
+      }
+    }, 1000)
+    return () => { cancelled = true; window.clearTimeout(timer) }
+  }, [actorQuery, step])
+
+  useEffect(() => {
+    if (step !== 4 || !keywordQuery.trim() || keywords.length >= 3) {
+      setKeywordState({ status: 'idle', keywords: [], error: '' })
+      return undefined
+    }
+    let cancelled = false
+    const timer = window.setTimeout(async () => {
+      setKeywordState({ status: 'loading', keywords: [], error: '' })
+      try {
+        const response = await fetch(`/api/discover/keywords?q=${encodeURIComponent(keywordQuery.trim())}`)
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(payload.error || 'Unable to look up keywords.')
+        if (!cancelled) setKeywordState({ status: 'success', keywords: Array.isArray(payload.keywords) ? payload.keywords : [], error: '' })
+      } catch (error) {
+        if (!cancelled) setKeywordState({ status: 'error', keywords: [], error: error instanceof Error ? error.message : 'Unable to look up keywords.' })
+      }
+    }, 1000)
+    return () => { cancelled = true; window.clearTimeout(timer) }
+  }, [keywordQuery, keywords.length, step])
+
+  function chooseType(nextType) {
+    setType(nextType)
+    setRuntime(null)
+    setStep(2)
+  }
+
+  function chooseRuntime(nextRuntime) {
+    setRuntime(nextRuntime)
+    setStep(3)
+  }
+
+  function chooseActor(nextActor) {
+    setActor(nextActor)
+    setActorQuery('')
+    setStep(4)
+  }
+
+  function addKeyword(keyword) {
+    if (keywords.length >= 3 || keywords.some((item) => item.id === keyword.id)) return
+    setKeywords((items) => [...items, keyword])
+    setKeywordQuery('')
+  }
+
+  async function submit(event) {
+    event.preventDefault()
+    if (!type || !runtime || resultsState.status === 'loading') return
+    setResultsState({ status: 'loading', results: [], error: '' })
+    const params = new URLSearchParams({ type, runtime })
+    if (actor?.id) params.set('actorId', String(actor.id))
+    if (keywords.length) params.set('keywordIds', keywords.map((keyword) => keyword.id).join(','))
+    try {
+      const response = await fetch(`/api/discover?${params.toString()}`)
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || 'Unable to find tailored picks.')
+      setResultsState({ status: 'success', results: Array.isArray(payload.results) ? payload.results : [], error: '' })
+    } catch (error) {
+      setResultsState({ status: 'error', results: [], error: error instanceof Error ? error.message : 'Unable to find tailored picks.' })
+    }
+  }
+
+  function startOver() {
+    setStep(1); setType(null); setRuntime(null); setActor(null); setActorQuery(''); setKeywords([]); setKeywordQuery(''); setResultsState({ status: 'idle', results: [], error: '' })
+  }
+
+  if (resultsState.status !== 'idle') {
+    const [bestMatch, ...otherResults] = resultsState.results
+    return (
+      <section className="discover-page">
+        <div className="discover-heading"><div><p className="eyebrow">Your tailored watchlist</p><h1>We found your next great watch.</h1><p>Popular {type === 'tv' ? 'shows' : 'movies'} matched to your mood.</p></div><button type="button" className="secondary-button" onClick={startOver}>Start over</button></div>
+        {resultsState.status === 'loading' ? <SectionMessage message="Finding your best matches..." /> : null}
+        {resultsState.status === 'error' ? <SectionMessage tone="error" message={resultsState.error} /> : null}
+        {resultsState.status === 'success' && !bestMatch ? <SectionMessage message="No matches landed this time. Try a different combination." /> : null}
+        {resultsState.status === 'success' && bestMatch ? <><button type="button" className="discover-best-match" onClick={() => type === 'tv' ? onOpenTvShow(bestMatch) : onOpenMovie(bestMatch)}><span className="discover-best-label"><SparklesIcon /> Best fit for you</span><DiscoverResultArt item={bestMatch} /><div><h2>{bestMatch.title}</h2><p>{bestMatch.year} · {bestMatch.meta}</p><span className="star-rating"><StarIcon /> {bestMatch.rating}</span></div></button><div className="discover-results-grid">{otherResults.map((item) => <DiscoverResultCard key={item.id} item={item} onOpen={() => type === 'tv' ? onOpenTvShow(item) : onOpenMovie(item)} />)}</div></> : null}
+      </section>
+    )
+  }
+
+  const durationCopy = type === 'tv'
+    ? { prompt: 'How long can you stay glued to the couch?', short: 'Quick episode bite', long: 'Settle in for 35+ minutes' }
+    : { prompt: 'How much time have you got before the popcorn runs out?', short: 'A tight under-two-hour ride', long: 'I’m ready for 2+ hours' }
+
+  return (
+    <section className="discover-page">
+      <div className="discover-heading"><div><p className="eyebrow">Discover</p><h1>Let’s find your perfect next watch.</h1><p>Answer a few quick questions, then we’ll do the digging.</p></div></div>
+      <form className="discover-wizard" onSubmit={submit}>
+        <div className="discover-progress" aria-label={`Question ${step} of 4`}>{[1, 2, 3, 4].map((number) => <span key={number} className={number <= step ? 'active' : ''} />)}</div>
+        {step === 1 ? <div className="discover-question"><p className="discover-step">Question 1 of 4</p><h2>What kind of escape are you after?</h2><div className="discover-choice-grid"><button type="button" onClick={() => chooseType('movie')}><ClapperIcon /><strong>Movie</strong><span>One brilliant story, one sitting.</span></button><button type="button" onClick={() => chooseType('tv')}><TvIcon /><strong>TV Show</strong><span>A world you can keep coming back to.</span></button></div></div> : null}
+        {step === 2 ? <div className="discover-question"><p className="discover-step">Question 2 of 4</p><h2>{durationCopy.prompt}</h2><div className="discover-choice-grid"><button type="button" onClick={() => chooseRuntime('short')}><ClockIcon /><strong>{durationCopy.short}</strong><span>Perfect for tonight.</span></button><button type="button" onClick={() => chooseRuntime('long')}><ClockIcon /><strong>{durationCopy.long}</strong><span>Make a proper event of it.</span></button></div><button type="button" className="secondary-button discover-previous" onClick={() => setStep(1)}>Previous</button></div> : null}
+        {step === 3 ? <div className="discover-question"><p className="discover-step">Question 3 of 4 · Optional</p><h2>Any performer you’d happily watch in anything?</h2><p>Type a name and choose a suggestion, or keep it wide open.</p><input className="discover-input" value={actorQuery} onChange={(event) => setActorQuery(event.target.value)} placeholder="Start typing an actor’s name" autoFocus />{actorState.status === 'loading' ? <small>Searching after your typing pause…</small> : null}{actorState.error ? <p className="discover-error">{actorState.error}</p> : null}{actorState.actors.length ? <div className="discover-suggestions">{actorState.actors.map((item) => <button type="button" className="discover-actor-suggestion" key={item.id} onClick={() => chooseActor(item)}><ActorSuggestionAvatar actor={item} /><span><b>{item.name}</b><small>{item.knownFor.length ? item.knownFor.join(' · ') : 'Performer'}</small></span></button>)}</div> : null}<div className="discover-actions discover-optional-actions"><button type="button" className="secondary-button" onClick={() => setStep(2)}>Previous</button><button type="button" className="secondary-button" onClick={() => setStep(4)}>Skip for now</button></div></div> : null}
+        {step === 4 ? <div className="discover-question"><p className="discover-step">Question 4 of 4 · Optional</p><h2>What should the story whisper to you?</h2><p>Choose up to three keywords. We’ll mix them together, not narrow them down.</p><div className="discover-chip-row">{keywords.map((item) => <button type="button" key={item.id} onClick={() => setKeywords((items) => items.filter((keyword) => keyword.id !== item.id))}>{item.name} ×</button>)}</div><input className="discover-input" value={keywordQuery} disabled={keywords.length >= 3} onChange={(event) => setKeywordQuery(event.target.value)} placeholder={keywords.length >= 3 ? 'Three keywords selected' : 'Try “time travel” or “heist”'} autoFocus />{keywordState.status === 'loading' ? <small>Searching after your typing pause…</small> : null}{keywordState.error ? <p className="discover-error">{keywordState.error}</p> : null}{keywordState.keywords.length ? <div className="discover-suggestions">{keywordState.keywords.filter((item) => !keywords.some((keyword) => keyword.id === item.id)).map((item) => <button type="button" key={item.id} onClick={() => addKeyword(item)}>{item.name}</button>)}</div> : null}<div className="discover-actions"><button type="button" className="secondary-button" onClick={() => setStep(3)}>Previous</button><button type="button" className="secondary-button" onClick={submit}>Skip</button><button type="submit" className="primary-button">Show my matches <SparklesIcon /></button></div></div> : null}
+      </form>
+    </section>
+  )
+}
+
+function DiscoverResultArt({ item }) {
+  const [unavailable, setUnavailable] = useState(false)
+  return <div className={`discover-result-art${item.posterUrl && !unavailable ? ' has-image' : ''}`}>{item.posterUrl && !unavailable ? <img src={item.posterUrl} alt="" onError={() => setUnavailable(true)} /> : null}</div>
+}
+
+function ActorSuggestionAvatar({ actor }) {
+  const [unavailable, setUnavailable] = useState(false)
+  const initials = String(actor.name || '?').split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join('').toUpperCase()
+  return <span className="discover-actor-avatar">{actor.profileUrl && !unavailable ? <img src={actor.profileUrl} alt="" onError={() => setUnavailable(true)} /> : initials}</span>
+}
+
+function DiscoverResultCard({ item, onOpen }) {
+  return <button type="button" className="discover-result-card" onClick={onOpen}><DiscoverResultArt item={item} /><div><h3>{item.title}</h3><p>{item.year} · {item.meta}</p><span className="star-rating"><StarIcon /> {item.rating}</span></div></button>
+}
+
+function HomeScreen({ user, onOpenMovie, onOpenPopularMovies, onOpenWatchlist, onOpenDiscover, stats, statsPeriod, onStatsPeriodChange, watchlistState, popularMoviesState, continueWatchingState, onOpenContinueWatching, onOpenTvShow, latestEpisodesState, onOpenLatestEpisodes, tvWatchlistIds, tvWatchedIds }) {
   const greeting = user ? `Good evening, ${getFirstName(user.fullName)}! 🍿` : 'Good evening! 🍿'
   const homeWatchlistMovies = watchlistState.movies.slice(0, 5)
   const trendingMovies = popularMoviesState.movies.slice(0, 5)
@@ -3804,7 +3957,7 @@ function HomeScreen({ user, onOpenMovie, onOpenPopularMovies, onOpenWatchlist, s
               <PlusIcon />
               <span>Add to Watchlist</span>
             </button>
-            <button type="button" className="secondary-button">
+            <button type="button" className="secondary-button" onClick={onOpenDiscover}>
               <SparklesIcon />
               <span>Discover</span>
             </button>
@@ -8075,6 +8228,10 @@ function readAppRoute(pathname = window.location.pathname, search = window.locat
 
   if (/^\/search\/?$/.test(pathname)) {
     return { kind: routeKinds.search, query: new URLSearchParams(search).get('q')?.trim() || '' }
+  }
+
+  if (/^\/discover\/?$/.test(pathname)) {
+    return { kind: routeKinds.discover }
   }
 
   if (/^\/tv\/continue-watching\/?$/.test(pathname)) {
