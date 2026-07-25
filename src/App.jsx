@@ -3233,6 +3233,7 @@ function App() {
               />
             ) : currentRoute.kind === routeKinds.discover ? (
               <DiscoverScreen
+                user={user}
                 onOpenMovie={handleOpenMovieDetail}
                 onOpenTvShow={handleOpenTvDetail}
               />
@@ -3797,7 +3798,7 @@ function SearchResultGroup({ children, emptyMessage, error, isLoading, items, ti
   )
 }
 
-function DiscoverScreen({ onOpenMovie, onOpenTvShow }) {
+function DiscoverScreen({ user, onOpenMovie, onOpenTvShow }) {
   const [step, setStep] = useState(1)
   const [type, setType] = useState(null)
   const [runtime, setRuntime] = useState(null)
@@ -3880,7 +3881,7 @@ function DiscoverScreen({ onOpenMovie, onOpenTvShow }) {
     if (actor?.id) params.set('actorId', String(actor.id))
     if (keywords.length) params.set('keywordIds', keywords.map((keyword) => keyword.id).join(','))
     try {
-      const response = await fetch(`/api/discover?${params.toString()}`)
+      const response = await fetch(`/api/discover?${params.toString()}`, { headers: buildAuthHeaders(user) })
       const payload = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(payload.error || 'Unable to find tailored picks.')
       setResultsState({ status: 'success', results: Array.isArray(payload.results) ? payload.results : [], error: '' })

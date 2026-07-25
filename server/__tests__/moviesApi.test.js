@@ -4949,7 +4949,9 @@ test('discover endpoints proxy TMDB suggestions and apply validated filters', as
     requestedUrls.push(value)
     if (value.includes('/search/person')) return { ok: true, async json() { return { results: [{ id: 4, name: 'Ada Actor', profile_path: null, known_for: [{ title: 'Example Film' }] }] } } }
     if (value.includes('/search/keyword')) return { ok: true, async json() { return { results: [{ id: 9, name: 'time travel' }] } } }
-    return { ok: true, async json() { return { results: [{ id: 88, title: 'Tailored Film', release_date: '2026-01-01', vote_average: 7.5, vote_count: 42, poster_path: null }] } } }
+    if (value.includes('/discover/tv')) return { ok: true, async json() { return { total_pages: 1, results: [{ id: 77, name: 'Completed Show', first_air_date: '2026-01-01', vote_average: 7.5, vote_count: 42 }, { id: 78, name: 'New Show', first_air_date: '2026-01-01', vote_average: 7.5, vote_count: 42 }] } } }
+    if (value.includes('page=2')) return { ok: true, async json() { return { total_pages: 2, results: [{ id: 90, title: 'Second Page Film', release_date: '2026-01-01', vote_average: 7.5, vote_count: 42, poster_path: null }] } } }
+    return { ok: true, async json() { return { total_pages: 2, results: [{ id: 88, title: 'Watched Film', release_date: '2026-01-01', vote_average: 7.5, vote_count: 42, poster_path: null }, { id: 89, title: 'Tailored Film', release_date: '2026-01-01', vote_average: 7.5, vote_count: 42, poster_path: null }] } } }
   }
   const pool = {
     async query(sql, params) {
@@ -4958,6 +4960,9 @@ test('discover endpoints proxy TMDB suggestions and apply validated filters', as
         assert.deepEqual(params, ['time', 10])
         return { rows: [{ tmdb_keyword_id: 9, name: 'time travel' }] }
       }
+      if (sql.includes('FROM users') && sql.includes('WHERE username = $1')) return { rows: [{ id: 1, username: 'florind', full_name: 'Florind Ruta' }] }
+      if (sql.includes('FROM watched_movies')) return { rows: [{ tmdb_id: 88 }] }
+      if (sql.includes('FROM watched_tv_shows')) return { rows: [{ tmdb_id: 77 }] }
       throw new Error(`Unexpected query: ${sql}`)
     },
   }
@@ -4974,8 +4979,12 @@ test('discover endpoints proxy TMDB suggestions and apply validated filters', as
     const resultResponse = await originalFetch(`${baseUrl}?type=movie&runtime=long&actorId=4&keywordIds=9,10`)
     const payload = await resultResponse.json()
     assert.equal(resultResponse.status, 200)
-    assert.equal(payload.results[0].title, 'Tailored Film')
+    assert.equal(payload.results[0].title, 'Watched Film')
     assert.ok(requestedUrls.some((url) => url.includes('/discover/movie?sort_by=popularity.desc&with_runtime.gte=120&with_cast=4&with_keywords=9%7C10&page=1')))
+    const signedInMovieResponse = await originalFetch(`${baseUrl}?type=movie&runtime=long`, { headers: { 'x-watchvault-username': 'florind' } })
+    assert.deepEqual((await signedInMovieResponse.json()).results.map((item) => item.id), [89, 90])
+    const signedInTvResponse = await originalFetch(`${baseUrl}?type=tv&runtime=short`, { headers: { 'x-watchvault-username': 'florind' } })
+    assert.deepEqual((await signedInTvResponse.json()).results.map((item) => item.id), [78])
     const invalidResponse = await originalFetch(`${baseUrl}?type=movie&runtime=long&keywordIds=1,2,3,4`)
     assert.equal(invalidResponse.status, 400)
   } finally {

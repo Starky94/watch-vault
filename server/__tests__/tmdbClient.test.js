@@ -138,6 +138,18 @@ test('discoverTitles applies TV short-runtime filtering', async () => {
   assert.match(requestedUrl, /\/discover\/tv\?sort_by=popularity.desc&with_runtime.lte=35&page=1$/)
 })
 
+test('discoverTitles forwards a requested result page', async () => {
+  let requestedUrl = ''
+  const fetchImpl = async (url) => {
+    requestedUrl = String(url)
+    return { ok: true, async json() { return { results: [] } } }
+  }
+
+  await discoverTitles(fetchImpl, { token: 'token', baseUrl: 'https://api.themoviedb.org/3', mediaType: 'movie', runtime: 'short', page: 3 })
+
+  assert.match(requestedUrl, /\/discover\/movie\?sort_by=popularity.desc&with_runtime.lte=120&page=3$/)
+})
+
 test('fetchPopularTvShowsPage requests the TMDB popular TV endpoint', async () => {
   let requestedUrl = ''
 

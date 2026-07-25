@@ -132,7 +132,7 @@ export async function searchPeople(fetchImpl, options) {
 }
 
 export async function discoverTitles(fetchImpl, options) {
-  const { token, baseUrl, mediaType, runtime, actorId, keywordIds } = options
+  const { token, baseUrl, mediaType, runtime, actorId, keywordIds, page = 1 } = options
   const path = mediaType === 'tv' ? 'discover/tv' : 'discover/movie'
   const runtimeParam = runtime === 'short' ? 'with_runtime.lte' : 'with_runtime.gte'
   const runtimeMinutes = mediaType === 'tv' ? 35 : 120
@@ -146,7 +146,7 @@ export async function discoverTitles(fetchImpl, options) {
       [runtimeParam]: runtimeMinutes,
       with_cast: actorId,
       with_keywords: Array.isArray(keywordIds) && keywordIds.length ? keywordIds.join('|') : undefined,
-      page: 1,
+      page,
     },
   })
 }

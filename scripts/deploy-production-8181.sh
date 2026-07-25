@@ -6,6 +6,7 @@ readonly EXPECTED_REPO_NAME="watchvault"
 readonly REMOTE_HOST="root@46.101.143.222"
 readonly REMOTE_DIR="/var/www/watchvault-8181"
 readonly REMOTE_TMP_ARCHIVE="/tmp/watchvault-8181.tar.gz"
+readonly REMOTE_KEYWORD_DUMP="/tmp/watchvault-8181-movie-keywords.sql"
 readonly REMOTE_ENV_FILE=".env.production"
 readonly COMPOSE_PROJECT="watchvault-8181"
 readonly EXPECTED_PORT="8181"
@@ -14,9 +15,14 @@ readonly API_CONTAINER_NAME="${COMPOSE_PROJECT}-api-1"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARCHIVE_PATH="$(mktemp /tmp/watchvault-8181.XXXXXX.tar.gz)"
+KEYWORD_DUMP_PATH=""
+SYNC_MOVIE_KEYWORDS="${SYNC_MOVIE_KEYWORDS:-0}"
 
 cleanup() {
   rm -f "$ARCHIVE_PATH"
+  if [[ -n "$KEYWORD_DUMP_PATH" ]]; then
+    rm -f "$KEYWORD_DUMP_PATH"
+  fi
 }
 
 trap cleanup EXIT
@@ -33,6 +39,15 @@ require_command scp
 require_command tar
 require_command curl
 require_command python3
+
+if [[ "$SYNC_MOVIE_KEYWORDS" != "0" && "$SYNC_MOVIE_KEYWORDS" != "1" ]]; then
+  echo "SYNC_MOVIE_KEYWORDS must be 0 or 1." >&2
+  exit 1
+fi
+
+if [[ "$SYNC_MOVIE_KEYWORDS" == "1" ]]; then
+  require_command docker
+fi
 
 cd "$ROOT_DIR"
 
@@ -126,6 +141,27 @@ ssh "$REMOTE_HOST" "
   cd '$REMOTE_DIR'
   docker compose --env-file '$REMOTE_ENV_FILE' -p '$COMPOSE_PROJECT' up -d --build --force-recreate web
 "
+
+if [[ "$SYNC_MOVIE_KEYWORDS" == "1" ]]; then
+  KEYWORD_DUMP_PATH="$(mktemp /tmp/watchvault-8181-movie-keywords.XXXXXX.sql)"
+  echo "Exporting local movie keyword taxonomy..."
+  docker compose exec -T db pg_dump -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-watchvault}" --data-only --inserts --no-owner --no-privileges \
+    --table=public.movie_keywords \
+    --table=public.movie_keyword_groups \
+    --table=public.movie_keyword_group_items \
+    --table=public.movie_keyword_combinations \
+    --table=public.movie_keyword_combination_items > "$KEYWORD_DUMP_PATH"
+
+  echo "Syncing movie keyword taxonomy to production..."
+  scp "$KEYWORD_DUMP_PATH" "${REMOTE_HOST}:${REMOTE_KEYWORD_DUMP}"
+  ssh "$REMOTE_HOST" "
+    set -euo pipefail
+    cd '$REMOTE_DIR'
+    docker compose --env-file '$REMOTE_ENV_FILE' -p '$COMPOSE_PROJECT' exec -T db psql -U postgres -d watchvault -v ON_ERROR_STOP=1 -c 'TRUNCATE movie_keyword_combination_items, movie_keyword_combinations, movie_keyword_group_items, movie_keyword_groups, movie_keywords RESTART IDENTITY CASCADE;'
+    cat '$REMOTE_KEYWORD_DUMP' | docker compose --env-file '$REMOTE_ENV_FILE' -p '$COMPOSE_PROJECT' exec -T db psql -U postgres -d watchvault -v ON_ERROR_STOP=1
+    rm -f '$REMOTE_KEYWORD_DUMP'
+  "
+fi
 
 echo "Waiting for ${HEALTHCHECK_URL}..."
 for attempt in {1..20}; do

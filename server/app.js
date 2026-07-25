@@ -71,6 +71,7 @@ import {
   listWatchedMoviesForUser,
   listMovies,
   listMovieKeywordSuggestions,
+  listDiscoverExcludedTmdbIdsForUser,
   listBooks,
   listRecentlyReleasedMovies,
   listRecentlyAiredTvShows,
@@ -258,10 +259,24 @@ export async function createApp(pool, options = {}) {
     if (keywordIds === null) return response.status(400).json({ error: 'keywordIds must contain up to three positive integer IDs' })
 
     try {
+      const user = await getAuthenticatedUser(pool, request)
+      const excludedIds = user ? await listDiscoverExcludedTmdbIdsForUser(pool, user.username, mediaType) : new Set()
       const config = loadRuntimeConfig()
-      const payload = await discoverTitles(fetch, { token: config.tmdbBearerToken, baseUrl: config.tmdbBaseUrl, mediaType, runtime, actorId, keywordIds })
       const mapper = mediaType === 'movie' ? mapTmdbMovieSearchResult : mapTmdbTvSearchResult
-      const results = (Array.isArray(payload?.results) ? payload.results : []).filter((item) => Number.isInteger(item?.id)).slice(0, 10).map(mapper)
+      const results = []
+      const includedIds = new Set()
+
+      for (let page = 1; page <= 3 && results.length < 10; page += 1) {
+        const payload = await discoverTitles(fetch, { token: config.tmdbBearerToken, baseUrl: config.tmdbBaseUrl, mediaType, runtime, actorId, keywordIds, page })
+        const pageResults = Array.isArray(payload?.results) ? payload.results : []
+        for (const item of pageResults) {
+          if (!Number.isInteger(item?.id) || excludedIds.has(item.id) || includedIds.has(item.id)) continue
+          includedIds.add(item.id)
+          results.push(mapper(item))
+          if (results.length === 10) break
+        }
+        if (!pageResults.length || page >= Number(payload?.total_pages ?? 1)) break
+      }
       response.json({ type: mediaType, results })
     } catch (error) { next(error) }
   })

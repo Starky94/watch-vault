@@ -142,6 +142,14 @@ export async function listMovieKeywordSuggestions(pool, query, limit = 10) {
   return result.rows
 }
 
+export async function listDiscoverExcludedTmdbIdsForUser(pool, username, mediaType) {
+  const query = mediaType === 'tv'
+    ? `SELECT tv_shows.tmdb_id FROM watched_tv_shows JOIN users ON users.id = watched_tv_shows.user_id JOIN tv_shows ON tv_shows.id = watched_tv_shows.tv_show_id WHERE users.username = $1`
+    : `SELECT movies.tmdb_id FROM watched_movies JOIN users ON users.id = watched_movies.user_id JOIN movies ON movies.id = watched_movies.movie_id WHERE users.username = $1`
+  const result = await pool.query(query, [username])
+  return new Set(result.rows.map((row) => Number(row.tmdb_id)).filter(Number.isInteger))
+}
+
 export async function ensureMoviesTable(pool) {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS genres (
