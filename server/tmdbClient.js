@@ -135,7 +135,7 @@ export async function discoverTitles(fetchImpl, options) {
   const { token, baseUrl, mediaType, runtime, actorId, keywordIds, page = 1 } = options
   const path = mediaType === 'tv' ? 'discover/tv' : 'discover/movie'
   const runtimeParam = runtime === 'short' ? 'with_runtime.lte' : 'with_runtime.gte'
-  const runtimeMinutes = mediaType === 'tv' ? 35 : 120
+  const runtimeMinutes = mediaType === 'tv' ? (runtime === 'short' ? 30 : 35) : 120
 
   return tmdbRequest(fetchImpl, {
     token,

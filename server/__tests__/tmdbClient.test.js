@@ -135,7 +135,7 @@ test('discoverTitles applies TV short-runtime filtering', async () => {
 
   await discoverTitles(fetchImpl, { token: 'token', baseUrl: 'https://api.themoviedb.org/3', mediaType: 'tv', runtime: 'short', keywordIds: [] })
 
-  assert.match(requestedUrl, /\/discover\/tv\?sort_by=popularity.desc&with_runtime.lte=35&page=1$/)
+  assert.match(requestedUrl, /\/discover\/tv\?sort_by=popularity.desc&with_runtime.lte=30&page=1$/)
 })
 
 test('discoverTitles forwards a requested result page', async () => {

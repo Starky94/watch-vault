@@ -3908,7 +3908,7 @@ function DiscoverScreen({ user, onOpenMovie, onOpenTvShow }) {
   }
 
   const durationCopy = type === 'tv'
-    ? { prompt: 'How long can you stay glued to the couch?', short: 'Quick episode bite', long: 'Settle in for 35+ minutes' }
+    ? { prompt: 'How long can you stay glued to the couch?', short: 'Quick episode bite (under 30 min)', long: 'Settle in for 35+ minutes' }
     : { prompt: 'How much time have you got before the popcorn runs out?', short: 'A tight under-two-hour ride', long: 'I’m ready for 2+ hours' }
 
   return (

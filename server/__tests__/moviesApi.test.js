@@ -1480,6 +1480,117 @@ test('watched endpoints toggle watched state, remove watchlist entries, and retu
   }
 })
 
+test('Watch Together movie confirmations also update each confirmer’s watched library', async () => {
+  const movie = {
+    tmdb_id: 42,
+    title: 'Shared Movie',
+    original_title: 'Shared Movie',
+    overview: 'Movie overview',
+    release_date: '2024-03-01',
+    original_language: 'en',
+    poster_path: '/poster.jpg',
+    backdrop_path: '/backdrop.jpg',
+    popularity: 100,
+    vote_average: 8.7,
+    vote_count: 2150,
+    adult: false,
+    video: false,
+    genre_ids: [12],
+    genre_names: ['Adventure'],
+    runtime_minutes: 166,
+    certification: 'PG-13',
+    detail_payload: {},
+    raw_payload: {},
+    import_rank: 1,
+    imported_at: '2026-07-02T00:00:00.000Z',
+  }
+  const watchedByUser = new Map([['florind', []], ['alex', []]])
+  const confirmations = new Set()
+  const watchedTogether = []
+  const users = { florind: { id: 1, full_name: 'Florin Druta' }, alex: { id: 2, full_name: 'Alex Morgan' } }
+
+  const pool = {
+    async query(sql, params = []) {
+      if (isSchemaSetupQuery(sql)) return { rows: [] }
+      if (['BEGIN', 'COMMIT', 'ROLLBACK'].includes(sql.trim())) return { rows: [] }
+
+      if (sql.includes('AS selected') && sql.includes('watch_together_pair_members')) return { rows: [{ selected: true }] }
+
+      if (sql.includes('inserted_watched AS')) {
+        const [username, movieId] = params
+        assert.equal(movieId, 42)
+        const watched = watchedByUser.get(username)
+        if (!watched.some((item) => item.tmdb_id === movieId)) watched.push({ ...movie, watched_at: '2026-07-03T11:30:00.000Z' })
+        return { rows: [{ has_user: true, has_movie: true, entity_id: 42, removed_from_watchlist: false, created_at: '2026-07-03T11:30:00.000Z', added: false }] }
+      }
+
+      if (sql.includes('watched_totals AS')) {
+        const watched = watchedByUser.get(params[0]) ?? []
+        return { rows: [{ has_user: true, movies_watched: watched.length, time_watched_minutes: watched.reduce((total, item) => total + item.runtime_minutes, 0), watchlist_count: 0 }] }
+      }
+
+      if (sql.includes('SELECT members.pair_id, members.user_id, movies.id AS movie_id')) {
+        const username = params[0]
+        return { rows: [{ pair_id: 70, user_id: users[username].id, movie_id: 42 }] }
+      }
+      if (sql.includes('SELECT mine.pair_id, mine.user_id, other.user_id AS partner_user_id')) return { rows: [] }
+      if (sql.includes('SELECT items.id FROM watch_together_items')) return { rows: [{ id: 90 }] }
+      if (sql.includes('INSERT INTO watch_together_item_confirmations')) {
+        confirmations.add(params[1])
+        return { rows: [] }
+      }
+      if (sql.includes('SELECT COUNT(*)::INTEGER AS count FROM watch_together_item_confirmations')) return { rows: [{ count: confirmations.size }] }
+      if (sql.includes('INSERT INTO watch_together_watched_movies')) {
+        watchedTogether.push({ pairId: params[0], movieId: params[1] })
+        return { rows: [{ watched_together_at: '2026-07-03T11:35:00.000Z' }] }
+      }
+      if (sql.includes('DELETE FROM watch_together_items')) return { rows: [] }
+
+      if (sql.includes('FROM users') && sql.includes('WHERE username = $1') && sql.includes('LIMIT 1')) {
+        const username = params[0]
+        return { rows: users[username] ? [{ id: users[username].id, username, full_name: users[username].full_name }] : [] }
+      }
+      if (sql.includes('FROM watched_movies') && sql.includes('WHERE users.username = $1')) return { rows: watchedByUser.get(params[0]) ?? [] }
+
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+    async connect() { return { query: pool.query.bind(pool), release() {} } },
+  }
+
+  const app = await createApp(pool)
+  const server = app.listen(0)
+  try {
+    const address = server.address()
+    const confirm = async (username) => {
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/watched`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-watchvault-username': username },
+        body: JSON.stringify({ movieId: 42, watchService: 'Netflix', watchTogether: true }),
+      })
+      return { response, payload: await response.json() }
+    }
+
+    const first = await confirm('florind')
+    assert.equal(first.response.status, 200)
+    assert.equal(first.payload.movie.id, 42)
+    assert.deepEqual(first.payload.stats, { moviesWatched: 1, timeWatchedMinutes: 166, watchlistCount: 0, averageRating: null })
+    assert.equal(first.payload.watchTogether.status, 'waiting_for_partner')
+    assert.deepEqual(watchedByUser.get('florind').map((item) => item.tmdb_id), [42])
+    assert.deepEqual(watchedByUser.get('alex'), [])
+    assert.deepEqual(watchedTogether, [])
+
+    const second = await confirm('alex')
+    assert.equal(second.response.status, 200)
+    assert.equal(second.payload.movie.id, 42)
+    assert.deepEqual(second.payload.stats, { moviesWatched: 1, timeWatchedMinutes: 166, watchlistCount: 0, averageRating: null })
+    assert.equal(second.payload.watchTogether.status, 'completed')
+    assert.deepEqual(watchedByUser.get('alex').map((item) => item.tmdb_id), [42])
+    assert.deepEqual(watchedTogether, [{ pairId: 70, movieId: 42 }])
+  } finally {
+    await closeServer(server)
+  }
+})
+
 test('listRecentlyReleasedMovies requests paged non-future titles ordered by release date descending', async () => {
   let executedSql = ''
   let executedParams = []
