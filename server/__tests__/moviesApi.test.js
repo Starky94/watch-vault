@@ -3283,7 +3283,7 @@ test('GET /api/movies/:movieId/similar returns an empty list when no related mov
   }
 })
 
-test('GET /api/admin/overview returns the configured jobs and database totals', async () => {
+test('GET /api/admin/overview rejects requests without a secure session', async () => {
   const pool = {
     async query(sql) {
       if (isSchemaSetupQuery(sql)) {
@@ -3322,56 +3322,8 @@ test('GET /api/admin/overview returns the configured jobs and database totals', 
     const response = await fetch(`http://127.0.0.1:${address.port}/api/admin/overview`)
     const payload = await response.json()
 
-    assert.equal(response.status, 200)
-    assert.equal(payload.totals.actors, 913)
-    assert.equal(payload.totals.books, 240)
-    assert.equal(payload.totals.movies, 125)
-    assert.equal(payload.totals.storedDataBytes, 5242880)
-    assert.equal(payload.totals.tvShows, 48)
-    assert.deepEqual(payload.crons, [
-      {
-        key: 'books',
-        name: 'Books Import',
-        execution: 'Interval-based loop',
-        frequency: 'Every hour',
-      },
-      {
-        key: 'popular',
-        name: 'Popular Movies Import',
-        execution: 'Interval-based loop',
-        frequency: 'Every 10 minutes',
-      },
-      {
-        key: 'now-playing',
-        name: 'Now Playing Import',
-        execution: 'Interval-based loop',
-        frequency: 'Every 24 hours',
-      },
-      {
-        key: 'upcoming',
-        name: 'Upcoming Import',
-        execution: 'Interval-based loop',
-        frequency: 'Every 24 hours',
-      },
-      {
-        key: 'tv-popular',
-        name: 'Popular TV Shows Import',
-        execution: 'Interval-based loop',
-        frequency: 'Every 10 minutes',
-      },
-      {
-        key: 'tv-airing-today',
-        name: 'TV Airing Today Import',
-        execution: 'Interval-based loop',
-        frequency: 'Every 24 hours',
-      },
-      {
-        key: 'tv-on-the-air',
-        name: 'TV On The Air Import',
-        execution: 'Interval-based loop',
-        frequency: 'Every 24 hours',
-      },
-    ])
+    assert.equal(response.status, 401)
+    assert.match(payload.error, /Authentication required/i)
   } finally {
     await new Promise((resolve, reject) => {
       server.close((error) => {

@@ -25,6 +25,12 @@ import {
   getBookAchievementsForUser,
   findUserByCredentials,
   findUserByUsername,
+  ensureFilelistTables,
+  getFilelistCredentialStatus,
+  getFilelistCredentials,
+  saveFilelistCredentials,
+  deleteFilelistCredentials,
+  reserveFilelistRequest,
   listWatchTogetherUsers,
   listWatchTogetherWatchedMovieIdsForUser,
   getWatchTogetherStateForUser,
@@ -51,6 +57,7 @@ import {
   getTvDetailForUser,
   getTvStatsForUser,
   getTvShowByTmdbId,
+  getFilelistTvEpisodeTargetForUser,
   getMovieByTmdbId,
   listCoStarsForPerson,
   listFavoriteActorsForUser,
@@ -112,6 +119,7 @@ import { hydrateMovieByTmdbId } from './movieImportService.js'
 import { hydrateTvShowByTmdbId } from './tvImportService.js'
 import { normalizeBook, sanitizeBookDescription } from './bookImportService.js'
 import { fetchBookById, fetchRelatedBooksByCategory, searchBooksByTitle } from './googleBooksClient.js'
+import { buildFilelistSearchUrl, buildFilelistTvEpisodeQuery, decryptFilelistValue, encryptFilelistValue, mapFilelistResults } from './filelist.js'
 
 const bookReadingFormats = new Set(['physical', 'ebook', 'audiobook'])
 
@@ -124,6 +132,7 @@ export async function createApp(pool, options = {}) {
     jobs = adminJobs,
     hydrateMovie = hydrateMovieByTmdbId,
     hydrateTvShow = hydrateTvShowByTmdbId,
+    fetchImpl = fetch,
     loadRuntimeConfig = () =>
       loadConfig({
         requireDatabase: false,
@@ -1239,8 +1248,12 @@ export async function createApp(pool, options = {}) {
     }
   })
 
-  app.get('/api/admin/overview', async (_request, response, next) => {
+  app.get('/api/admin/overview', async (request, response, next) => {
     try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      await ensureFilelistTables(pool)
+      const credential = await getFilelistCredentialStatus(pool, user.id)
       response.json({
         crons: listAdminJobs(jobs),
         totals: {
@@ -1250,13 +1263,49 @@ export async function createApp(pool, options = {}) {
           storedDataBytes: await countStoredDataBytes(pool),
           tvShows: await countTvShows(pool),
         },
+        filelist: { configured: Boolean(credential), updatedAt: credential?.updated_at ?? null },
       })
     } catch (error) {
       next(error)
     }
   })
 
+  app.put('/api/admin/filelist', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const username = typeof request.body?.username === 'string' ? request.body.username.trim() : ''
+      const passkey = typeof request.body?.passkey === 'string' ? request.body.passkey.trim() : ''
+      if (!username || !passkey) return response.status(400).json({ error: 'Filelist username and passkey are required.' })
+      const config = loadRuntimeConfig()
+      await ensureFilelistTables(pool)
+      await saveFilelistCredentials(pool, {
+        userId: user.id,
+        encryptedUsername: encryptFilelistValue(username, config.filelistEncryptionKey),
+        encryptedPasskey: encryptFilelistValue(passkey, config.filelistEncryptionKey),
+      })
+      response.json({ configured: true })
+    } catch (error) { next(error) }
+  })
+
+  app.delete('/api/admin/filelist', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      await ensureFilelistTables(pool)
+      await deleteFilelistCredentials(pool, user.id)
+      response.json({ configured: false })
+    } catch (error) { next(error) }
+  })
+
   app.post('/api/admin/jobs/:jobKey/run', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+    } catch (error) {
+      next(error)
+      return
+    }
     const job = findAdminJob(request.params.jobKey, jobs)
 
     if (!job) {
@@ -1578,6 +1627,43 @@ export async function createApp(pool, options = {}) {
     } catch (error) { next(error) }
   })
 
+  app.get('/api/tv/:showId/filelist', async (request, response, next) => {
+    const showId = Number.parseInt(request.params.showId, 10)
+    if (!Number.isInteger(showId)) return response.status(400).json({ error: `Invalid TV show id: ${request.params.showId}` })
+
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      await ensureFilelistTables(pool)
+      const storedCredentials = await getFilelistCredentials(pool, user.id)
+      if (!storedCredentials) return response.status(409).json({ error: 'Set up your Filelist username and passkey in Admin before searching.' })
+
+      const target = await getFilelistTvEpisodeTargetForUser(pool, { showId, username: user.username })
+      if (target.status === 'missing_show') return response.status(404).json({ error: `TV show ${showId} was not found in the local database` })
+      if (target.status === 'caught_up') return response.status(409).json({ error: 'You are caught up on all aired episodes, so there is no episode to search.' })
+      if (target.status === 'missing_initial_episode') return response.status(409).json({ error: 'Season 1 episode 1 is not available for this show yet.' })
+
+      const usage = await reserveFilelistRequest(pool, user.id)
+      if (!usage.allowed) return response.status(429).json({ error: `Filelist limit reached. Wait ${usage.minutesUntilReset} minutes until the next reset.`, minutesUntilReset: usage.minutesUntilReset, resetAt: usage.resetAt })
+
+      const config = loadRuntimeConfig()
+      const url = buildFilelistSearchUrl({
+        username: decryptFilelistValue(storedCredentials.encrypted_username, config.filelistEncryptionKey),
+        passkey: decryptFilelistValue(storedCredentials.encrypted_passkey, config.filelistEncryptionKey),
+        query: buildFilelistTvEpisodeQuery(target.show.name, target.episode.seasonNumber, target.episode.episodeNumber),
+      })
+      const upstream = await fetchImpl(url)
+      const payload = await upstream.json().catch(() => null)
+      if (!upstream.ok) throw new Error(`Filelist search failed with status ${upstream.status}`)
+      response.json({
+        query: target.show.name,
+        episode: { seasonNumber: target.episode.seasonNumber, episodeNumber: target.episode.episodeNumber, name: target.episode.name },
+        results: mapFilelistResults(payload),
+        usage: { count: usage.count, limit: 150, resetAt: usage.resetAt },
+      })
+    } catch (error) { next(error) }
+  })
+
   app.post('/api/tv/episodes/:kind', async (request, response, next) => {
     if (request.params.kind !== 'watched') return response.status(400).json({ error: 'Only watched episode updates are supported' })
     const showId = Number.parseInt(request.body?.showId, 10)
@@ -1673,6 +1759,35 @@ export async function createApp(pool, options = {}) {
     } catch (error) {
       next(error)
     }
+  })
+
+  app.get('/api/movies/:movieId/filelist', async (request, response, next) => {
+    const movieId = Number.parseInt(request.params.movieId, 10)
+    if (!Number.isInteger(movieId)) return response.status(400).json({ error: `Invalid movie id: ${request.params.movieId}` })
+
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      await ensureFilelistTables(pool)
+      const storedCredentials = await getFilelistCredentials(pool, user.id)
+      if (!storedCredentials) return response.status(409).json({ error: 'Set up your Filelist username and passkey in Admin before searching.' })
+      const movie = await getMovieByTmdbId(pool, movieId)
+      if (!movie) return response.status(404).json({ error: `Movie ${movieId} was not found in the local database` })
+
+      const usage = await reserveFilelistRequest(pool, user.id)
+      if (!usage.allowed) return response.status(429).json({ error: `Filelist limit reached. Wait ${usage.minutesUntilReset} minutes until the next reset.`, minutesUntilReset: usage.minutesUntilReset, resetAt: usage.resetAt })
+
+      const config = loadRuntimeConfig()
+      const url = buildFilelistSearchUrl({
+        username: decryptFilelistValue(storedCredentials.encrypted_username, config.filelistEncryptionKey),
+        passkey: decryptFilelistValue(storedCredentials.encrypted_passkey, config.filelistEncryptionKey),
+        query: movie.title,
+      })
+      const upstream = await fetchImpl(url)
+      const payload = await upstream.json().catch(() => null)
+      if (!upstream.ok) throw new Error(`Filelist search failed with status ${upstream.status}`)
+      response.json({ query: movie.title, results: mapFilelistResults(payload), usage: { count: usage.count, limit: 150, resetAt: usage.resetAt } })
+    } catch (error) { next(error) }
   })
 
   app.get('/api/movies/:movieId/trailer', async (request, response, next) => {

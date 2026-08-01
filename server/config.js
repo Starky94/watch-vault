@@ -1,4 +1,5 @@
 import dotenv from 'dotenv'
+import crypto from 'node:crypto'
 
 dotenv.config()
 
@@ -26,6 +27,7 @@ export function loadConfig(options = {}) {
     tmdbBaseUrl: env.TMDB_BASE_URL || 'https://api.themoviedb.org/3',
     googleBooksApiKey: env.GOOGLE_BOOKS_API_KEY,
     googleBooksBaseUrl: env.GOOGLE_BOOKS_BASE_URL || 'https://www.googleapis.com/books/v1',
+    filelistEncryptionKey: env.FILELIST_ENCRYPTION_KEY || deriveFilelistEncryptionKey(env.DATABASE_URL),
   }
 
   if (!Number.isInteger(config.port) || config.port <= 0) {
@@ -33,4 +35,9 @@ export function loadConfig(options = {}) {
   }
 
   return config
+}
+
+function deriveFilelistEncryptionKey(databaseUrl) {
+  if (!databaseUrl) return undefined
+  return crypto.createHash('sha256').update(`watchvault-filelist:${databaseUrl}`).digest('base64')
 }

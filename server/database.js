@@ -2594,6 +2594,70 @@ export async function findUserByUsername(pool, username) {
   return result.rows[0] ?? null
 }
 
+export async function ensureFilelistTables(pool) {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS filelist_credentials (
+      user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      encrypted_username TEXT NOT NULL,
+      encrypted_passkey TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS filelist_request_usage (
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      hour_start TIMESTAMPTZ NOT NULL,
+      request_count INTEGER NOT NULL DEFAULT 0 CHECK (request_count >= 0 AND request_count <= 150),
+      PRIMARY KEY (user_id, hour_start)
+    )
+  `)
+}
+
+export async function getFilelistCredentialStatus(pool, userId) {
+  const result = await pool.query('SELECT updated_at FROM filelist_credentials WHERE user_id = $1 LIMIT 1', [userId])
+  return result.rows[0] ?? null
+}
+
+export async function getFilelistCredentials(pool, userId) {
+  const result = await pool.query('SELECT encrypted_username, encrypted_passkey FROM filelist_credentials WHERE user_id = $1 LIMIT 1', [userId])
+  return result.rows[0] ?? null
+}
+
+export async function saveFilelistCredentials(pool, { userId, encryptedUsername, encryptedPasskey }) {
+  await pool.query(
+    `INSERT INTO filelist_credentials (user_id, encrypted_username, encrypted_passkey, created_at, updated_at)
+     VALUES ($1, $2, $3, NOW(), NOW())
+     ON CONFLICT (user_id) DO UPDATE SET encrypted_username = EXCLUDED.encrypted_username, encrypted_passkey = EXCLUDED.encrypted_passkey, updated_at = NOW()`,
+    [userId, encryptedUsername, encryptedPasskey]
+  )
+}
+
+export async function deleteFilelistCredentials(pool, userId) {
+  await pool.query('DELETE FROM filelist_credentials WHERE user_id = $1', [userId])
+}
+
+export async function reserveFilelistRequest(pool, userId) {
+  const result = await pool.query(
+    `INSERT INTO filelist_request_usage (user_id, hour_start, request_count)
+     VALUES ($1, date_trunc('hour', NOW() AT TIME ZONE 'UTC'), 1)
+     ON CONFLICT (user_id, hour_start) DO UPDATE
+       SET request_count = filelist_request_usage.request_count + 1
+       WHERE filelist_request_usage.request_count < 150
+     RETURNING request_count, hour_start`,
+    [userId]
+  )
+  const hourStart = new Date()
+  hourStart.setUTCMinutes(0, 0, 0)
+  const resetAt = new Date(hourStart.getTime() + 60 * 60 * 1000)
+  return {
+    allowed: result.rows.length === 1,
+    count: result.rows[0]?.request_count ?? 150,
+    resetAt: resetAt.toISOString(),
+    minutesUntilReset: Math.max(1, Math.ceil((resetAt.getTime() - Date.now()) / 60000)),
+  }
+}
+
 export async function updateUserPassword(pool, { username, currentPassword, newPassword }) {
   const result = await pool.query(
     `
@@ -3268,6 +3332,40 @@ export async function getTvShowByTmdbId(pool, tmdbId) {
     [tmdbId]
   )
   return result.rows[0] ?? null
+}
+
+export async function getFilelistTvEpisodeTargetForUser(pool, { showId, username }) {
+  const show = await getTvShowByTmdbId(pool, showId)
+  if (!show) return { status: 'missing_show' }
+
+  const result = await pool.query(
+    `SELECT s.season_number, e.episode_number, e.name, e.air_date,
+            w.id IS NOT NULL AS watched
+     FROM tv_seasons s
+     JOIN tv_episodes e ON e.tv_season_id = s.id
+     LEFT JOIN watched_tv_episodes w
+       ON w.tv_episode_id = e.id
+      AND w.user_id = (SELECT id FROM users WHERE username = $2 LIMIT 1)
+     WHERE s.tv_show_id = $1 AND s.season_number > 0
+     ORDER BY s.season_number, e.episode_number`,
+    [show.id, username]
+  )
+  const episodes = result.rows.map((episode) => ({
+    seasonNumber: Number(episode.season_number),
+    episodeNumber: Number(episode.episode_number),
+    name: episode.name,
+    airDate: episode.air_date,
+    watched: Boolean(episode.watched),
+  }))
+  const hasWatchedEpisode = episodes.some((episode) => episode.watched)
+
+  if (!hasWatchedEpisode) {
+    const premiere = episodes.find((episode) => episode.seasonNumber === 1 && episode.episodeNumber === 1)
+    return premiere ? { status: 'ok', show, episode: premiere } : { status: 'missing_initial_episode', show }
+  }
+
+  const nextEpisode = episodes.find((episode) => !episode.watched && (!episode.airDate || new Date(episode.airDate) <= new Date()))
+  return nextEpisode ? { status: 'ok', show, episode: nextEpisode } : { status: 'caught_up', show }
 }
 
 export async function replaceTvDetailRelations(pool, tmdbId, detail = {}) {

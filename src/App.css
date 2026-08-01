@@ -3651,6 +3651,46 @@
   padding: 18px;
 }
 
+.filelist-settings-section {
+  margin-top: 20px;
+}
+
+.filelist-settings-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.filelist-settings-form label {
+  display: grid;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.filelist-settings-form input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid rgba(210, 186, 255, 0.18);
+  border-radius: 12px;
+  background: rgba(8, 11, 20, 0.8);
+  color: var(--text-primary);
+  padding: 12px;
+}
+
+.filelist-settings-actions { display: flex; align-items: end; gap: 10px; }
+.filelist-settings-success { color: #9be7b9; margin: 14px 0 0; }
+.filelist-settings-error, .filelist-dialog-error { color: #ffadb7; margin: 16px 0; }
+
+.filelist-dialog { width: min(820px, calc(100vw - 32px)); max-height: min(720px, calc(100vh - 32px)); overflow: auto; }
+.filelist-result-list { display: grid; gap: 10px; margin-top: 16px; }
+.filelist-result { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 14px; background: rgba(10, 13, 24, 0.62); }
+.filelist-result div { min-width: 0; display: grid; gap: 5px; }
+.filelist-result strong { overflow-wrap: anywhere; }
+.filelist-result span { color: var(--text-secondary); font-size: .9rem; }
+.filelist-result a { text-decoration: none; flex: 0 0 auto; }
+
 .admin-jobs-list {
   display: grid;
   gap: 12px;

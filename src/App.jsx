@@ -273,6 +273,7 @@ function App() {
     totalMovies: 0,
     storedDataBytes: 0,
     totalTvShows: 0,
+    filelist: { configured: false, updatedAt: null },
     error: '',
   })
   const [adminRunState, setAdminRunState] = useState({})
@@ -1999,7 +2000,7 @@ function App() {
       }))
 
       try {
-        const response = await fetch('/api/admin/overview')
+        const response = await fetch('/api/admin/overview', { headers: buildAuthHeaders(user) })
         const payload = await response.json().catch(() => ({}))
 
         if (!response.ok) {
@@ -2015,6 +2016,7 @@ function App() {
             totalMovies: typeof payload?.totals?.movies === 'number' ? payload.totals.movies : 0,
             storedDataBytes: typeof payload?.totals?.storedDataBytes === 'number' ? payload.totals.storedDataBytes : 0,
             totalTvShows: typeof payload?.totals?.tvShows === 'number' ? payload.totals.tvShows : 0,
+            filelist: { configured: Boolean(payload?.filelist?.configured), updatedAt: payload?.filelist?.updatedAt ?? null },
             error: '',
           })
         }
@@ -2034,7 +2036,7 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [currentScreen, adminRefreshKey])
+  }, [currentScreen, adminRefreshKey, user])
 
   async function handleRunAdminJob(jobKey) {
     const currentRunState = adminRunState[jobKey] ?? adminRunIdleState
@@ -2054,6 +2056,7 @@ function App() {
     try {
       const response = await fetch(`/api/admin/jobs/${jobKey}/run`, {
         method: 'POST',
+        headers: buildAuthHeaders(user),
       })
       const payload = await response.json().catch(() => ({}))
 
@@ -2078,6 +2081,20 @@ function App() {
         },
       }))
     }
+  }
+
+  async function handleSaveFilelistSettings({ username, passkey }) {
+    const response = await fetch('/api/admin/filelist', { method: 'PUT', headers: { 'Content-Type': 'application/json', ...buildAuthHeaders(user) }, body: JSON.stringify({ username, passkey }) })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+    setAdminRefreshKey((value) => value + 1)
+  }
+
+  async function handleClearFilelistSettings() {
+    const response = await fetch('/api/admin/filelist', { method: 'DELETE', headers: buildAuthHeaders(user) })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+    setAdminRefreshKey((value) => value + 1)
   }
 
   useEffect(() => {
@@ -3205,6 +3222,8 @@ function App() {
                 adminRunState={adminRunState}
                 onBack={handleOpenDashboard}
                 onRunJob={handleRunAdminJob}
+                onSaveFilelistSettings={handleSaveFilelistSettings}
+                onClearFilelistSettings={handleClearFilelistSettings}
               />
             ) : currentScreen === appScreens.account ? (
               <AccountScreen
@@ -3241,6 +3260,7 @@ function App() {
               <TvDetailPage
                 tvDetailState={tvDetailState}
                 tvReviewsState={tvReviewsState}
+                user={user}
                 onBackToTv={() => handleMovieViewSelection(primaryViews.tvShows)}
                 onToggleWatchlist={handleToggleTvWatchlist}
                 onUpdateEpisodes={handleUpdateTvEpisodes}
@@ -3446,6 +3466,7 @@ function App() {
                 onOpenLogin={handleOpenLogin}
                 onOpenMovie={handleOpenMovieDetail}
                 isSignedIn={Boolean(user)}
+                user={user}
                 movieRatingActionState={movieRatingActionState}
                 watchedActionState={watchedActionState}
                 watchedMovieIds={watchedMovieIds}
@@ -4104,7 +4125,31 @@ function LoginScreen({ authError, authStatus, onCancel, onSubmit }) {
   )
 }
 
-function AdminScreen({ adminOverviewState, adminRunState, onBack, onRunJob }) {
+function AdminScreen({ adminOverviewState, adminRunState, onBack, onRunJob, onSaveFilelistSettings, onClearFilelistSettings }) {
+  const [filelistUsername, setFilelistUsername] = useState('')
+  const [filelistPasskey, setFilelistPasskey] = useState('')
+  const [filelistState, setFilelistState] = useState({ status: 'idle', error: '' })
+
+  async function handleFilelistSave(event) {
+    event.preventDefault()
+    setFilelistState({ status: 'loading', error: '' })
+    try {
+      await onSaveFilelistSettings({ username: filelistUsername, passkey: filelistPasskey })
+      setFilelistPasskey('')
+      setFilelistState({ status: 'success', error: '' })
+    } catch (error) { setFilelistState({ status: 'error', error: error instanceof Error ? error.message : 'Unable to save Filelist settings.' }) }
+  }
+
+  async function handleFilelistClear() {
+    setFilelistState({ status: 'loading', error: '' })
+    try {
+      await onClearFilelistSettings()
+      setFilelistUsername('')
+      setFilelistPasskey('')
+      setFilelistState({ status: 'success', error: '' })
+    } catch (error) { setFilelistState({ status: 'error', error: error instanceof Error ? error.message : 'Unable to clear Filelist settings.' }) }
+  }
+
   return (
     <section className="admin-page">
       <div className="admin-heading">
@@ -4201,6 +4246,17 @@ function AdminScreen({ adminOverviewState, adminRunState, onBack, onRunJob }) {
             })}
           </div>
         ) : null}
+      </section>
+
+      <section className="content-section admin-content-section filelist-settings-section">
+        <div className="section-header"><div><h2>Filelist</h2><span>{adminOverviewState.filelist?.configured ? 'Your encrypted credentials are saved.' : 'Configure your credentials to search from movie pages.'}</span></div></div>
+        <form className="filelist-settings-form" onSubmit={handleFilelistSave}>
+          <label>Filelist username<input value={filelistUsername} onChange={(event) => setFilelistUsername(event.target.value)} required placeholder={adminOverviewState.filelist?.configured ? 'Saved — enter to replace' : 'Username'} /></label>
+          <label>Filelist passkey<input type="password" value={filelistPasskey} onChange={(event) => setFilelistPasskey(event.target.value)} required placeholder={adminOverviewState.filelist?.configured ? 'Saved — enter to replace' : 'Passkey'} /></label>
+          <div className="filelist-settings-actions"><button type="submit" className="primary-button" disabled={filelistState.status === 'loading'}>{filelistState.status === 'loading' ? 'Saving...' : adminOverviewState.filelist?.configured ? 'Replace credentials' : 'Save credentials'}</button>{adminOverviewState.filelist?.configured ? <button type="button" className="secondary-button" disabled={filelistState.status === 'loading'} onClick={handleFilelistClear}>Clear credentials</button> : null}</div>
+        </form>
+        {filelistState.status === 'success' ? <p className="filelist-settings-success" role="status">Filelist settings saved.</p> : null}
+        {filelistState.status === 'error' ? <p className="filelist-settings-error" role="alert">{filelistState.error}</p> : null}
       </section>
     </section>
   )
@@ -5438,7 +5494,7 @@ function TvWatchlistPanel({ items, onOpenWatchlist, onSelectShow }) {
   )
 }
 
-function TvDetailPage({ tvDetailState, tvReviewsState, onBackToTv, onToggleWatchlist, onUpdateEpisodes, onSubmitEpisodeRating, onOpenTv, onOpenPerson, onOpenLogin, isSignedIn, watchlistIds, tvEpisodeRatingActionState }) {
+function TvDetailPage({ tvDetailState, tvReviewsState, user, onBackToTv, onToggleWatchlist, onUpdateEpisodes, onSubmitEpisodeRating, onOpenTv, onOpenPerson, onOpenLogin, isSignedIn, watchlistIds, tvEpisodeRatingActionState }) {
   const [seasonNumber, setSeasonNumber] = useState(null)
   const [trailer, setTrailer] = useState(null)
   const [catchUpEpisode, setCatchUpEpisode] = useState(null)
@@ -5446,7 +5502,8 @@ function TvDetailPage({ tvDetailState, tvReviewsState, onBackToTv, onToggleWatch
   const [ratingEpisode, setRatingEpisode] = useState(null)
   const [selectedRating, setSelectedRating] = useState(5)
   const [isUpdatingEpisodes, setIsUpdatingEpisodes] = useState(false)
-  useEffect(() => { setSeasonNumber(null); setTrailer(null); setCatchUpEpisode(null); setPendingWatchRequest(null); setRatingEpisode(null); setIsUpdatingEpisodes(false) }, [tvDetailState.show?.id])
+  const [filelistState, setFilelistState] = useState({ open: false, status: 'idle', results: [], error: '', minutesUntilReset: null, episode: null })
+  useEffect(() => { setSeasonNumber(null); setTrailer(null); setCatchUpEpisode(null); setPendingWatchRequest(null); setRatingEpisode(null); setIsUpdatingEpisodes(false); setFilelistState({ open: false, status: 'idle', results: [], error: '', minutesUntilReset: null, episode: null }) }, [tvDetailState.show?.id])
   if (tvDetailState.status === 'loading' || tvDetailState.status === 'idle') return <section className="movie-detail-page"><SectionMessage message="Loading TV series detail..." /></section>
   if (tvDetailState.status === 'error' || !tvDetailState.show) return <section className="movie-detail-page"><SectionMessage tone="error" message={tvDetailState.error || 'TV series detail is not available.'} /></section>
   const show = tvDetailState.show
@@ -5461,6 +5518,7 @@ function TvDetailPage({ tvDetailState, tvReviewsState, onBackToTv, onToggleWatch
   const isSeasonWatched = seasonAiredEpisodes.length > 0 && seasonAiredEpisodes.every((episode) => episode.watched)
   const communityRating = show.communityRating ?? { average: null, voteCount: 0 }
   const yourEpisodeRating = show.yourEpisodeRating ?? { average: null, ratingCount: 0 }
+  const filelistTarget = getFilelistTvEpisodeTarget(show)
 
   async function updateEpisodes(request, episodeToRate = null) {
     setIsUpdatingEpisodes(true)
@@ -5506,6 +5564,20 @@ function TvDetailPage({ tvDetailState, tvReviewsState, onBackToTv, onToggleWatch
     setSelectedRating(episode.yourScore ?? 5)
     setRatingEpisode(episode)
   }
+  async function handleOpenFilelist() {
+    if (!isSignedIn) return onOpenLogin()
+    if (!filelistTarget) return
+    setFilelistState({ open: true, status: 'loading', results: [], error: '', minutesUntilReset: null, episode: filelistTarget })
+    try {
+      const response = await fetch(`/api/tv/${show.id}/filelist`, { headers: buildAuthHeaders(user) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        setFilelistState({ open: true, status: response.status === 429 ? 'rate-limit' : 'error', results: [], error: payload.error || `Request failed with status ${response.status}`, minutesUntilReset: payload.minutesUntilReset ?? null, episode: filelistTarget })
+        return
+      }
+      setFilelistState({ open: true, status: 'success', results: Array.isArray(payload.results) ? payload.results : [], error: '', minutesUntilReset: null, episode: payload.episode ?? filelistTarget })
+    } catch (error) { setFilelistState({ open: true, status: 'error', results: [], error: error instanceof Error ? error.message : 'Unable to search Filelist right now.', minutesUntilReset: null, episode: filelistTarget }) }
+  }
   return <section className="movie-detail-page tv-detail-page">
     <button type="button" className="movie-detail-back" onClick={onBackToTv} aria-label="Back to TV shows"><ChevronLeftIcon /></button>
     <article className="movie-detail-hero" style={backdropStyle}>
@@ -5513,7 +5585,7 @@ function TvDetailPage({ tvDetailState, tvReviewsState, onBackToTv, onToggleWatch
       <div className="movie-detail-poster-wrap"><div className="movie-detail-poster">{show.posterUrl ? <img className="movie-detail-poster-image" src={show.posterUrl} alt={`${show.title} poster`} /> : null}</div></div>
       <div className="movie-detail-main"><h1>{show.title}</h1><div className="movie-detail-meta"><span>{show.year}</span><span>{show.genresLabel}</span><span>{show.maturityRating}</span><span>{show.seasons.length} Seasons</span></div>
         <div className="movie-detail-score-row"><MetricBadge icon={StarIcon} value={show.voteAverage} label="TMDB" tone="gold" /><MetricBadge icon={TomatoIcon} value={show.voteCount} label="Votes" tone="tomato" /><MetricBadge icon={UserRatingIcon} value={formatCommunityRating(communityRating.average)} label={`${communityRating.voteCount} ${communityRating.voteCount === 1 ? 'episode rating' : 'episode ratings'}`} tone="violet" /><MetricBadge icon={ProgressIcon} value={`${watchedCount}/${totalEpisodes}`} label="Episodes watched" tone="violet" /></div>
-        <p className="movie-detail-summary">{show.overview}</p><div className="movie-detail-actions"><button type="button" className={`primary-button movie-detail-primary${isWatchlist ? ' is-active' : ''}`} onClick={() => onToggleWatchlist(show)}><PlusIcon /><span>{isWatchlist ? 'In Watchlist' : 'Add to Watchlist'}</span></button>{show.trailer ? <button type="button" className="secondary-button movie-detail-secondary ghost" onClick={() => setTrailer(show.trailer)}><PlayIcon /><span>Trailer</span></button> : null}</div>
+        <p className="movie-detail-summary">{show.overview}</p><div className="movie-detail-actions"><button type="button" className={`primary-button movie-detail-primary${isWatchlist ? ' is-active' : ''}`} onClick={() => onToggleWatchlist(show)}><PlusIcon /><span>{isWatchlist ? 'In Watchlist' : 'Add to Watchlist'}</span></button>{show.trailer ? <button type="button" className="secondary-button movie-detail-secondary ghost" onClick={() => setTrailer(show.trailer)}><PlayIcon /><span>Trailer</span></button> : null}<button type="button" className="secondary-button movie-detail-secondary ghost" onClick={handleOpenFilelist} disabled={!filelistTarget} title={!filelistTarget ? 'You are caught up on all aired episodes.' : undefined}><span>Filelist</span></button></div>
       </div>
       <aside className="movie-detail-status desktop-only"><h2>Your Status</h2><div className="movie-detail-status-list"><div className="movie-detail-status-item"><span className="movie-detail-status-icon"><BookmarkStatusIcon /></span><div><span>Watchlist</span><strong>{isWatchlist ? 'Saved' : 'Not yet'}</strong></div></div><div className="movie-detail-status-item"><span className="movie-detail-status-icon"><ProgressIcon /></span><div><span>Progress</span><strong>{watchedCount} of {totalEpisodes}</strong></div></div><div className="movie-detail-status-item movie-detail-status-item-rating"><span className="movie-detail-status-icon"><StarOutlineIcon /></span><div><span>Your episode average</span><strong>{formatCommunityRating(yourEpisodeRating.average)}{yourEpisodeRating.ratingCount ? ` · ${yourEpisodeRating.ratingCount}` : ''}</strong></div></div><div className="movie-detail-status-item"><span className="movie-detail-status-icon"><CalendarIcon /></span><div><span>First air date</span><strong>{show.firstAirDateLabel}</strong></div></div><div className="movie-detail-status-item"><span className="movie-detail-status-icon"><TvIcon /></span><div><span>Network</span><strong>{show.network || 'TBA'}</strong></div></div></div></aside>
     </article>
@@ -5529,6 +5601,7 @@ function TvDetailPage({ tvDetailState, tvReviewsState, onBackToTv, onToggleWatch
     </section>
     <div className="movie-detail-grid"><section className="content-section movie-detail-panel"><div className="section-header"><h2>Cast &amp; Crew</h2></div><div className="movie-detail-cast">{show.credits.map((member) => <button type="button" className="movie-detail-cast-card movie-detail-cast-card-button" key={`${member.id}-${member.role}`} aria-label={`Open ${member.name}`} onClick={() => onOpenPerson?.(member)} disabled={!Number.isInteger(Number(member.id))}><div className="movie-detail-cast-avatar" style={buildMovieCreditAvatarStyle(member.profileUrl)} aria-label={member.name}>{!member.profileUrl ? getMovieCreditInitials(member.name) : null}</div><h3>{member.name}</h3><p>{member.role}</p></button>)}</div></section><section className="content-section movie-detail-panel movie-detail-activity"><div className="section-header"><h2>Your Activity</h2></div><div className="movie-detail-activity-grid"><div className="movie-detail-activity-item"><ProgressIcon /><div><span>Completion</span><div className="movie-detail-progress"><span style={{ width: totalEpisodes ? `${(watchedCount / totalEpisodes) * 100}%` : '0%' }} /></div></div><strong>{totalEpisodes ? Math.round((watchedCount / totalEpisodes) * 100) : 0}%</strong></div><div className="movie-detail-activity-item"><CheckIcon /><div><span>Episodes watched</span><strong>{watchedCount} of {totalEpisodes}</strong></div></div></div></section><section className="content-section movie-detail-panel"><div className="section-header"><h2>More Like This</h2></div><div className="tv-recommendations">{show.recommendations.map((item) => <button key={item.id} type="button" onClick={() => onOpenTv(item)} className="tv-recommendation"><img src={item.posterUrl} alt="" /><span>{item.title}</span><small>{item.rating}</small></button>)}</div></section><section className="content-section movie-detail-panel movie-detail-facts"><div className="movie-detail-facts-list"><DetailFactRow icon={DirectorIcon} label="Created by" value={show.creatorsLabel} /><DetailFactRow icon={LanguageIcon} label="Language" value={show.languagesLabel} /><DetailFactRow icon={TvIcon} label="Status" value={show.status} /></div></section><section className="content-section movie-detail-panel movie-detail-reviews"><div className="section-header"><h2>Community Reviews</h2></div>{tvReviewsState.status === 'loading' ? <SectionMessage message="Loading live community reviews..." /> : tvReviewsState.status === 'error' ? <SectionMessage tone="error" message={tvReviewsState.error} /> : tvReviewsState.reviews.length ? <div className="movie-detail-review-grid">{tvReviewsState.reviews.map((review) => <article key={review.id} className="movie-detail-review-card"><strong>{review.author}</strong><span className="movie-detail-stars">{review.rating ? `★ ${review.rating}` : 'No score'}</span><p>{review.copy}</p><small>{review.date}</small></article>)}</div> : <SectionMessage message="No community reviews available right now." />}</section></div>
     {trailer ? <MovieTrailerDialog movie={{ title: show.title }} trailer={trailer} onClose={() => setTrailer(null)} /> : null}
+    {filelistState.open ? <FilelistDialog title={show.title} subtitle={filelistState.episode ? formatFilelistEpisodeLabel(filelistState.episode) : null} emptyMessage="No Filelist results found for this episode." state={filelistState} onClose={() => setFilelistState((state) => ({ ...state, open: false }))} /> : null}
     {catchUpEpisode ? <TvEpisodeCatchUpDialog episode={catchUpEpisode.episode} earlierCount={catchUpEpisode.earlierCount} isSaving={isUpdatingEpisodes} onCancel={() => setCatchUpEpisode(null)} onMarkCurrent={() => { setCatchUpEpisode(null); requestEpisodeWatch({ action: 'mark_episode', episodeId: catchUpEpisode.episode.id }, catchUpEpisode.episode) }} onMarkEarlier={() => { setCatchUpEpisode(null); requestEpisodeWatch({ action: 'mark_through_episode', episodeId: catchUpEpisode.episode.id }, catchUpEpisode.episode) }} /> : null}
     {pendingWatchRequest ? <WatchServiceDialog title={pendingWatchRequest.episodeToRate?.name || show.title} onCancel={() => setPendingWatchRequest(null)} onSelect={(watchService) => { const pending = pendingWatchRequest; setPendingWatchRequest(null); void updateEpisodes({ ...pending.request, watchService }, pending.episodeToRate) }} /> : null}
     {ratingEpisode ? <MovieRatingDialog movie={{ title: ratingEpisode.name }} selectedRating={selectedRating} onSelectRating={setSelectedRating} onCancel={() => setRatingEpisode(null)} onSubmit={async () => { if (await onSubmitEpisodeRating(ratingEpisode, selectedRating)) setRatingEpisode(null) }} isSaving={tvEpisodeRatingActionState.status === 'loading' && Number(tvEpisodeRatingActionState.episodeId) === Number(ratingEpisode.id)} error={tvEpisodeRatingActionState.status === 'error' && Number(tvEpisodeRatingActionState.episodeId) === Number(ratingEpisode.id) ? tvEpisodeRatingActionState.error : ''} kicker="Your Episode Rating" cancelLabel="Skip" /> : null}
@@ -5606,16 +5679,19 @@ function MovieDetailPage({
   onSubmitMovieRating,
   onOpenLogin,
   isSignedIn,
+  user,
   movieRatingActionState,
 }) {
   const [isRatingDialogOpen, setIsRatingDialogOpen] = useState(false)
   const [isWatchServiceDialogOpen, setIsWatchServiceDialogOpen] = useState(false)
   const [selectedRating, setSelectedRating] = useState(5)
   const [trailerState, setTrailerState] = useState({ status: 'idle', trailer: null, error: '' })
+  const [filelistState, setFilelistState] = useState({ open: false, status: 'idle', results: [], error: '', minutesUntilReset: null })
 
   useEffect(() => {
     setTrailerState({ status: 'idle', trailer: null, error: '' })
     setIsWatchServiceDialogOpen(false)
+    setFilelistState({ open: false, status: 'idle', results: [], error: '', minutesUntilReset: null })
   }, [movieDetailState.movie?.id])
 
   if (movieDetailState.status === 'loading' || movieDetailState.status === 'idle') {
@@ -5685,6 +5761,19 @@ function MovieDetailPage({
 
   function closeTrailer() {
     setTrailerState({ status: 'idle', trailer: null, error: '' })
+  }
+
+  async function handleOpenFilelist() {
+    setFilelistState({ open: true, status: 'loading', results: [], error: '', minutesUntilReset: null })
+    try {
+      const response = await fetch(`/api/movies/${movie.id}/filelist`, { headers: buildAuthHeaders(user) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        setFilelistState({ open: true, status: response.status === 429 ? 'rate-limit' : 'error', results: [], error: payload.error || `Request failed with status ${response.status}`, minutesUntilReset: payload.minutesUntilReset ?? null })
+        return
+      }
+      setFilelistState({ open: true, status: 'success', results: Array.isArray(payload.results) ? payload.results : [], error: '', minutesUntilReset: null })
+    } catch (error) { setFilelistState({ open: true, status: 'error', results: [], error: error instanceof Error ? error.message : 'Unable to search Filelist right now.', minutesUntilReset: null }) }
   }
 
   const isTrailerLoading = trailerState.status === 'loading'
@@ -5775,6 +5864,9 @@ function MovieDetailPage({
               <PlayIcon />
               <span>{isTrailerLoading ? 'Loading...' : 'Trailer'}</span>
             </button>
+            <button type="button" className="secondary-button movie-detail-secondary ghost" onClick={handleOpenFilelist}>
+              <span>Filelist</span>
+            </button>
           </div>
           {trailerState.status === 'error' ? <p className="movie-trailer-error" role="alert">{trailerState.error}</p> : null}
         </div>
@@ -5841,6 +5933,8 @@ function MovieDetailPage({
       {trailerState.status === 'success' && trailerState.trailer ? (
         <MovieTrailerDialog movie={movie} trailer={trailerState.trailer} onClose={closeTrailer} />
       ) : null}
+
+      {filelistState.open ? <FilelistDialog title={movie.title} state={filelistState} onClose={() => setFilelistState((state) => ({ ...state, open: false }))} /> : null}
 
       <div className="movie-detail-grid">
         <section className="content-section movie-detail-panel">
@@ -5959,6 +6053,38 @@ function MovieDetailPage({
       </div>
     </section>
   )
+}
+
+function getFilelistTvEpisodeTarget(show) {
+  const episodes = (show?.seasons ?? [])
+    .filter((season) => Number(season.seasonNumber) > 0)
+    .flatMap((season) => (season.episodes ?? []).map((episode) => ({ ...episode, seasonNumber: Number(season.seasonNumber) })))
+    .sort((left, right) => left.seasonNumber - right.seasonNumber || Number(left.episodeNumber) - Number(right.episodeNumber))
+  if (!episodes.some((episode) => episode.watched)) return episodes.find((episode) => episode.seasonNumber === 1 && Number(episode.episodeNumber) === 1) ?? null
+  return episodes.find((episode) => episode.isAired && !episode.watched) ?? null
+}
+
+function formatFilelistEpisodeLabel(episode) {
+  return `S${episode.seasonNumber} E${episode.episodeNumber}${episode.name ? ` · ${episode.name}` : ''}`
+}
+
+function FilelistDialog({ title, subtitle = null, emptyMessage = 'No Filelist results found for this movie.', state, onClose }) {
+  useEffect(() => {
+    function handleKeyDown(event) { if (event.key === 'Escape') onClose() }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [onClose])
+
+  return <div className="movie-rating-dialog-backdrop" role="presentation" onMouseDown={onClose}>
+    <section className="movie-rating-dialog filelist-dialog" role="dialog" aria-modal="true" aria-labelledby="filelist-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
+      <div className="movie-trailer-dialog-header"><div><p className="movie-rating-dialog-kicker">Filelist</p><h2 id="filelist-dialog-title">{title}</h2>{subtitle ? <p>{subtitle}</p> : null}</div><button type="button" className="movie-trailer-close" onClick={onClose} aria-label="Close Filelist results">×</button></div>
+      {state.status === 'loading' ? <SectionMessage message="Searching Filelist..." /> : null}
+      {state.status === 'rate-limit' ? <p className="filelist-dialog-error" role="alert">Wait {state.minutesUntilReset} minutes until the next reset.</p> : null}
+      {state.status === 'error' ? <p className="filelist-dialog-error" role="alert">{state.error}</p> : null}
+      {state.status === 'success' && !state.results.length ? <SectionMessage message={emptyMessage} /> : null}
+      {state.status === 'success' && state.results.length ? <div className="filelist-result-list">{state.results.map((result, index) => <article className="filelist-result" key={`${result.downloadLink}-${index}`}><div><strong>{result.name}</strong><span>{result.category} · {result.uploadDate || 'Upload date unavailable'}</span></div><a className="secondary-button" href={result.downloadLink}>Download</a></article>)}</div> : null}
+    </section>
+  </div>
 }
 
 function MovieTrailerDialog({ movie, trailer, onClose }) {
