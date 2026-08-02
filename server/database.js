@@ -1,7 +1,7 @@
 import pg from 'pg'
 import { ACHIEVEMENTS } from './achievements.js'
 import { BOOK_ACHIEVEMENTS } from './bookAchievements.js'
-import { WATCH_TOGETHER_ACHIEVEMENTS, WATCH_TOGETHER_ACHIEVEMENT_BY_ID } from './watchTogetherAchievements.js'
+import { WATCH_TOGETHER_ACHIEVEMENTS, WATCH_TOGETHER_AUTOMATIC_GENRE_RULES, WATCH_TOGETHER_MANUAL_ACHIEVEMENT_IDS } from './watchTogetherAchievements.js'
 
 const { Pool } = pg
 
@@ -1221,9 +1221,57 @@ export async function recordAchievementEventForUser(pool, { username, eventType,
     SELECT id FROM selected_user WHERE NOT EXISTS (SELECT 1 FROM achievement_baseline_items b WHERE b.user_id=selected_user.id AND b.kind=$5 AND b.entity_id=$4)
   ), inserted AS (
     INSERT INTO achievement_events (user_id,event_type,media_type,entity_id,metadata)
-    SELECT id,$2,$3,$4,$6::jsonb FROM eligible ON CONFLICT DO NOTHING RETURNING id
+    SELECT id,$2,$3,$4,$6::jsonb FROM eligible
+    ON CONFLICT (user_id,event_type,media_type,entity_id) DO UPDATE SET metadata=EXCLUDED.metadata, occurred_at=NOW()
+    WHERE achievement_events.event_type IN ('movie_rated','tv_rated')
+    RETURNING id
   ) SELECT EXISTS(SELECT 1 FROM inserted) AS inserted`, [username, eventType, mediaType, entityId, baselineKind, JSON.stringify(metadata)])
   return Boolean(result.rows[0]?.inserted)
+}
+
+export function buildFirstReleaseAchievementValues({ movies = [], ratings = [], watchlistCount = 0, watchlistAdds = [] }) {
+  const values = {}
+  const dateOf = (value) => new Date(value)
+  const dayKey = (value) => String(value).slice(0, 10)
+  const genreCounts = new Map(); const directorCounts = new Map(); const actorCounts = new Map(); const pairCounts = new Map()
+  const watchedDays = new Set(); const months = new Set(); const weeks = new Set(); const years = new Map(); const decades = new Set(); const letters = new Set()
+  let mondayMovies = 0; let fridayMovies = 0; let nightOwlMovies = 0; let earlyScreeningMovies = 0; let halloweenHorror = 0; let openingWeekend = 0; let newReleaseHunter = 0
+  const ordered = [...movies].sort((a, b) => dateOf(a.occurred_at) - dateOf(b.occurred_at))
+  for (const movie of ordered) {
+    const watchedAt = dateOf(movie.occurred_at); if (Number.isNaN(watchedAt.valueOf())) continue
+    const day = dayKey(movie.occurred_at); const year = watchedAt.getUTCFullYear(); const month = `${year}-${String(watchedAt.getUTCMonth() + 1).padStart(2, '0')}`
+    watchedDays.add(day); months.add(month); years.set(year, (years.get(year) || new Set()).add(day)); weeks.add(`${year}-${Math.floor((Date.UTC(year, watchedAt.getUTCMonth(), watchedAt.getUTCDate()) - Date.UTC(year, 0, 1)) / 604800000)}`)
+    if (watchedAt.getUTCDay() === 1) mondayMovies += 1
+    if (watchedAt.getUTCDay() === 5) fridayMovies += 1
+    if (watchedAt.getUTCHours() < 6) nightOwlMovies += 1
+    if (watchedAt.getUTCHours() < 12) earlyScreeningMovies += 1
+    const genres = new Set((movie.genre_names || []).filter(Boolean)); for (const genre of genres) genreCounts.set(genre, (genreCounts.get(genre) || 0) + 1)
+    if (watchedAt.getUTCMonth() === 9 && watchedAt.getUTCDate() === 31 && genres.has('Horror')) halloweenHorror += 1
+    const releaseYear = Number(String(movie.release_date || '').slice(0, 4)); if (Number.isInteger(releaseYear)) { decades.add(Math.floor(releaseYear / 10) * 10); if (releaseYear === year) newReleaseHunter += 1 }
+    const initial = String(movie.title || '').trim().charAt(0).toUpperCase(); if (/^[A-Z]$/.test(initial)) letters.add(initial)
+    for (const director of new Set(movie.director_ids || [])) directorCounts.set(String(director), (directorCounts.get(String(director)) || 0) + 1)
+    const actors = [...new Set(movie.actor_ids || [])].map(String).sort(); for (const actor of actors) actorCounts.set(actor, (actorCounts.get(actor) || 0) + 1)
+    for (let index = 0; index < actors.length; index += 1) for (let other = index + 1; other < actors.length; other += 1) { const pair = `${actors[index]}:${actors[other]}`; pairCounts.set(pair, (pairCounts.get(pair) || 0) + 1) }
+    const releases = movie.detail_payload?.release_dates?.results?.find((entry) => entry?.iso_3166_1 === 'US')?.release_dates || []
+    const theatricalDate = releases.find((entry) => entry?.type === 3)?.release_date?.slice(0, 10) || movie.release_date
+    if (theatricalDate) { const offset = (Date.UTC(year, watchedAt.getUTCMonth(), watchedAt.getUTCDate()) - Date.parse(`${theatricalDate}T00:00:00Z`)) / 86400000; if (offset >= 0 && offset <= 2) openingWeekend += 1 }
+  }
+  const max = (counts) => Math.max(0, ...counts.values())
+  const sortedMonths = [...months].sort(); let monthlyRegular = 0; let runningMonths = 0; let previousMonth = null
+  for (const month of sortedMonths) { const current = new Date(`${month}-01T00:00:00Z`); runningMonths = previousMonth && current.getUTCFullYear() * 12 + current.getUTCMonth() === previousMonth.getUTCFullYear() * 12 + previousMonth.getUTCMonth() + 1 ? runningMonths + 1 : 1; monthlyRegular = Math.max(monthlyRegular, runningMonths); previousMonth = current }
+  const sortedWeeks = [...weeks].sort((a, b) => Number(a.split('-')[0]) - Number(b.split('-')[0]) || Number(a.split('-')[1]) - Number(b.split('-')[1])); let weeklyRegular = 0; let runningWeeks = 0; let previousWeek = null
+  for (const week of sortedWeeks) { const [year, number] = week.split('-').map(Number); const stamp = Date.UTC(year, 0, 1) + number * 604800000; runningWeeks = previousWeek !== null && stamp - previousWeek <= 604800000 ? runningWeeks + 1 : 1; weeklyRegular = Math.max(weeklyRegular, runningWeeks); previousWeek = stamp }
+  let genreMonth = 0; for (const movie of ordered) { const month = String(movie.occurred_at).slice(0, 7); for (const genre of new Set(movie.genre_names || [])) values[`genre-month:${month}:${genre}`] = (values[`genre-month:${month}:${genre}`] || 0) + 1 }; genreMonth = Math.max(0, ...Object.entries(values).filter(([key]) => key.startsWith('genre-month:')).map(([, count]) => count))
+  const doubleFeature = ordered.some((movie, index) => index > 0 && dateOf(movie.occurred_at) - dateOf(ordered[index - 1].occurred_at) <= 6 * 3600000) ? 2 : 0
+  const expectedDecades = Array.from({ length: 11 }, (_, index) => 1920 + index * 10)
+  values.zero_backlog = watchlistAdds.length > 0 && watchlistCount === 0 ? 1 : 0; values.forgotten_treasure = ordered.some((movie) => watchlistAdds.some((saved) => Number(saved.entity_id) === Number(movie.entity_id) && dateOf(movie.occurred_at) - dateOf(saved.occurred_at) >= 365 * 86400000)) ? 1 : 0
+  Object.assign(values, { time_traveller: expectedDecades.filter((decade) => decades.has(decade)).length, opening_weekend: openingWeekend, new_release_hunter: newReleaseHunter, director_max: max(directorCounts), actor_max: max(actorCounts), actor_pair_max: max(pairCounts), director_diversity: directorCounts.size, monday_movies: mondayMovies, friday_movies: fridayMovies, night_owl_movies: nightOwlMovies, early_screening_movies: earlyScreeningMovies, monthly_regular: monthlyRegular, weekly_regular: weeklyRegular, yearly_days: Math.max(0, ...[...years.values()].map((days) => days.size)), halloween_horror: halloweenHorror, double_feature: doubleFeature, alphabet_challenge: letters.size, decade_challenge: decades.size, genre_month: genreMonth })
+  values.hidden_gem_hunter = ratings.filter((rating) => Number(rating.personal_score) >= 4 && Number(rating.community_count) <= 5).length
+  values.against_crowd = ratings.some((rating) => Number(rating.vote_count) >= 1000 && Number(rating.community_count) >= 5 && Number(rating.personal_score) <= Number(rating.community_average) - 1.5) ? 1 : 0
+  values.so_bad_its_good = ratings.some((rating) => Number(rating.vote_average) <= 5 && Number(rating.personal_score) >= 4.5) ? 1 : 0
+  values.everyone_hated_it = ratings.some((rating) => Number(rating.community_count) >= 5 && Number(rating.community_average) <= 2.5 && Number(rating.personal_score) >= 4.5) ? 1 : 0
+  values.everyone_loved_it = ratings.some((rating) => Number(rating.community_count) >= 5 && Number(rating.community_average) >= 4.5 && Number(rating.personal_score) <= 2) ? 1 : 0
+  return values
 }
 
 export async function getAchievementsForUser(pool, username) {
@@ -1260,7 +1308,24 @@ export async function getAchievementsForUser(pool, username) {
     COALESCE((SELECT MAX(count)::int FROM (SELECT COUNT(*)::int count FROM movie_events WHERE EXTRACT(ISODOW FROM occurred_at) IN (6,7) GROUP BY date_trunc('week',occurred_at)) x),0) weekend_movies`, [username])
   const extra = details.rows[0] ?? {}
   const genreCounts = new Map((extra.genre_counts ?? []).map((row) => [row.name, Number(row.count)]))
-  const movieDates = await pool.query(`SELECT occurred_at::date AS day FROM achievement_events WHERE user_id=(SELECT id FROM users WHERE username=$1) AND event_type='movie_watched' ORDER BY day`, [username])
+  const [movieDates, movieActivity, ratingActivity, watchlistStatus, watchlistAdds] = await Promise.all([
+    pool.query(`SELECT occurred_at::date AS day FROM achievement_events WHERE user_id=(SELECT id FROM users WHERE username=$1) AND event_type='movie_watched' ORDER BY day`, [username]),
+    pool.query(`WITH events AS (SELECT * FROM achievement_events WHERE user_id=(SELECT id FROM users WHERE username=$1) AND event_type='movie_watched')
+      SELECT e.entity_id,e.occurred_at,m.title,m.release_date,m.detail_payload,
+        COALESCE(array_agg(DISTINCT g.name) FILTER (WHERE g.name IS NOT NULL), ARRAY[]::TEXT[]) AS genre_names,
+        COALESCE(array_agg(DISTINCT mc.cast_member_id) FILTER (WHERE mc.credit_type='director'), ARRAY[]::BIGINT[]) AS director_ids,
+        COALESCE(array_agg(DISTINCT mc.cast_member_id) FILTER (WHERE mc.credit_type='actor'), ARRAY[]::BIGINT[]) AS actor_ids
+      FROM events e JOIN movies m ON m.id=e.entity_id LEFT JOIN LATERAL unnest(m.genre_ids) genre_id ON TRUE LEFT JOIN genres g ON g.tmdb_genre_id=genre_id LEFT JOIN movie_cast mc ON mc.movie_id=m.id
+      GROUP BY e.entity_id,e.occurred_at,m.id`, [username]),
+    pool.query(`WITH events AS (SELECT * FROM achievement_events WHERE user_id=(SELECT id FROM users WHERE username=$1) AND event_type='movie_rated')
+      SELECT e.entity_id,(e.metadata->>'score')::NUMERIC AS personal_score,m.vote_average,m.vote_count,
+        COALESCE((SELECT AVG(score) FROM movie_ratings WHERE movie_id=m.id),0)::DOUBLE PRECISION AS community_average,
+        (SELECT COUNT(*)::INTEGER FROM movie_ratings WHERE movie_id=m.id) AS community_count
+      FROM events e JOIN movies m ON m.id=e.entity_id`, [username]),
+    pool.query(`SELECT COUNT(*)::INTEGER AS count FROM watchlist_items WHERE user_id=(SELECT id FROM users WHERE username=$1)`, [username]),
+    pool.query(`SELECT entity_id,occurred_at FROM achievement_events WHERE user_id=(SELECT id FROM users WHERE username=$1) AND event_type='movie_watchlist_added'`, [username]),
+  ])
+  Object.assign(extra, buildFirstReleaseAchievementValues({ movies: movieActivity.rows, ratings: ratingActivity.rows, watchlistCount: Number(watchlistStatus.rows[0]?.count || 0), watchlistAdds: watchlistAdds.rows }))
   const days = [...new Set(movieDates.rows.map((row) => String(row.day)))].sort()
   let streak = 0; let bestStreak = 0; let previous = null
   for (const day of days) { const current = new Date(`${day}T00:00:00Z`); streak = previous && current - previous === 86400000 ? streak + 1 : 1; bestStreak = Math.max(bestStreak, streak); previous = current }
@@ -2186,19 +2251,47 @@ async function getWatchTogetherPairForUser(pool, username) {
 export async function getWatchTogetherAchievementsForUser(pool, username) {
   const pair = await getWatchTogetherPairForUser(pool, username)
   if (!pair) return []
-  const [sessions, movieCount, episodeCount, unlocks] = await Promise.all([
+  const [sessions, movieCount, episodeCount, genreHistory, unlocks] = await Promise.all([
     pool.query(`SELECT achievement_ids FROM watch_together_sessions WHERE pair_id=$1`, [pair.pair_id]),
     pool.query(`SELECT COUNT(*)::INTEGER AS count FROM watch_together_watched_movies WHERE pair_id=$1`, [pair.pair_id]),
     pool.query(`SELECT COUNT(*)::INTEGER AS count FROM watch_together_watched_episodes WHERE pair_id=$1`, [pair.pair_id]),
+    pool.query(`WITH shared_title_genres AS (
+      SELECT w.movie_id::TEXT AS history_key, COALESCE(array_agg(DISTINCT g.name) FILTER (WHERE g.name IS NOT NULL), ARRAY[]::TEXT[]) AS genre_names
+      FROM watch_together_watched_movies w
+      JOIN movies m ON m.id=w.movie_id
+      LEFT JOIN LATERAL unnest(m.genre_ids) genre_id ON TRUE
+      LEFT JOIN genres g ON g.tmdb_genre_id=genre_id
+      WHERE w.pair_id=$1
+      GROUP BY w.movie_id
+      UNION ALL
+      SELECT w.tv_episode_id::TEXT AS history_key, COALESCE(array_agg(DISTINCT g.name) FILTER (WHERE g.name IS NOT NULL), ARRAY[]::TEXT[]) AS genre_names
+      FROM watch_together_watched_episodes w
+      JOIN tv_episodes e ON e.id=w.tv_episode_id
+      JOIN tv_seasons season ON season.id=e.tv_season_id
+      JOIN tv_shows show ON show.id=season.tv_show_id
+      LEFT JOIN LATERAL unnest(show.genre_ids) genre_id ON TRUE
+      LEFT JOIN genres g ON g.tmdb_genre_id=genre_id
+      WHERE w.pair_id=$1
+      GROUP BY w.tv_episode_id
+    ) SELECT genre_names FROM shared_title_genres`, [pair.pair_id]),
     pool.query(`SELECT achievement_id, unlocked_at FROM watch_together_achievement_unlocks WHERE pair_id=$1`, [pair.pair_id]),
   ])
   const counts = new Map()
   for (const row of sessions.rows) for (const id of row.achievement_ids || []) counts.set(id, (counts.get(id) || 0) + 1)
   // The core milestones progress automatically as shared history grows.
   const auto = { 'watch-together-better-together': Number(movieCount.rows[0]?.count || 0), 'watch-together-pilot-partners': Number(episodeCount.rows[0]?.count || 0), 'watch-together-movie-night-regulars': Number(movieCount.rows[0]?.count || 0), 'watch-together-perfect-pairing': Number(movieCount.rows[0]?.count || 0), 'watch-together-cinema-companions': Number(movieCount.rows[0]?.count || 0), 'watch-together-dynamic-duo': Number(movieCount.rows[0]?.count || 0), 'watch-together-reel-soulmates': Number(movieCount.rows[0]?.count || 0), 'watch-together-long-term-relationship': Number(episodeCount.rows[0]?.count || 0), 'watch-together-episode-experts': Number(episodeCount.rows[0]?.count || 0), 'watch-together-binge-legends': Number(episodeCount.rows[0]?.count || 0) }
+  const normalizeGenre = (name) => String(name || '').trim().toLocaleLowerCase()
+  const genreCounts = new Map()
+  for (const row of genreHistory.rows) {
+    for (const genre of new Set((row.genre_names || []).map(normalizeGenre).filter(Boolean))) {
+      genreCounts.set(genre, (genreCounts.get(genre) || 0) + 1)
+    }
+  }
+  for (const [achievementId, genre] of WATCH_TOGETHER_AUTOMATIC_GENRE_RULES) auto[achievementId] = genreCounts.get(normalizeGenre(genre)) || 0
+  auto['watch-together-genre-tourists'] = genreCounts.size
   const unlocked = new Map(unlocks.rows.map((row) => [row.achievement_id, row.unlocked_at]))
   return WATCH_TOGETHER_ACHIEVEMENTS.map((achievement) => {
-    const current = Math.max(counts.get(achievement.id) || 0, auto[achievement.id] || 0)
+    const current = achievement.tracking === 'automatic' ? (auto[achievement.id] || 0) : (counts.get(achievement.id) || 0)
     return { ...achievement, progress: { current: Math.min(current, achievement.target), target: achievement.target, complete: current >= achievement.target }, unlocked: unlocked.has(achievement.id), unlockedAt: unlocked.get(achievement.id) || null }
   })
 }
@@ -2217,7 +2310,7 @@ export async function evaluateWatchTogetherAchievementsForUser(pool, username) {
 export async function saveWatchTogetherSessionForUser(pool, { username, mediaType, mediaId, episodeId = null, achievementIds = [], details = {} }) {
   const pair = await getWatchTogetherPairForUser(pool, username)
   if (!pair) return { status: 'no_pair' }
-  const validIds = [...new Set(achievementIds)].filter((id) => WATCH_TOGETHER_ACHIEVEMENT_BY_ID.has(id))
+  const validIds = [...new Set(achievementIds)].filter((id) => WATCH_TOGETHER_MANUAL_ACHIEVEMENT_IDS.has(id))
   const history = mediaType === 'movie'
     ? await pool.query(`SELECT 1 FROM watch_together_watched_movies w JOIN movies m ON m.id=w.movie_id WHERE w.pair_id=$1 AND m.tmdb_id=$2`, [pair.pair_id, mediaId])
     : await pool.query(`SELECT e.id AS episode_id FROM watch_together_watched_episodes w JOIN tv_episodes e ON e.id=w.tv_episode_id WHERE w.pair_id=$1 AND e.tmdb_id=$2`, [pair.pair_id, episodeId])

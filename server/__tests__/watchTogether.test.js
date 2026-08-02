@@ -1,7 +1,25 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildWatchTogetherStats, ensureWatchTogetherTables } from '../database.js'
-import { WATCH_TOGETHER_ACHIEVEMENTS } from '../watchTogetherAchievements.js'
+import { buildWatchTogetherStats, ensureWatchTogetherTables, evaluateWatchTogetherAchievementsForUser, getWatchTogetherAchievementsForUser } from '../database.js'
+import { ACHIEVEMENTS } from '../achievements.js'
+import { WATCH_TOGETHER_ACHIEVEMENTS, WATCH_TOGETHER_AUTOMATIC_GENRE_RULES } from '../watchTogetherAchievements.js'
+
+function achievementPool({ sessions = [], movieCount = 0, episodeCount = 0, genreHistory = [], unlocks = [] } = {}) {
+  const queries = []
+  return {
+    queries,
+    query: async (sql) => {
+      queries.push(sql)
+      if (sql.includes('FROM watch_together_pair_members mine')) return { rows: [{ pair_id: 7, user_id: 1, partner_user_id: 2 }] }
+      if (sql.includes('SELECT achievement_ids FROM watch_together_sessions')) return { rows: sessions.map((achievement_ids) => ({ achievement_ids })) }
+      if (sql.includes('COUNT(*)::INTEGER AS count FROM watch_together_watched_movies')) return { rows: [{ count: movieCount }] }
+      if (sql.includes('COUNT(*)::INTEGER AS count FROM watch_together_watched_episodes')) return { rows: [{ count: episodeCount }] }
+      if (sql.includes('WITH shared_title_genres')) return { rows: genreHistory.map((genre_names) => ({ genre_names })) }
+      if (sql.includes('FROM watch_together_achievement_unlocks')) return { rows: unlocks }
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+}
 
 test('Watch Together schema enforces request, pairing, and shared-title constraints', async () => {
   const queries = []
@@ -27,6 +45,60 @@ test('Watch Together catalog contains all 125 supplied achievements with stable 
   assert.equal(new Set(WATCH_TOGETHER_ACHIEVEMENTS.map((item) => item.id)).size, 125)
   assert.equal(WATCH_TOGETHER_ACHIEVEMENTS.some((item) => item.name === 'Better Together'), true)
   assert.equal(WATCH_TOGETHER_ACHIEVEMENTS.some((item) => item.name === 'Relationship Test Passed'), true)
+  assert.equal(WATCH_TOGETHER_ACHIEVEMENTS.find((item) => item.id === 'watch-together-comedy-couple')?.tracking, 'automatic')
+  assert.equal(WATCH_TOGETHER_ACHIEVEMENTS.find((item) => item.id === 'watch-together-mood-swing')?.tracking, 'manual')
+  assert.equal(ACHIEVEMENTS.find((item) => item.name === 'Opening Weekend')?.availability, 'active')
+})
+
+test('shared genre achievements derive movie and episode progress from confirmed Watch Together history', async () => {
+  const genreHistory = [
+    ...Array.from({ length: 9 }, () => ['Comedy', 'Comedy']),
+    [' comedy ', 'Drama'], // A shared TV episode counts through its parent show's genres.
+    ['Action', 'Adventure', 'Science Fiction', 'Fantasy', 'Romance', 'Horror', 'Mystery', 'Thriller', 'Documentary'],
+    [], // Titles without genres do not add progress.
+  ]
+  const pool = achievementPool({ movieCount: 10, episodeCount: 2, genreHistory })
+  const achievements = await getWatchTogetherAchievementsForUser(pool, 'florind')
+  const byId = new Map(achievements.map((item) => [item.id, item]))
+
+  assert.deepEqual(byId.get('watch-together-comedy-couple').progress, { current: 10, target: 10, complete: true })
+  assert.equal(byId.get('watch-together-genre-tourists').progress.current, 10)
+  for (const [id] of WATCH_TOGETHER_AUTOMATIC_GENRE_RULES) assert.equal(byId.get(id).progress.current, id === 'watch-together-comedy-couple' ? 10 : 1)
+  const genreQuery = pool.queries.find((sql) => sql.includes('WITH shared_title_genres'))
+  assert.match(genreQuery, /watch_together_watched_movies/)
+  assert.match(genreQuery, /watch_together_watched_episodes/)
+  assert.match(genreQuery, /JOIN tv_shows show/)
+})
+
+test('shared automatic genre achievements ignore manual session selections', async () => {
+  const achievements = await getWatchTogetherAchievementsForUser(achievementPool({
+    sessions: [Array.from({ length: 10 }, () => 'watch-together-comedy-couple')],
+    genreHistory: [['Drama']],
+  }), 'florind')
+  const comedy = achievements.find((item) => item.id === 'watch-together-comedy-couple')
+  assert.deepEqual(comedy.progress, { current: 0, target: 10, complete: false })
+})
+
+test('shared automatic genre achievement unlocks are inserted once', async () => {
+  const unlocks = new Map()
+  const pool = achievementPool({ genreHistory: Array.from({ length: 10 }, () => ['Comedy']) })
+  const originalQuery = pool.query
+  pool.query = async (sql, params) => {
+    if (sql.includes('INSERT INTO watch_together_achievement_unlocks')) {
+      const ids = params[1].filter((id) => !unlocks.has(id))
+      for (const id of ids) unlocks.set(id, '2026-08-02T00:00:00.000Z')
+      return { rows: ids.map((achievement_id) => ({ achievement_id, unlocked_at: unlocks.get(achievement_id) })) }
+    }
+    if (sql.includes('FROM watch_together_achievement_unlocks')) return { rows: [...unlocks].map(([achievement_id, unlocked_at]) => ({ achievement_id, unlocked_at })) }
+    return originalQuery(sql, params)
+  }
+
+  const first = await evaluateWatchTogetherAchievementsForUser(pool, 'florind')
+  const second = await evaluateWatchTogetherAchievementsForUser(pool, 'florind')
+
+  assert.deepEqual(first.map((item) => item.id), ['watch-together-comedy-couple'])
+  assert.deepEqual(second, [])
+  assert.equal(unlocks.size, 1)
 })
 
 test('shared stats keep movie and show history separate and aggregate both partner ratings', () => {

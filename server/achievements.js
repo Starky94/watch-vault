@@ -70,6 +70,19 @@ const unsupported = [
   ["I'll Be Back",'Rewatch a Terminator movie','Secret Achievements', true], ['One Does Not Simply Watch One','Complete The Lord of the Rings trilogy','Secret Achievements', true], ['May the Watchlist Be With You','Complete a Star Wars trilogy','Secret Achievements', true], ['Why So Serious?','Watch 5 Batman movies','Secret Achievements', true], ['Just One More','Watch another movie immediately after finishing one after midnight','Secret Achievements', true], ['The Longest Day','Watch more than 10 hours of movies in one day','Secret Achievements', true], ['Time Loop','Watch the same movie twice within 24 hours','Secret Achievements', true], ['The Completionist','Reach 100% completion on a custom list','Secret Achievements', true], ['No Trailer, No Problem','Highly rate a movie watched completely blind','Secret Achievements', true], ['Lost in the Credits','Finish 25 movies with post-credit scenes','Secret Achievements', true],
 ]
 
-ACHIEVEMENTS.push(...unsupported.map(([name, description, category, secret]) => coming(`coming-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')}`, name, description, category, { secret })))
+const firstReleaseRules = new Map([
+  ['Against the Crowd', ['against_crowd', 1]], ['Hidden Gem Hunter', ['hidden_gem_hunter', 10]],
+  ['Zero Backlog', ['zero_backlog', 1]], ['Forgotten Treasure', ['forgotten_treasure', 1]], ['Time Traveller', ['time_traveller', 11]], ['Opening Weekend', ['opening_weekend', 1]], ['New Release Hunter', ['new_release_hunter', 10]],
+  ["Director's Cut", ['director_max', 5]], ['Director Devotee', ['director_max', 15]], ['Favourite Face', ['actor_max', 10]], ['Cast Reunion', ['actor_pair_max', 5]], ['Auteur Explorer', ['director_diversity', 20]],
+  ['Monday Movie', ['monday_movies', 5]], ['Friday Night Feature', ['friday_movies', 10]], ['Night Owl', ['night_owl_movies', 10]], ['Early Screening', ['early_screening_movies', 10]], ['Monthly Regular', ['monthly_regular', 12]], ['Consistent Viewer', ['weekly_regular', 8]], ['Full Year of Film', ['yearly_days', 100]], ['Halloween Marathon', ['halloween_horror', 3]],
+  ['So Bad It’s Good', ['so_bad_its_good', 1]], ['Double Feature', ['double_feature', 2]], ['Everyone Hated It', ['everyone_hated_it', 1]], ['Everyone Loved It', ['everyone_loved_it', 1]],
+  ['A-Z Challenge', ['alphabet_challenge', 26]], ['Decade Challenge', ['decade_challenge', 10]], ['Director Challenge', ['director_max', 10]], ['Genre Month', ['genre_month', 10]],
+])
+
+ACHIEVEMENTS.push(...unsupported.map(([name, description, category, secret]) => {
+  const rule = firstReleaseRules.get(name)
+  const id = `coming-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')}`
+  return rule ? active(id, name, description, rule[0], rule[1], { category, secret }) : coming(id, name, description, category, { secret })
+}))
 
 export const ACHIEVEMENT_BY_ID = new Map(ACHIEVEMENTS.map((achievement) => [achievement.id, achievement]))

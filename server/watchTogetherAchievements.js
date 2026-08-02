@@ -16,8 +16,28 @@ const groups = [
 ]
 
 const slug = (name) => name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')
+export const WATCH_TOGETHER_AUTOMATIC_GENRE_RULES = new Map([
+  ['watch-together-comedy-couple', 'Comedy'],
+  ['watch-together-thrill-seekers', 'Thriller'],
+  ['watch-together-brave-together', 'Horror'],
+  ['watch-together-mystery-partners', 'Mystery'],
+  ['watch-together-sci-fi-sidekicks', 'Science Fiction'],
+  ['watch-together-fantasy-fellowship', 'Fantasy'],
+  ['watch-together-romance-mode', 'Romance'],
+  ['watch-together-action-alliance', 'Action'],
+  ['watch-together-documentary-duo', 'Documentary'],
+])
+const automaticAchievementIds = new Set([
+  'watch-together-better-together', 'watch-together-pilot-partners',
+  'watch-together-movie-night-regulars', 'watch-together-perfect-pairing',
+  'watch-together-cinema-companions', 'watch-together-dynamic-duo',
+  'watch-together-reel-soulmates', 'watch-together-long-term-relationship',
+  'watch-together-episode-experts', 'watch-together-binge-legends',
+  'watch-together-genre-tourists', ...WATCH_TOGETHER_AUTOMATIC_GENRE_RULES.keys(),
+])
 const targets = new Map([
   ['Movie Night Regulars', 5], ['Perfect Pairing', 10], ['Cinema Companions', 25], ['Dynamic Duo', 50], ['Reel Soulmates', 100], ['Long-Term Relationship', 100], ['Episode Experts', 250], ['Binge Legends', 500], ['Watch Streak', 3], ['Unbreakable Streak', 7], ['Weekly Tradition', 4], ['Friday Night Crew', 5], ['Sunday Series Club', 5], ['Genre Tourists', 10], ['Rating Twins', 5], ['Different Worlds', 5], ['Consensus Critics', 10], ['Balanced Opinions', 25], ['Character Experts', 10], ['Quiz Champions', 10], ['Competitive Viewing', 5], ['No Spoilers, Just Skills', 5], ['Watch Together Legends', 25], ['Comfort Watch', 3], ['Post-Credit Hunters', 5], ['Shared Universe', 5],
+  ['Comedy Couple', 10], ['Thrill Seekers', 10], ['Brave Together', 10], ['Mystery Partners', 10], ['Sci-Fi Sidekicks', 10], ['Fantasy Fellowship', 10], ['Romance Mode', 10], ['Action Alliance', 10], ['Documentary Duo', 10],
 ])
 
 const descriptions = new Map([
@@ -45,7 +65,9 @@ export const WATCH_TOGETHER_ACHIEVEMENTS = groups.flatMap(([category, text]) => 
   availability: 'active',
   rarity: category === 'Secret Achievements' ? 'Rare' : 'Common',
   media: 'watch_together',
+  tracking: automaticAchievementIds.has(`watch-together-${slug(name)}`) ? 'automatic' : 'manual',
   secret: category === 'Secret Achievements',
 })))
 
 export const WATCH_TOGETHER_ACHIEVEMENT_BY_ID = new Map(WATCH_TOGETHER_ACHIEVEMENTS.map((item) => [item.id, item]))
+export const WATCH_TOGETHER_MANUAL_ACHIEVEMENT_IDS = new Set(WATCH_TOGETHER_ACHIEVEMENTS.filter((item) => item.tracking === 'manual').map((item) => item.id))
