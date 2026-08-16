@@ -28,6 +28,7 @@ function isSchemaSetupQuery(sql) {
     sql.includes('CREATE TABLE IF NOT EXISTS users') ||
     sql.includes('INSERT INTO users') ||
     sql.includes('CREATE TABLE IF NOT EXISTS watchlist_items') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS movie_release_reminders') ||
     sql.includes('CREATE TABLE IF NOT EXISTS watch_together_') ||
     sql.includes('CREATE UNIQUE INDEX IF NOT EXISTS watch_together_') ||
     sql.includes('ALTER TABLE watch_together_') ||

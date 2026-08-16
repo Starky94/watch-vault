@@ -350,7 +350,7 @@ export async function ensureMoviesTable(pool) {
   `)
   await pool.query(`ALTER TABLE user_alerts ADD COLUMN IF NOT EXISTS watch_together_request_id BIGINT REFERENCES watch_together_requests(id) ON DELETE CASCADE`)
   await pool.query(`ALTER TABLE user_alerts DROP CONSTRAINT IF EXISTS user_alerts_kind_check`)
-  await pool.query(`ALTER TABLE user_alerts ADD CONSTRAINT user_alerts_kind_check CHECK (kind IN ('favorite_actor_movie', 'watchlist_movie_release', 'tv_episode_release', 'watch_together_request', 'watch_together_request_accepted', 'watch_together_request_denied'))`)
+  await pool.query(`ALTER TABLE user_alerts ADD CONSTRAINT user_alerts_kind_check CHECK (kind IN ('favorite_actor_movie', 'watchlist_movie_release', 'movie_release_reminder', 'tv_episode_release', 'watch_together_request', 'watch_together_request_accepted', 'watch_together_request_denied'))`)
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS alert_feature_state (
@@ -383,6 +383,16 @@ export async function ensureMoviesTable(pool) {
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS watchlist_items (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      movie_id BIGINT NOT NULL REFERENCES movies(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (user_id, movie_id)
+    )
+  `)
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS movie_release_reminders (
       id BIGSERIAL PRIMARY KEY,
       user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       movie_id BIGINT NOT NULL REFERENCES movies(id) ON DELETE CASCADE,
@@ -1885,28 +1895,38 @@ export async function replaceMovieCredits(pool, tmdbId, credits) {
   }
 }
 
+function buildWatchedMovieExclusion(username, params) {
+  if (!username) return ''
+  params.push(username)
+  return `NOT EXISTS (SELECT 1 FROM watched_movies JOIN users ON users.id = watched_movies.user_id WHERE watched_movies.movie_id = movies.id AND users.username = $${params.length})`
+}
+
 export async function listMovies(pool, options = {}) {
-  const { limit = 30, page = 1, genre = '' } = options
+  const { limit = 30, page = 1, genre = '', excludeWatchedForUsername = '' } = options
   const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 30
   const normalizedPage = Number.isInteger(page) ? Math.max(1, page) : 1
   const normalizedGenre = typeof genre === 'string' ? genre.trim() : ''
+  const normalizedExcludedUsername = typeof excludeWatchedForUsername === 'string' ? excludeWatchedForUsername.trim() : ''
   const offset = (normalizedPage - 1) * normalizedLimit
 
   const params = [normalizedLimit, offset]
-  const genreFilterSql = normalizedGenre
-    ? `
-    WHERE EXISTS (
-      SELECT 1
-      FROM UNNEST(movies.genre_ids) AS selected_genre(tmdb_genre_id)
-      JOIN genres AS selected_genres ON selected_genres.tmdb_genre_id = selected_genre.tmdb_genre_id
-      WHERE LOWER(selected_genres.name) = LOWER($3)
-    )
-  `
-    : ''
+  const filters = []
 
   if (normalizedGenre) {
     params.push(normalizedGenre)
+    filters.push(`EXISTS (
+      SELECT 1
+      FROM UNNEST(movies.genre_ids) AS selected_genre(tmdb_genre_id)
+      JOIN genres AS selected_genres ON selected_genres.tmdb_genre_id = selected_genre.tmdb_genre_id
+      WHERE LOWER(selected_genres.name) = LOWER($${params.length})
+    )`)
   }
+
+  if (normalizedExcludedUsername) {
+    filters.push(buildWatchedMovieExclusion(normalizedExcludedUsername, params))
+  }
+
+  const filterSql = filters.length > 0 ? `WHERE ${filters.join('\n      AND ')}` : ''
 
   const result = await pool.query(`
     SELECT
@@ -1937,7 +1957,7 @@ export async function listMovies(pool, options = {}) {
     FROM movies
     LEFT JOIN LATERAL UNNEST(movies.genre_ids) WITH ORDINALITY AS genre_ids(tmdb_genre_id, ordinality) ON TRUE
     LEFT JOIN genres ON genres.tmdb_genre_id = genre_ids.tmdb_genre_id
-    ${genreFilterSql}
+    ${filterSql}
     GROUP BY movies.id
     ORDER BY popularity DESC NULLS LAST, tmdb_id ASC
     LIMIT $1
@@ -2976,10 +2996,13 @@ export async function listMoviesForCreditsBackfill(pool) {
 }
 
 export async function listRecentlyReleasedMovies(pool, options = {}) {
-  const { limit = 30, page = 1 } = options
+  const { limit = 30, page = 1, excludeWatchedForUsername = '' } = options
   const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 30
   const normalizedPage = Number.isInteger(page) ? Math.max(1, page) : 1
+  const normalizedExcludedUsername = typeof excludeWatchedForUsername === 'string' ? excludeWatchedForUsername.trim() : ''
   const offset = (normalizedPage - 1) * normalizedLimit
+  const params = [normalizedLimit, offset]
+  const watchedFilterSql = buildWatchedMovieExclusion(normalizedExcludedUsername, params)
 
   const result = await pool.query(
     `
@@ -3013,22 +3036,26 @@ export async function listRecentlyReleasedMovies(pool, options = {}) {
     LEFT JOIN genres ON genres.tmdb_genre_id = genre_ids.tmdb_genre_id
     WHERE movies.release_date IS NOT NULL
       AND movies.release_date <= CURRENT_DATE
+      ${watchedFilterSql ? `AND ${watchedFilterSql}` : ''}
     GROUP BY movies.id
     ORDER BY movies.release_date DESC, movies.tmdb_id ASC
     LIMIT $1
     OFFSET $2
   `,
-    [normalizedLimit, offset]
+    params
   )
 
   return result.rows
 }
 
 export async function listTopRatedMovies(pool, options = {}) {
-  const { limit = 30, page = 1 } = options
+  const { limit = 30, page = 1, excludeWatchedForUsername = '' } = options
   const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 30
   const normalizedPage = Number.isInteger(page) ? Math.max(1, page) : 1
+  const normalizedExcludedUsername = typeof excludeWatchedForUsername === 'string' ? excludeWatchedForUsername.trim() : ''
   const offset = (normalizedPage - 1) * normalizedLimit
+  const params = [normalizedLimit, offset]
+  const watchedFilterSql = buildWatchedMovieExclusion(normalizedExcludedUsername, params)
 
   const result = await pool.query(
     `
@@ -3072,6 +3099,7 @@ export async function listTopRatedMovies(pool, options = {}) {
     CROSS JOIN top_rated_catalog
     WHERE movies.release_date IS NOT NULL
       AND movies.release_date <= CURRENT_DATE
+      ${watchedFilterSql ? `AND ${watchedFilterSql}` : ''}
     GROUP BY movies.id, top_rated_catalog.average_vote
     ORDER BY (
       (COALESCE(movies.vote_count, 0)::DOUBLE PRECISION / (COALESCE(movies.vote_count, 0) + 5000)) * movies.vote_average
@@ -3080,17 +3108,20 @@ export async function listTopRatedMovies(pool, options = {}) {
     LIMIT $1
     OFFSET $2
   `,
-    [normalizedLimit, offset]
+    params
   )
 
   return result.rows
 }
 
 export async function listUpcomingMovies(pool, options = {}) {
-  const { limit = 30, page = 1 } = options
+  const { limit = 30, page = 1, excludeWatchedForUsername = '' } = options
   const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 30
   const normalizedPage = Number.isInteger(page) ? Math.max(1, page) : 1
+  const normalizedExcludedUsername = typeof excludeWatchedForUsername === 'string' ? excludeWatchedForUsername.trim() : ''
   const offset = (normalizedPage - 1) * normalizedLimit
+  const params = [normalizedLimit, offset]
+  const watchedFilterSql = buildWatchedMovieExclusion(normalizedExcludedUsername, params)
 
   const result = await pool.query(
     `
@@ -3125,12 +3156,13 @@ export async function listUpcomingMovies(pool, options = {}) {
     WHERE movies.release_date IS NOT NULL
       AND movies.release_date > CURRENT_DATE
       AND movies.release_date <= CURRENT_DATE + INTERVAL '30 days'
+      ${watchedFilterSql ? `AND ${watchedFilterSql}` : ''}
     GROUP BY movies.id
     ORDER BY movies.release_date ASC, movies.tmdb_id ASC
     LIMIT $1
     OFFSET $2
   `,
-    [normalizedLimit, offset]
+    params
   )
 
   return result.rows
@@ -3821,6 +3853,51 @@ export async function updateUserAlertTimezone(pool, { username, timezone }) {
     `,
     [username, timezone]
   )
+}
+
+export async function hasMovieReleaseReminderForUser(pool, { username, movieId }) {
+  const result = await pool.query(
+    `
+      SELECT EXISTS (
+        SELECT 1
+        FROM movie_release_reminders
+        JOIN users ON users.id = movie_release_reminders.user_id
+        JOIN movies ON movies.id = movie_release_reminders.movie_id
+        WHERE users.username = $1 AND movies.tmdb_id = $2
+      ) AS has_reminder
+    `,
+    [username, movieId]
+  )
+  return Boolean(result.rows[0]?.has_reminder)
+}
+
+export async function addMovieReleaseReminderForUser(pool, { username, movieId }) {
+  const result = await pool.query(
+    `
+      INSERT INTO movie_release_reminders (user_id, movie_id)
+      SELECT users.id, movies.id
+      FROM users
+      JOIN movies ON movies.tmdb_id = $2
+      WHERE users.username = $1
+        AND movies.release_date > (NOW() AT TIME ZONE COALESCE(users.alert_timezone, 'UTC'))::DATE
+      ON CONFLICT (user_id, movie_id) DO NOTHING
+      RETURNING id
+    `,
+    [username, movieId]
+  )
+  return { status: result.rowCount ? 'added' : 'unavailable' }
+}
+
+export async function removeMovieReleaseReminderForUser(pool, { username, movieId }) {
+  const result = await pool.query(
+    `
+      DELETE FROM movie_release_reminders
+      WHERE user_id = (SELECT id FROM users WHERE username = $1 LIMIT 1)
+        AND movie_id = (SELECT id FROM movies WHERE tmdb_id = $2 LIMIT 1)
+    `,
+    [username, movieId]
+  )
+  return result.rowCount ?? 0
 }
 
 export async function listAlertsForUser(pool, username, { limit = 50 } = {}) {
@@ -5029,6 +5106,7 @@ export async function listContinueWatchingTvShowsForUser(pool, username, options
           tv_seasons.tv_show_id,
           COUNT(*)::INTEGER AS aired_episode_count,
           COUNT(watched_tv_episodes.id)::INTEGER AS watched_episode_count,
+          ROUND(AVG(tv_episodes.runtime_minutes) FILTER (WHERE watched_tv_episodes.id IS NULL))::INTEGER AS remaining_episode_runtime_minutes,
           MAX(watched_tv_episodes.watched_at) AS last_watched_at
         FROM tv_episodes
         JOIN tv_seasons ON tv_seasons.id = tv_episodes.tv_season_id
@@ -5059,14 +5137,38 @@ export async function listContinueWatchingTvShowsForUser(pool, username, options
         tv_shows.name,
         tv_shows.poster_path,
         tv_shows.backdrop_path,
+        tv_shows.detail_payload,
         episode_progress.watched_episode_count,
         episode_progress.aired_episode_count,
+        episode_progress.remaining_episode_runtime_minutes,
         episode_progress.last_watched_at,
         latest_watched_episodes.season_number AS latest_watched_season_number,
-        latest_watched_episodes.episode_number AS latest_watched_episode_number
+        latest_watched_episodes.episode_number AS latest_watched_episode_number,
+        next_episode.season_number AS next_season_number,
+        next_episode.episode_number AS next_episode_number,
+        next_episode.name AS next_episode_name,
+        next_episode.runtime_minutes AS next_episode_runtime_minutes
       FROM episode_progress
       JOIN tv_shows ON tv_shows.id = episode_progress.tv_show_id
       JOIN latest_watched_episodes ON latest_watched_episodes.tv_show_id = episode_progress.tv_show_id
+      JOIN LATERAL (
+        SELECT
+          tv_seasons.season_number,
+          tv_episodes.episode_number,
+          tv_episodes.name,
+          tv_episodes.runtime_minutes
+        FROM tv_episodes
+        JOIN tv_seasons ON tv_seasons.id = tv_episodes.tv_season_id
+        LEFT JOIN watched_tv_episodes
+          ON watched_tv_episodes.tv_episode_id = tv_episodes.id
+          AND watched_tv_episodes.user_id = (SELECT id FROM users WHERE username = $1 LIMIT 1)
+        WHERE tv_seasons.tv_show_id = episode_progress.tv_show_id
+          AND tv_seasons.season_number > 0
+          AND (tv_episodes.air_date IS NULL OR tv_episodes.air_date <= CURRENT_DATE)
+          AND watched_tv_episodes.id IS NULL
+        ORDER BY tv_seasons.season_number ASC, tv_episodes.episode_number ASC
+        LIMIT 1
+      ) AS next_episode ON TRUE
       ORDER BY episode_progress.last_watched_at DESC, tv_shows.tmdb_id ASC
       LIMIT $2
       OFFSET $3
@@ -5114,8 +5216,8 @@ export async function getTvStatsForUser(pool, username, period = 'month') {
 }
 
 export async function toggleTvLibraryItemForUser(pool, { username, showId, kind }) {
-  if (kind !== 'watchlist') return { status: 'unsupported_kind' }
-  const table = 'tv_watchlist_items'
+  if (!['watchlist', 'watched'].includes(kind)) return { status: 'unsupported_kind' }
+  const table = kind === 'watchlist' ? 'tv_watchlist_items' : 'watched_tv_shows'
   const column = 'tv_show_id'
   const result = await pool.query(
     `

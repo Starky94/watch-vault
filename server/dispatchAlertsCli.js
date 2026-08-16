@@ -8,7 +8,7 @@ async function run() {
 
   try {
     const result = await dispatchReleaseAlerts(pool)
-    console.log(`Created ${result.movieReleaseCount} movie-release and ${result.episodeReleaseCount} episode-release alerts.`)
+    console.log(`Created ${result.movieReleaseCount} movie-release, ${result.movieReminderCount} movie-reminder, and ${result.episodeReleaseCount} episode-release alerts.`)
   } finally {
     await pool.end()
   }

@@ -215,6 +215,7 @@ function App() {
     message: '',
   })
   const [popularMoviesPage, setPopularMoviesPage] = useState(1)
+  const [hideWatchedMovies, setHideWatchedMovies] = useState(false)
   const [booksPage, setBooksPage] = useState(1)
   const [recentMoviesPage, setRecentMoviesPage] = useState(1)
   const [upcomingMoviesPage, setUpcomingMoviesPage] = useState(1)
@@ -320,6 +321,7 @@ function App() {
     movieId: null,
     error: '',
   })
+  const [movieReleaseReminderActionState, setMovieReleaseReminderActionState] = useState({ status: 'idle', movieId: null, error: '' })
   const [tvEpisodeRatingActionState, setTvEpisodeRatingActionState] = useState({ status: 'idle', episodeId: null, error: '' })
   const [movieStatsState, setMovieStatsState] = useState({
     status: 'idle',
@@ -906,6 +908,16 @@ function App() {
     setMoviesScreenMode(movieScreenModes.overview)
   }
 
+  function handleHideWatchedMoviesChange(nextValue) {
+    setHideWatchedMovies(nextValue)
+
+    if (moviesScreenMode === movieScreenModes.genreList) setGenreMoviesPage(1)
+    if (moviesScreenMode === movieScreenModes.popularList) setPopularMoviesPage(1)
+    if (moviesScreenMode === movieScreenModes.nowPlayingList) setRecentMoviesPage(1)
+    if (moviesScreenMode === movieScreenModes.topRatedList) setTopRatedMoviesPage(1)
+    if (moviesScreenMode === movieScreenModes.upcomingList) setUpcomingMoviesPage(1)
+  }
+
   function handleOpenPopularMovies() {
     setActiveView(primaryViews.movies)
     setActiveMovieTab('Popular')
@@ -993,6 +1005,8 @@ function App() {
   }
 
   function handleToggleTvWatchlist(show) { return handleToggleTvLibrary(show, 'watchlist') }
+
+  function handleToggleTvWatched(show) { return handleToggleTvLibrary(show, 'watched') }
 
   async function handleUpdateTvEpisodes(showId, { action, episodeId, seasonId, watchService = null }) {
     if (!user) return handleOpenLogin()
@@ -1444,6 +1458,32 @@ function App() {
     }
 
     await handleAddMovieToWatchlist(movie)
+  }
+
+  async function handleToggleMovieReleaseReminder(movie) {
+    const movieId = Number(movie?.id)
+    if (!Number.isInteger(movieId)) return
+    if (!user) return handleOpenLogin()
+
+    const hasReleaseReminder = Boolean(movie?.hasReleaseReminder)
+    setMovieReleaseReminderActionState({ status: 'loading', movieId, error: '' })
+    try {
+      const response = await fetch(`/api/movies/${movieId}/release-reminder`, {
+        method: hasReleaseReminder ? 'DELETE' : 'POST',
+        headers: buildAuthHeaders(user),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+
+      setMovieDetailState((state) => (
+        state.movie && Number(state.movie.id) === movieId
+          ? { ...state, movie: { ...state.movie, hasReleaseReminder: Boolean(payload.hasReleaseReminder) } }
+          : state
+      ))
+      setMovieReleaseReminderActionState({ status: 'success', movieId, error: '' })
+    } catch (error) {
+      setMovieReleaseReminderActionState({ status: 'error', movieId, error: error instanceof Error ? error.message : 'Unable to update this release reminder right now.' })
+    }
   }
 
   async function handleToggleBookInWatchlist(book) {
@@ -2523,9 +2563,10 @@ function App() {
 
     async function loadPopularMovies() {
       setPopularMoviesState(createMovieCollectionLoadingState({ page: popularMoviesPage, includeFeaturedMovie: true }))
+      const hideWatched = Boolean(user) && hideWatchedMovies && activeView === primaryViews.movies && moviesScreenMode === movieScreenModes.popularList
 
       try {
-        const response = await fetch(buildMoviesApiPath('/api/movies', popularMoviesPage))
+        const response = await fetch(buildMoviesApiPath('/api/movies', popularMoviesPage, moviesPageSize, { hideWatched: hideWatched ? 'true' : undefined }), { headers: buildAuthHeaders(user) })
 
         if (!response.ok) {
           throw new Error(`Request failed with status ${response.status}`)
@@ -2563,7 +2604,7 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [activeView, popularMoviesPage])
+  }, [activeView, hideWatchedMovies, moviesScreenMode, popularMoviesPage, user, watchedState.movies])
 
   useEffect(() => {
     if (activeView !== primaryViews.books) return
@@ -2655,9 +2696,10 @@ function App() {
 
     async function loadUpcomingMovies() {
       setUpcomingMoviesState(createMovieCollectionLoadingState({ page: upcomingMoviesPage }))
+      const hideWatched = Boolean(user) && hideWatchedMovies && moviesScreenMode === movieScreenModes.upcomingList
 
       try {
-        const response = await fetch(buildMoviesApiPath('/api/movies/upcoming', upcomingMoviesPage))
+        const response = await fetch(buildMoviesApiPath('/api/movies/upcoming', upcomingMoviesPage, moviesPageSize, { hideWatched: hideWatched ? 'true' : undefined }), { headers: buildAuthHeaders(user) })
 
         if (!response.ok) {
           throw new Error(`Request failed with status ${response.status}`)
@@ -2692,7 +2734,7 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [activeView, upcomingMoviesPage])
+  }, [activeView, hideWatchedMovies, moviesScreenMode, upcomingMoviesPage, user, watchedState.movies])
 
   useEffect(() => {
     if (activeView !== primaryViews.movies) {
@@ -2703,9 +2745,10 @@ function App() {
 
     async function loadRecentMovies() {
       setRecentMoviesState(createMovieCollectionLoadingState({ page: recentMoviesPage }))
+      const hideWatched = Boolean(user) && hideWatchedMovies && moviesScreenMode === movieScreenModes.nowPlayingList
 
       try {
-        const response = await fetch(buildMoviesApiPath('/api/movies/recently-released', recentMoviesPage))
+        const response = await fetch(buildMoviesApiPath('/api/movies/recently-released', recentMoviesPage, moviesPageSize, { hideWatched: hideWatched ? 'true' : undefined }), { headers: buildAuthHeaders(user) })
 
         if (!response.ok) {
           throw new Error(`Request failed with status ${response.status}`)
@@ -2740,7 +2783,7 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [activeView, recentMoviesPage])
+  }, [activeView, hideWatchedMovies, moviesScreenMode, recentMoviesPage, user, watchedState.movies])
 
   useEffect(() => {
     if (activeView !== primaryViews.movies) {
@@ -2751,9 +2794,10 @@ function App() {
 
     async function loadTopRatedMovies() {
       setTopRatedMoviesState(createMovieCollectionLoadingState({ page: topRatedMoviesPage }))
+      const hideWatched = Boolean(user) && hideWatchedMovies && moviesScreenMode === movieScreenModes.topRatedList
 
       try {
-        const response = await fetch(buildMoviesApiPath('/api/movies/top-rated', topRatedMoviesPage))
+        const response = await fetch(buildMoviesApiPath('/api/movies/top-rated', topRatedMoviesPage, moviesPageSize, { hideWatched: hideWatched ? 'true' : undefined }), { headers: buildAuthHeaders(user) })
 
         if (!response.ok) {
           throw new Error(`Request failed with status ${response.status}`)
@@ -2788,7 +2832,7 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [activeView, topRatedMoviesPage])
+  }, [activeView, hideWatchedMovies, moviesScreenMode, topRatedMoviesPage, user, watchedState.movies])
 
   useEffect(() => {
     if (activeView !== primaryViews.tvShows) {
@@ -3043,11 +3087,13 @@ function App() {
 
     async function loadGenreMovies() {
       setGenreMoviesState(createMovieCollectionLoadingState({ page: genreMoviesPage }))
+      const hideWatched = Boolean(user) && hideWatchedMovies
 
       try {
         const response = await fetch(buildMoviesApiPath('/api/movies', genreMoviesPage, moviesPageSize, {
           genre: selectedGenre.name,
-        }))
+          hideWatched: hideWatched ? 'true' : undefined,
+        }), { headers: buildAuthHeaders(user) })
 
         if (!response.ok) {
           throw new Error(`Request failed with status ${response.status}`)
@@ -3084,7 +3130,7 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [activeView, genreMoviesPage, moviesScreenMode, selectedGenre])
+  }, [activeView, genreMoviesPage, hideWatchedMovies, moviesScreenMode, selectedGenre, user, watchedState.movies])
 
   useEffect(() => {
     if (currentRoute.kind !== routeKinds.authorDetail) {
@@ -3337,10 +3383,20 @@ function App() {
                 continueWatchingState={continueWatchingState}
                 onOpenContinueWatching={handleOpenContinueWatching}
                 onOpenTvShow={handleOpenTvDetail}
+                onOpenBook={handleOpenBookDetail}
                 latestEpisodesState={latestEpisodesState}
                 onOpenLatestEpisodes={handleOpenRecentlyAiredTvShows}
+                tvWatchlistShows={tvWatchlistShows}
                 tvWatchlistIds={tvWatchlistIds}
                 tvWatchedIds={tvWatchedIds}
+                watchedMovieIds={watchedMovieIds}
+                readBookIds={readBookIds}
+                onToggleMovieWatchlist={handleToggleMovieInWatchlist}
+                onToggleMovieWatched={handleToggleMovieWatched}
+                onToggleTvWatchlist={handleToggleTvWatchlist}
+                onToggleTvWatched={handleToggleTvWatched}
+                onToggleBookWatchlist={handleToggleBookInWatchlist}
+                onToggleBookRead={handleToggleBookRead}
               />
             ) : activeView === primaryViews.watchlist ? (
               <WatchlistScreen
@@ -3462,12 +3518,14 @@ function App() {
                 onOpenPerson={handleOpenPersonDetail}
                 onToggleWatched={handleToggleMovieWatched}
                 onToggleWatchlist={handleToggleMovieInWatchlist}
+                onToggleReleaseReminder={handleToggleMovieReleaseReminder}
                 onSubmitMovieRating={handleSubmitMovieRating}
                 onOpenLogin={handleOpenLogin}
                 onOpenMovie={handleOpenMovieDetail}
                 isSignedIn={Boolean(user)}
                 user={user}
                 movieRatingActionState={movieRatingActionState}
+                movieReleaseReminderActionState={movieReleaseReminderActionState}
                 watchedActionState={watchedActionState}
                 watchedMovieIds={watchedMovieIds}
                 watchedMovies={watchedState.movies}
@@ -3490,6 +3548,9 @@ function App() {
                 onChangeTopRatedPage={setTopRatedMoviesPage}
                 upcomingMoviesState={upcomingMoviesState}
                 onChangeUpcomingPage={setUpcomingMoviesPage}
+                isSignedIn={Boolean(user)}
+                hideWatched={hideWatchedMovies}
+                onHideWatchedChange={handleHideWatchedMoviesChange}
                 movieStats={moviesPageStats}
                 statsPeriod={statsPeriod}
                 onStatsPeriodChange={setStatsPeriod}
@@ -3961,42 +4022,106 @@ function DiscoverResultCard({ item, onOpen }) {
   return <button type="button" className="discover-result-card" onClick={onOpen}><DiscoverResultArt item={item} /><div><h3>{item.title}</h3><p>{item.year} · {item.meta}</p><span className="star-rating"><StarIcon /> {item.rating}</span></div></button>
 }
 
-function HomeScreen({ user, onOpenMovie, onOpenPopularMovies, onOpenWatchlist, onOpenDiscover, stats, statsPeriod, onStatsPeriodChange, watchlistState, popularMoviesState, continueWatchingState, onOpenContinueWatching, onOpenTvShow, latestEpisodesState, onOpenLatestEpisodes, tvWatchlistIds, tvWatchedIds }) {
+function HomeScreen({ user, onOpenMovie, onOpenPopularMovies, onOpenWatchlist, onOpenDiscover, stats, statsPeriod, onStatsPeriodChange, watchlistState, popularMoviesState, continueWatchingState, onOpenContinueWatching, onOpenTvShow, onOpenBook, latestEpisodesState, onOpenLatestEpisodes, tvWatchlistShows, tvWatchlistIds, tvWatchedIds, watchedMovieIds, readBookIds, onToggleMovieWatchlist, onToggleMovieWatched, onToggleTvWatchlist, onToggleTvWatched, onToggleBookWatchlist, onToggleBookRead }) {
   const greeting = user ? `Good evening, ${getFirstName(user.fullName)}! 🍿` : 'Good evening! 🍿'
   const homeWatchlistMovies = watchlistState.movies.slice(0, 5)
+  const homeWatchlistItems = [
+    watchlistState.movies[0] ? { ...watchlistState.movies[0], kind: 'movie' } : null,
+    tvWatchlistShows[0] ? { ...tvWatchlistShows[0], kind: 'tv' } : null,
+    watchlistState.books[0] ? { ...watchlistState.books[0], kind: 'book' } : null,
+    ...watchlistState.movies.slice(1).map((item) => ({ ...item, kind: 'movie' })),
+    ...tvWatchlistShows.slice(1).map((item) => ({ ...item, kind: 'tv' })),
+    ...watchlistState.books.slice(1).map((item) => ({ ...item, kind: 'book' })),
+  ].filter(Boolean).slice(0, 8)
   const trendingMovies = popularMoviesState.movies.slice(0, 5)
+  const unfinishedShow = continueWatchingState.shows[0]
+  const watchlistMovie = homeWatchlistMovies[0]
+  const trendingMovie = popularMoviesState.featuredMovie
+  const tonightPick = unfinishedShow
+    ? {
+        ...unfinishedShow,
+        kind: 'tv',
+        reason: 'Continue where you left off',
+        detail: `${unfinishedShow.latestWatchedEpisodeLabel} · ${unfinishedShow.progress}% complete`,
+        artworkUrl: unfinishedShow.posterUrl || unfinishedShow.backdropUrl,
+      }
+    : watchlistMovie
+      ? {
+          ...watchlistMovie,
+          kind: 'movie',
+          reason: 'From your watchlist',
+          detail: watchlistMovie.meta,
+          artworkUrl: watchlistMovie.posterUrl || watchlistMovie.backdropUrl,
+        }
+      : trendingMovie
+        ? {
+            ...trendingMovie,
+            kind: 'movie',
+            reason: user ? 'A popular pick for tonight' : 'Popular tonight',
+            detail: trendingMovie.genreLabel,
+            streamingService: 'Streaming TBA',
+            artworkUrl: trendingMovie.posterUrl || trendingMovie.backdropUrl,
+          }
+        : null
+
+  function openTonightPick() {
+    if (!tonightPick) {
+      onOpenDiscover()
+      return
+    }
+
+    if (tonightPick.kind === 'tv') {
+      onOpenTvShow(tonightPick)
+      return
+    }
+
+    onOpenMovie(tonightPick)
+  }
 
   return (
     <>
-      <section className="hero-panel">
+      <section className={`hero-panel${tonightPick ? ' has-tonight-pick' : ''}`}>
         <div className="hero-copy">
           <p className="eyebrow">{greeting}</p>
-          <h1>Track every story. Every screen.</h1>
-          <p className="hero-subcopy">Your next favorite is already on your list.</p>
+          <p className="tonight-pick-label"><SparklesIcon /> Tonight&apos;s pick</p>
+          <h1>{tonightPick?.title || 'Find something great for tonight.'}</h1>
+          <p className="hero-subcopy">{tonightPick ? `${tonightPick.reason}. ${tonightPick.detail}.` : 'Tell us your mood and available time for a tailored recommendation.'}</p>
+
+          {tonightPick ? (
+            <div className="tonight-pick-meta" aria-label="Tonight's pick details">
+              <span><ClockIcon />{tonightPick.runtime || 'Runtime TBA'}</span>
+              <span className="tonight-pick-service"><span aria-hidden="true">▶</span>{tonightPick.streamingService || 'Streaming TBA'}</span>
+            </div>
+          ) : null}
 
           <div className="hero-actions">
-            <button type="button" className="primary-button" onClick={onOpenWatchlist}>
-              <PlusIcon />
-              <span>Add to Watchlist</span>
+            <button type="button" className="primary-button" onClick={openTonightPick}>
+              <PlayIcon />
+              <span>{tonightPick ? 'Watch / details' : 'Find tonight’s pick'}</span>
             </button>
-            <button type="button" className="secondary-button" onClick={onOpenDiscover}>
-              <SparklesIcon />
-              <span>Discover</span>
+            <button type="button" className="secondary-button" onClick={onOpenWatchlist}>
+              <BookmarkIcon />
+              <span>Open watchlist</span>
             </button>
           </div>
         </div>
 
-        <div className="hero-art" aria-hidden="true">
-          <div className="skyline-glow" />
-          <div className="skyline skyline-left" />
-          <div className="skyline skyline-right" />
-          <div className="couch" />
-          <div className="person person-left" />
-          <div className="person person-right" />
-        </div>
+        <TonightPickArtwork key={tonightPick ? `${tonightPick.kind}-${tonightPick.id}` : 'empty'} pick={tonightPick} />
 
         <StatsPanel title="Your Stats" items={stats} period={statsPeriod} onPeriodChange={onStatsPeriodChange} />
       </section>
+
+      <NextUpSection
+        isSignedIn={Boolean(user)}
+        continueWatchingState={continueWatchingState}
+        movies={watchlistState.movies}
+        shows={tvWatchlistShows}
+        books={watchlistState.books}
+        onOpenMovie={onOpenMovie}
+        onOpenTvShow={onOpenTvShow}
+        onOpenBook={onOpenBook}
+        onOpenWatchlist={onOpenWatchlist}
+      />
 
       <section className="mobile-stats mobile-only">
         {stats.map(({ label, value, tone, icon: Icon }) => (
@@ -4010,31 +4135,41 @@ function HomeScreen({ user, onOpenMovie, onOpenPopularMovies, onOpenWatchlist, o
         ))}
       </section>
 
-      <ContentSection title="Continue Watching" action="See all" onAction={onOpenContinueWatching}>
+      <ContentSection title="Continue Watching" action="See all" onAction={onOpenContinueWatching} className="home-secondary-section">
         {continueWatchingState.status === 'loading' ? <SectionMessage message="Loading your TV progress..." /> : null}
         {continueWatchingState.status === 'error' ? <SectionMessage message={continueWatchingState.error} tone="error" /> : null}
         {continueWatchingState.status === 'idle' ? <SectionMessage message="Sign in to view shows you are watching." /> : null}
         {continueWatchingState.status === 'success' && continueWatchingState.shows.length === 0 ? <SectionMessage message="Start watching a TV show to see it here." /> : null}
-        {continueWatchingState.shows.length > 0 ? <div className="feature-grid">{continueWatchingState.shows.map((item) => <ProgressCard key={item.id} item={item} onOpenTvShow={onOpenTvShow} />)}</div> : null}
+        {continueWatchingState.shows.length > 0 ? <div className="feature-grid home-secondary-rail">{continueWatchingState.shows.map((item) => <ProgressCard key={item.id} item={item} onOpenTvShow={onOpenTvShow} isInWatchlist={tvWatchlistIds.has(Number(item.id))} isWatched={tvWatchedIds.has(Number(item.id))} onToggleWatchlist={onToggleTvWatchlist} onToggleWatched={onToggleTvWatched} />)}</div> : null}
       </ContentSection>
 
-      <section className="split-row">
-        <ContentSection title="Watchlist" action="See all" onAction={onOpenWatchlist} compact>
+      <section className="home-tertiary-stack" aria-label="More to explore">
+        <ContentSection title="Watchlist" action="See all" onAction={onOpenWatchlist} compact className="home-tertiary-section">
           {watchlistState.status === 'loading' ? <SectionMessage message="Loading your watchlist..." /> : null}
           {watchlistState.status === 'error' ? <SectionMessage message={watchlistState.error} tone="error" /> : null}
-          {watchlistState.status !== 'loading' && watchlistState.status !== 'error' && homeWatchlistMovies.length === 0 ? (
+          {watchlistState.status !== 'loading' && watchlistState.status !== 'error' && homeWatchlistItems.length === 0 ? (
             <SectionMessage message={user ? 'Your watchlist is empty for now.' : 'Sign in to view your watchlist.'} />
           ) : null}
-          {homeWatchlistMovies.length > 0 ? (
-            <div className="compact-grid">
-              {homeWatchlistMovies.map((item) => (
-                <RatingCard key={item.id} item={item} onOpenMovie={onOpenMovie} />
+          {homeWatchlistItems.length > 0 ? (
+            <div className="home-tertiary-rail" aria-label="Watchlist">
+              {homeWatchlistItems.map((item) => (
+                <HomeWatchlistCard
+                  key={`${item.kind}-${item.id}`}
+                  item={item}
+                  onOpenMovie={onOpenMovie}
+                  onOpenTvShow={onOpenTvShow}
+                  onOpenBook={onOpenBook}
+                  isInWatchlist
+                  isWatched={item.kind === 'movie' ? watchedMovieIds.has(Number(item.id)) : item.kind === 'tv' ? tvWatchedIds.has(Number(item.id)) : readBookIds.has(item.id)}
+                  onToggleWatchlist={item.kind === 'movie' ? onToggleMovieWatchlist : item.kind === 'tv' ? onToggleTvWatchlist : onToggleBookWatchlist}
+                  onToggleWatched={item.kind === 'movie' ? onToggleMovieWatched : item.kind === 'tv' ? onToggleTvWatched : onToggleBookRead}
+                />
               ))}
             </div>
           ) : null}
         </ContentSection>
 
-        <ContentSection title="Trending Now" action="See all" onAction={onOpenPopularMovies} compact>
+        <ContentSection title="Trending Now" action="See all" onAction={onOpenPopularMovies} compact className="home-tertiary-section">
           {popularMoviesState.status === 'loading' || popularMoviesState.status === 'idle' ? (
             <SectionMessage message="Loading trending movies from your local database..." />
           ) : null}
@@ -4045,19 +4180,121 @@ function HomeScreen({ user, onOpenMovie, onOpenPopularMovies, onOpenWatchlist, o
             <SectionMessage message="No trending movies are available in the local database yet." />
           ) : null}
           {trendingMovies.length > 0 ? (
-            <div className="compact-grid compact-grid--trending">
+            <div className="home-tertiary-rail" aria-label="Trending movies">
               {trendingMovies.map((item) => (
-                <RatingCard key={item.id} item={item} onOpenMovie={onOpenMovie} />
+                <RatingCard key={item.id} item={item} onOpenMovie={onOpenMovie} isInWatchlist={watchlistState.movies.some((movie) => Number(movie.id) === Number(item.id))} isWatched={watchedMovieIds.has(Number(item.id))} onToggleWatchlist={onToggleMovieWatchlist} onToggleWatched={onToggleMovieWatched} />
               ))}
             </div>
           ) : null}
         </ContentSection>
-      </section>
 
-      <ContentSection title="New Episodes" action="See all" onAction={onOpenLatestEpisodes}>
-        <TvShowsGrid tvState={latestEpisodesState} onSelectShow={onOpenTvShow} watchedIds={tvWatchedIds} watchlistIds={tvWatchlistIds} />
-      </ContentSection>
+        <ContentSection title="New Episodes" action="See all" onAction={onOpenLatestEpisodes} className="home-tertiary-section">
+          <TvShowsGrid tvState={latestEpisodesState} onSelectShow={onOpenTvShow} watchedIds={tvWatchedIds} watchlistIds={tvWatchlistIds} onToggleWatchlist={onToggleTvWatchlist} onToggleWatched={onToggleTvWatched} />
+        </ContentSection>
+      </section>
     </>
+  )
+}
+
+function NextUpSection({ isSignedIn, continueWatchingState, movies, shows, books, onOpenMovie, onOpenTvShow, onOpenBook, onOpenWatchlist }) {
+  const continueShow = continueWatchingState.shows[0]
+  const priorityShow = shows.find((show) => Number(show.id) !== Number(continueShow?.id))
+  const priorityItems = [
+    movies[0] ? {
+      ...movies[0],
+      kind: 'movie',
+      kicker: 'High-priority movie',
+      detail: [movies[0].runtime, movies[0].streamingService].filter((value) => value && !value.includes('TBA')).join(' · ') || movies[0].meta,
+      actionLabel: 'Start movie',
+      artworkUrl: movies[0].posterUrl || movies[0].backdropUrl,
+    } : null,
+    priorityShow ? {
+        ...priorityShow,
+        kind: 'tv',
+        kicker: 'High-priority show',
+        detail: priorityShow.meta,
+        actionLabel: 'Start show',
+        artworkUrl: priorityShow.posterUrl || priorityShow.backdropUrl,
+      } : null,
+    books[0] ? {
+      ...books[0],
+      kind: 'book',
+      kicker: 'High-priority book',
+      detail: `${books[0].meta} · ${books[0].categoriesLabel}`,
+      actionLabel: 'Start reading',
+      artworkUrl: books[0].posterUrl,
+    } : null,
+  ].filter(Boolean).sort((left, right) => new Date(right.watchlistedAt || 0) - new Date(left.watchlistedAt || 0))
+  const items = [
+    continueShow ? {
+      ...continueShow,
+      kind: 'tv',
+      kicker: 'Continue next episode',
+      detail: `${continueShow.nextEpisodeLabel} · ${continueShow.nextEpisodeTitle}`,
+      actionLabel: 'Continue',
+      artworkUrl: continueShow.backdropUrl || continueShow.posterUrl,
+      featured: true,
+    } : null,
+    ...priorityItems,
+  ].filter(Boolean)
+
+  function openItem(item) {
+    if (item.kind === 'movie') onOpenMovie(item)
+    else if (item.kind === 'book') onOpenBook(item)
+    else onOpenTvShow(item)
+  }
+
+  return (
+    <section className="next-up-section" aria-labelledby="next-up-heading">
+      <div className="next-up-heading">
+        <div>
+          <p className="next-up-eyebrow">Ready when you are</p>
+          <h2 id="next-up-heading">Next up</h2>
+          <p>Continue a story or start a priority pick from your watchlist.</p>
+        </div>
+        <button type="button" className="section-link" onClick={onOpenWatchlist}>Open watchlist</button>
+      </div>
+      {!isSignedIn ? <SectionMessage message="Sign in to build your cross-media Next up queue." /> : null}
+      {isSignedIn && continueWatchingState.status === 'loading' ? <SectionMessage message="Building your Next up queue..." /> : null}
+      {isSignedIn && continueWatchingState.status !== 'loading' && items.length === 0 ? <SectionMessage message="Add a movie, show, or book to your watchlist to build this queue." /> : null}
+      {items.length ? <div className="next-up-grid">{items.map((item) => <NextUpCard key={`${item.featured ? 'continue' : item.kind}-${item.id}`} item={item} onOpen={() => openItem(item)} />)}</div> : null}
+    </section>
+  )
+}
+
+function NextUpCard({ item, onOpen }) {
+  const [artworkUnavailable, setArtworkUnavailable] = useState(false)
+  const showArtwork = Boolean(item.artworkUrl) && !artworkUnavailable
+  const KindIcon = item.kind === 'movie' ? ClapperIcon : item.kind === 'book' ? BookmarkIcon : TvIcon
+
+  return (
+    <article className={`next-up-card${item.featured ? ' featured' : ''}`}>
+      <button type="button" className="next-up-card-button" onClick={onOpen} aria-label={`${item.actionLabel}: ${item.title}`}>
+        <div className={`next-up-art${showArtwork ? ' has-image' : ''}`}>
+          {showArtwork ? <img src={item.artworkUrl} alt="" loading="lazy" onError={() => setArtworkUnavailable(true)} /> : <KindIcon />}
+          <span><KindIcon />{item.kicker}</span>
+        </div>
+        <div className="next-up-copy">
+          <h3>{item.title}</h3>
+          <p>{item.detail}</p>
+          <strong>{item.actionLabel}<ChevronRight /></strong>
+        </div>
+      </button>
+    </article>
+  )
+}
+
+function TonightPickArtwork({ pick }) {
+  const [artworkUnavailable, setArtworkUnavailable] = useState(false)
+  const showArtwork = Boolean(pick?.artworkUrl) && !artworkUnavailable
+
+  return (
+    <div className={`hero-art tonight-pick-art${showArtwork ? ' has-image' : ''}`} aria-hidden="true">
+      {showArtwork ? <img src={pick.artworkUrl} alt="" onError={() => setArtworkUnavailable(true)} /> : null}
+      <div className="tonight-pick-art-glow" />
+      <span className="tonight-pick-art-badge">Selected for you</span>
+      {pick ? <strong>{pick.kind === 'tv' ? 'Continue watching' : 'Movie night'}</strong> : <SparklesIcon />}
+    </div>
   )
 }
 
@@ -4453,6 +4690,9 @@ function MoviesScreen({
   onChangeTopRatedPage,
   upcomingMoviesState,
   onChangeUpcomingPage,
+  isSignedIn,
+  hideWatched,
+  onHideWatchedChange,
   movieStats,
   statsPeriod,
   onStatsPeriodChange,
@@ -4469,17 +4709,20 @@ function MoviesScreen({
   onOpenWatchlist,
   onOpenMovie,
 }) {
+  const [catalogSort, setCatalogSort] = useState('featured')
   const isGenreListMode = screenMode === movieScreenModes.genreList && Boolean(selectedGenre?.name)
   const isPopularListMode = screenMode === movieScreenModes.popularList && activeTab === 'Popular'
   const isNowPlayingListMode = screenMode === movieScreenModes.nowPlayingList && activeTab === 'Now Playing'
   const isTopRatedListMode = screenMode === movieScreenModes.topRatedList && activeTab === 'Top Rated'
   const isUpcomingListMode = screenMode === movieScreenModes.upcomingList && activeTab === 'Upcoming'
+  const isCatalogListMode = isGenreListMode || isPopularListMode || isNowPlayingListMode || isTopRatedListMode || isUpcomingListMode
   const watchlistMovieIds = new Set(watchlistMovies.map((movie) => Number(movie.id)))
 
   return (
     <section className="movies-page">
-      <div className="movies-heading">
-        <h1>Movies</h1>
+      <div className="movies-browse-toolbar">
+        <div className="movies-heading">
+          <h1>{isCatalogListMode ? 'Browse movies' : 'Discover movies'}</h1>
         <p>
           {isGenreListMode
             ? `Browse all ${selectedGenre.name} movies in your local database, 30 titles at a time.`
@@ -4493,10 +4736,19 @@ function MoviesScreen({
                 ? 'Browse upcoming releases from the next 30 days, 30 titles at a time.'
             : 'Discover, track, and organize your favorite films.'}
         </p>
-      </div>
+        </div>
 
-      <section className="tab-row movies-tab-row" aria-label="Movie filters">
-        {movieTabs.map((tab) => (
+        <section className="movies-toolbar-controls" aria-label="Movie browsing controls">
+          <button
+            type="button"
+            className={`movies-discover-button${!isCatalogListMode ? ' active' : ''}`}
+            onClick={() => setActiveTab('All Movies')}
+            aria-current={!isCatalogListMode ? 'page' : undefined}
+          >
+            Discover
+          </button>
+          <div className="tab-row movies-tab-row" aria-label="Movie catalog categories">
+        {movieTabs.filter((tab) => tab !== 'All Movies').map((tab) => (
           <button
             key={tab}
             type="button"
@@ -4506,7 +4758,22 @@ function MoviesScreen({
             {tab}
           </button>
         ))}
-      </section>
+          </div>
+          {isCatalogListMode ? <label className="movies-sort-control">Sort
+            <select value={catalogSort} onChange={(event) => setCatalogSort(event.target.value)}>
+              <option value="featured">Featured</option>
+              <option value="rating">Rating</option>
+              <option value="release">Release date</option>
+            </select>
+          </label> : null}
+        {isSignedIn && isCatalogListMode ? (
+          <button type="button" className={`filter-pill movies-hide-watched-filter${hideWatched ? ' active' : ''}`} aria-pressed={hideWatched} onClick={() => onHideWatchedChange(!hideWatched)}>
+            <CheckIcon />
+            <span>Hide watched</span>
+          </button>
+        ) : null}
+        </section>
+      </div>
 
       {isGenreListMode ? (
         <ContentSection title={`${selectedGenre.name} Movies`}>
@@ -4515,6 +4782,9 @@ function MoviesScreen({
             onOpenMovie={onOpenMovie}
             watchedMovieIds={watchedMovieIds}
             watchlistMovieIds={watchlistMovieIds}
+            onToggleWatchlist={onToggleWatchlist}
+            onToggleWatched={onToggleWatched}
+            sort={catalogSort}
           />
           <PaginationControls pagination={genreMoviesState.pagination} onPageChange={onChangeGenrePage} />
         </ContentSection>
@@ -4526,6 +4796,9 @@ function MoviesScreen({
             onOpenMovie={onOpenMovie}
             watchedMovieIds={watchedMovieIds}
             watchlistMovieIds={watchlistMovieIds}
+            onToggleWatchlist={onToggleWatchlist}
+            onToggleWatched={onToggleWatched}
+            sort={catalogSort}
           />
           <PaginationControls pagination={popularMoviesState.pagination} onPageChange={onChangePopularPage} />
         </ContentSection>
@@ -4537,6 +4810,9 @@ function MoviesScreen({
             onOpenMovie={onOpenMovie}
             watchedMovieIds={watchedMovieIds}
             watchlistMovieIds={watchlistMovieIds}
+            onToggleWatchlist={onToggleWatchlist}
+            onToggleWatched={onToggleWatched}
+            sort={catalogSort}
           />
           <PaginationControls pagination={recentMoviesState.pagination} onPageChange={onChangeRecentPage} />
         </ContentSection>
@@ -4548,6 +4824,9 @@ function MoviesScreen({
             onOpenMovie={onOpenMovie}
             watchedMovieIds={watchedMovieIds}
             watchlistMovieIds={watchlistMovieIds}
+            onToggleWatchlist={onToggleWatchlist}
+            onToggleWatched={onToggleWatched}
+            sort={catalogSort}
           />
           <PaginationControls pagination={topRatedMoviesState.pagination} onPageChange={onChangeTopRatedPage} />
         </ContentSection>
@@ -4559,6 +4838,9 @@ function MoviesScreen({
             onOpenMovie={onOpenMovie}
             watchedMovieIds={watchedMovieIds}
             watchlistMovieIds={watchlistMovieIds}
+            onToggleWatchlist={onToggleWatchlist}
+            onToggleWatched={onToggleWatched}
+            sort={catalogSort}
           />
           <PaginationControls pagination={upcomingMoviesState.pagination} onPageChange={onChangeUpcomingPage} />
         </ContentSection>
@@ -4583,6 +4865,8 @@ function MoviesScreen({
                   onOpenMovie={onOpenMovie}
                   watchedMovieIds={watchedMovieIds}
                   watchlistMovieIds={watchlistMovieIds}
+                  onToggleWatchlist={onToggleWatchlist}
+                  onToggleWatched={onToggleWatched}
                 />
               </ContentSection>
 
@@ -4592,6 +4876,8 @@ function MoviesScreen({
                   onOpenMovie={onOpenMovie}
                   watchedMovieIds={watchedMovieIds}
                   watchlistMovieIds={watchlistMovieIds}
+                  onToggleWatchlist={onToggleWatchlist}
+                  onToggleWatched={onToggleWatched}
                 />
               </ContentSection>
 
@@ -4601,6 +4887,8 @@ function MoviesScreen({
                   onOpenMovie={onOpenMovie}
                   watchedMovieIds={watchedMovieIds}
                   watchlistMovieIds={watchlistMovieIds}
+                  onToggleWatchlist={onToggleWatchlist}
+                  onToggleWatched={onToggleWatched}
                 />
               </ContentSection>
 
@@ -4610,6 +4898,8 @@ function MoviesScreen({
                   onOpenMovie={onOpenMovie}
                   watchedMovieIds={watchedMovieIds}
                   watchlistMovieIds={watchlistMovieIds}
+                  onToggleWatchlist={onToggleWatchlist}
+                  onToggleWatched={onToggleWatched}
                 />
               </ContentSection>
             </div>
@@ -5367,9 +5657,29 @@ function TvFeaturedCard({ show, isWatched, isInWatchlist, onToggleWatchlist }) {
   )
 }
 
-function TvShowPosterCard({ show, onSelectShow, isActive = false, isInWatchlist = false, isWatched = false }) {
+function TvShowPosterCard({ show, onSelectShow, isActive = false, isInWatchlist = false, isWatched = false, onToggleWatchlist, onToggleWatched }) {
   const [posterUnavailable, setPosterUnavailable] = useState(false)
   const showPosterImage = Boolean(show.posterUrl) && !posterUnavailable
+  const hasQuickActions = Boolean(onToggleWatchlist || onToggleWatched)
+
+  if (hasQuickActions) {
+    return (
+      <article className={`tv-show-card quick-media-card${isActive ? ' active' : ''}`}>
+        <button type="button" className="quick-media-card-open" onClick={() => onSelectShow(show)} aria-label={`Show details for ${show.title}`} />
+        <div className={`tv-show-poster ${show.theme}${showPosterImage ? ' has-image' : ''}`}>
+          {isWatched ? <span className="movie-card-watched-badge" aria-hidden="true"><CheckCircleIcon /></span> : null}
+          {isInWatchlist ? <span className="movie-card-watchlist-badge" aria-hidden="true"><BookmarkStatusIcon /></span> : null}
+          {showPosterImage ? <img src={show.posterUrl} alt={`${show.title} poster`} className="movie-card-poster-image" loading="lazy" onError={() => setPosterUnavailable(true)} /> : null}
+          <QuickMediaActions title={show.title} isInWatchlist={isInWatchlist} isWatched={isWatched} onOpen={() => onSelectShow(show)} onToggleWatchlist={onToggleWatchlist ? () => onToggleWatchlist(show) : null} onToggleWatched={onToggleWatched ? () => onToggleWatched(show) : null} />
+        </div>
+        <div className="tv-show-card-copy">
+          <h3>{show.title}</h3>
+          <p>{show.year}</p>
+          <div className="rating-row"><span className="star-rating"><StarIcon />{show.rating}</span><span>{show.seasonMeta}</span></div>
+        </div>
+      </article>
+    )
+  }
 
   return (
     <button
@@ -5421,6 +5731,8 @@ function TvShowsGrid({
   watchedIds = new Set(),
   watchlistIds = new Set(),
   activeShowId = null,
+  onToggleWatchlist,
+  onToggleWatched,
 }) {
   if (tvState.status === 'loading' || tvState.status === 'idle') {
     return <SectionMessage message="Loading TV shows from your local database..." />
@@ -5446,6 +5758,8 @@ function TvShowsGrid({
           isWatched={watchedIds.has(Number(show.id))}
           onSelectShow={onSelectShow}
           show={show}
+          onToggleWatchlist={onToggleWatchlist}
+          onToggleWatched={onToggleWatched}
         />
       ))}
     </div>
@@ -5672,6 +5986,7 @@ function MovieDetailPage({
   onOpenMovie,
   onToggleWatched,
   onToggleWatchlist,
+  onToggleReleaseReminder,
   watchedActionState,
   watchedMovieIds,
   watchedMovies,
@@ -5682,6 +5997,7 @@ function MovieDetailPage({
   isSignedIn,
   user,
   movieRatingActionState,
+  movieReleaseReminderActionState,
 }) {
   const [isRatingDialogOpen, setIsRatingDialogOpen] = useState(false)
   const [isWatchServiceDialogOpen, setIsWatchServiceDialogOpen] = useState(false)
@@ -5733,6 +6049,8 @@ function MovieDetailPage({
   const communityRatingLabel = formatCommunityRating(communityRating.average)
   const yourRatingLabel = formatCommunityRating(communityRating.yourScore)
   const isRatingSaving = movieRatingActionState.status === 'loading' && Number(movieRatingActionState.movieId) === Number(movie.id)
+  const isUpcoming = Boolean(movie.releaseDate && movie.releaseDate > getCurrentIsoDate())
+  const isReleaseReminderUpdating = movieReleaseReminderActionState.status === 'loading' && Number(movieReleaseReminderActionState.movieId) === Number(movie.id)
   const backdropStyle = movie.backdropUrl
     ? {
         backgroundImage: `linear-gradient(90deg, rgba(7, 10, 18, 0.96) 0%, rgba(7, 10, 18, 0.74) 30%, rgba(7, 10, 18, 0.34) 62%, rgba(7, 10, 18, 0.68) 100%), url(${movie.backdropUrl})`,
@@ -5845,6 +6163,18 @@ function MovieDetailPage({
                     : 'Mark as Watched'}
               </span>
             </button>
+            {isUpcoming ? (
+              <button
+                type="button"
+                className={`secondary-button movie-detail-secondary ghost${movie.hasReleaseReminder ? ' is-active' : ''}`}
+                onClick={() => onToggleReleaseReminder(movie)}
+                disabled={isReleaseReminderUpdating}
+                aria-label={movie.hasReleaseReminder ? `Cancel release reminder for ${movie.title}` : `Remind me when ${movie.title} releases`}
+              >
+                <BellIcon />
+                <span>{isReleaseReminderUpdating ? 'Updating...' : movie.hasReleaseReminder ? 'Reminder set' : 'Remind me'}</span>
+              </button>
+            ) : null}
             <button
               type="button"
               className="secondary-button movie-detail-secondary ghost"
@@ -5908,6 +6238,13 @@ function MovieDetailPage({
               <div>
                 <span>Release Date</span>
                 <strong>{movie.releaseDateLabel}</strong>
+              </div>
+            </div>
+            <div className="movie-detail-status-item movie-detail-status-item-availability">
+              <span className="movie-detail-status-icon" aria-hidden="true"><PlayIcon /></span>
+              <div>
+                <span>Available on</span>
+                <strong>{movie.availability}</strong>
               </div>
             </div>
           </div>
@@ -6938,9 +7275,9 @@ function MovieWatchlistPanelItem({ item, onOpenMovie }) {
   )
 }
 
-function ContentSection({ title, action, onAction, compact = false, children }) {
+function ContentSection({ title, action, onAction, compact = false, className = '', children }) {
   return (
-    <section className={`content-section${compact ? ' compact-section' : ''}`}>
+    <section className={`content-section${compact ? ' compact-section' : ''}${className ? ` ${className}` : ''}`}>
       <div className="section-header">
         <h2>{title}</h2>
         {action ? (
@@ -6954,14 +7291,26 @@ function ContentSection({ title, action, onAction, compact = false, children }) 
   )
 }
 
-function ProgressCard({ item, onOpenTvShow }) {
+function QuickMediaActions({ title, isInWatchlist = false, isWatched = false, onOpen, onToggleWatchlist, onToggleWatched, watchedLabel = 'watched' }) {
+  return (
+    <div className="quick-media-actions" aria-label={`Quick actions for ${title}`}>
+      <button type="button" className="quick-media-action" onClick={onOpen} aria-label={`Open details for ${title}`} title="Details"><ChevronRight /></button>
+      {onToggleWatchlist ? <button type="button" className={`quick-media-action${isInWatchlist ? ' is-active' : ''}`} onClick={onToggleWatchlist} aria-label={`${isInWatchlist ? 'Remove' : 'Add'} ${title} ${isInWatchlist ? 'from' : 'to'} watchlist`} title={isInWatchlist ? 'Remove from watchlist' : 'Add to watchlist'}><BookmarkIcon /></button> : null}
+      {onToggleWatched ? <button type="button" className={`quick-media-action${isWatched ? ' is-active watched' : ''}`} onClick={onToggleWatched} aria-label={`${isWatched ? 'Mark' : 'Mark'} ${title} as ${isWatched ? `not ${watchedLabel}` : watchedLabel}`} title={isWatched ? `Mark as not ${watchedLabel}` : `Mark as ${watchedLabel}`}><CheckIcon /></button> : null}
+    </div>
+  )
+}
+
+function ProgressCard({ item, onOpenTvShow, isInWatchlist = false, isWatched = false, onToggleWatchlist, onToggleWatched }) {
   const [posterUnavailable, setPosterUnavailable] = useState(false)
   const showPosterImage = Boolean(item.backdropUrl || item.posterUrl) && !posterUnavailable
 
   return (
-    <button type="button" className="media-card progress-card movie-card-button" onClick={() => onOpenTvShow?.(item)} aria-label={`Open ${item.title}`}>
+    <article className="media-card progress-card quick-media-card">
+      <button type="button" className="quick-media-card-open" onClick={() => onOpenTvShow?.(item)} aria-label={`Open ${item.title}`} />
       <div className={`media-poster wide ${showPosterImage ? 'has-image theme-catalog' : 'theme-catalog'}`}>
         {showPosterImage ? <img src={item.backdropUrl || item.posterUrl} alt={`${item.title} artwork`} className="movie-card-poster-image" loading="lazy" onError={() => setPosterUnavailable(true)} /> : null}
+        <QuickMediaActions title={item.title} isInWatchlist={isInWatchlist} isWatched={isWatched} onOpen={() => onOpenTvShow?.(item)} onToggleWatchlist={onToggleWatchlist ? () => onToggleWatchlist(item) : null} onToggleWatched={onToggleWatched ? () => onToggleWatched(item) : null} />
       </div>
       <div className="media-copy">
         <h3>{item.title}</h3>
@@ -6973,17 +7322,18 @@ function ProgressCard({ item, onOpenTvShow }) {
           <span className="progress-value">{item.progress}%</span>
         </div>
       </div>
-    </button>
+    </article>
   )
 }
 
-function RatingCard({ item, onOpenMovie }) {
+function RatingCard({ item, onOpenMovie, isInWatchlist = false, isWatched = false, onToggleWatchlist, onToggleWatched }) {
   const [posterUnavailable, setPosterUnavailable] = useState(false)
   const showPosterImage = Boolean(item.posterUrl) && !posterUnavailable
   const ratingLabel = typeof item.rating === 'number' ? item.rating.toFixed(1) : item.rating
 
   return (
-    <button type="button" className="media-card rating-card movie-card-button" onClick={() => onOpenMovie?.(item)} aria-label={`Open ${item.title}`}>
+    <article className="media-card rating-card quick-media-card">
+      <button type="button" className="quick-media-card-open" onClick={() => onOpenMovie?.(item)} aria-label={`Open ${item.title}`} />
       <div className={`media-poster tall ${showPosterImage ? 'has-image theme-catalog' : item.theme || 'theme-catalog'}`}>
         {showPosterImage ? (
           <img
@@ -6994,6 +7344,7 @@ function RatingCard({ item, onOpenMovie }) {
             onError={() => setPosterUnavailable(true)}
           />
         ) : null}
+        <QuickMediaActions title={item.title} isInWatchlist={isInWatchlist} isWatched={isWatched} onOpen={() => onOpenMovie?.(item)} onToggleWatchlist={onToggleWatchlist ? () => onToggleWatchlist(item) : null} onToggleWatched={onToggleWatched ? () => onToggleWatched(item) : null} />
       </div>
       <div className="media-copy">
         <h3>{item.title}</h3>
@@ -7005,17 +7356,44 @@ function RatingCard({ item, onOpenMovie }) {
           <span>{item.subtitle ?? item.year ?? ''}</span>
         </div>
       </div>
-    </button>
+    </article>
   )
 }
 
-function MovieCard({ movie, onOpenMovie, isInWatchlist = false, isWatched = false }) {
-  const [posterUnavailable, setPosterUnavailable] = useState(false)
-  const showPosterImage = Boolean(movie.posterUrl) && !posterUnavailable
+function HomeWatchlistCard({ item, onOpenMovie, onOpenTvShow, onOpenBook, isInWatchlist, isWatched, onToggleWatchlist, onToggleWatched }) {
+  const [artworkUnavailable, setArtworkUnavailable] = useState(false)
+  const artworkUrl = item.kind === 'book' ? item.coverUrl : item.posterUrl || item.backdropUrl
+  const hasArtwork = Boolean(artworkUrl) && !artworkUnavailable
+  const meta = item.kind === 'book' ? item.authorsLabel : item.kind === 'tv' ? item.seasonMeta || item.meta : item.meta
+  const onOpen = () => {
+    if (item.kind === 'book') onOpenBook?.(item)
+    else if (item.kind === 'tv') onOpenTvShow?.(item)
+    else onOpenMovie?.(item)
+  }
 
   return (
-    <button type="button" className="movie-card movie-card-button" onClick={() => onOpenMovie(movie)} aria-label={`Open ${movie.title}`}>
+    <article className="media-card rating-card quick-media-card home-watchlist-card">
+      <button type="button" className="quick-media-card-open" onClick={onOpen} aria-label={`Open ${item.title}`} />
+      <div className={`media-poster tall ${hasArtwork ? 'has-image theme-catalog' : item.theme || 'theme-catalog'}`}>
+        {hasArtwork ? <img src={artworkUrl} alt={`${item.title} ${item.kind === 'book' ? 'cover' : 'poster'}`} className="movie-card-poster-image" loading="lazy" onError={() => setArtworkUnavailable(true)} /> : null}
+        <span className="home-media-kind" aria-hidden="true">{item.kind === 'book' ? 'Book' : item.kind === 'tv' ? 'TV' : 'Movie'}</span>
+        <QuickMediaActions title={item.title} isInWatchlist={isInWatchlist} isWatched={isWatched} watchedLabel={item.kind === 'book' ? 'read' : 'watched'} onOpen={onOpen} onToggleWatchlist={() => onToggleWatchlist?.(item)} onToggleWatched={() => onToggleWatched?.(item)} />
+      </div>
+      <div className="media-copy"><h3>{item.title}</h3><p>{meta || item.year}</p></div>
+    </article>
+  )
+}
+
+function MovieCard({ movie, onOpenMovie, isInWatchlist = false, isWatched = false, onToggleWatchlist, onToggleWatched, railKind, railIndex }) {
+  const [posterUnavailable, setPosterUnavailable] = useState(false)
+  const showPosterImage = Boolean(movie.posterUrl) && !posterUnavailable
+  const hasQuickActions = Boolean(onToggleWatchlist || onToggleWatched)
+  const cardContent = (
+    <>
       <div className={`movie-card-poster ${showPosterImage ? 'has-image' : movie.theme}`}>
+        {railKind === 'popular' ? <span className="movie-card-rank" aria-label={`Rank ${railIndex + 1}`}>{railIndex + 1}</span> : null}
+        {railKind === 'recent' ? <span className="movie-card-rail-chip">{movie.releaseDate ? formatShortMovieDate(movie.releaseDate) : 'New release'}</span> : null}
+        {railKind === 'upcoming' ? <span className="movie-card-rail-chip upcoming">{formatMovieCountdown(movie.releaseDate)}</span> : null}
         {isWatched ? (
           <span className="movie-card-watched-badge" aria-label={`${movie.title} is watched`}>
             <CheckCircleIcon />
@@ -7035,20 +7413,34 @@ function MovieCard({ movie, onOpenMovie, isInWatchlist = false, isWatched = fals
             onError={() => setPosterUnavailable(true)}
           />
         ) : null}
+        {hasQuickActions ? (
+          <QuickMediaActions
+            title={movie.title}
+            isInWatchlist={isInWatchlist}
+            isWatched={isWatched}
+            onOpen={() => onOpenMovie(movie)}
+            onToggleWatchlist={onToggleWatchlist ? () => onToggleWatchlist(movie) : null}
+            onToggleWatched={onToggleWatched ? () => onToggleWatched(movie) : null}
+          />
+        ) : null}
       </div>
       <div className="movie-card-copy">
         <h3>{movie.title}</h3>
-        <p>{movie.year}</p>
+        <p>{movie.year} · {movie.meta || 'Catalog title'}</p>
         <div className="rating-row">
           <span className="star-rating">
             <StarIcon />
             {movie.rating}
           </span>
-          <span>{movie.meta}</span>
+          {railKind === 'top-rated' ? <strong className="movie-card-score">{movie.rating}<small>/10</small></strong> : <span>{movie.genreLabel || 'Movie'}</span>}
         </div>
       </div>
-    </button>
+    </>
   )
+
+  if (!hasQuickActions) return <button type="button" className="movie-card movie-card-button" onClick={() => onOpenMovie(movie)} aria-label={`Open ${movie.title}`}>{cardContent}</button>
+
+  return <article className="movie-card quick-media-card"><button type="button" className="quick-media-card-open" onClick={() => onOpenMovie(movie)} aria-label={`Open ${movie.title}`} />{cardContent}</article>
 }
 
 function FeaturedMovieCard({
@@ -7141,24 +7533,30 @@ function FeaturedMovieCard({
         style={artStyle}
         aria-hidden="true"
       >
-        <span className="feature-arrow">
-          <ChevronRight />
-        </span>
-        <div className="feature-dots">
-          <span className="active" />
-          <span />
-          <span />
-          <span />
-          <span />
-        </div>
       </div>
     </button>
   )
 }
 
-function PopularMoviesGrid({ popularMoviesState, layout = 'slider', onOpenMovie, watchedMovieIds = new Set(), watchlistMovieIds = new Set() }) {
+function MoviePosterSkeletons({ count = 5 }) {
+  return <div className="movie-card-grid popular-movies-slider movie-skeleton-grid" aria-label="Loading movies">{Array.from({ length: count }, (_, index) => <div className="movie-card movie-skeleton-card" key={index}><div className="movie-card-poster" /><div className="movie-card-copy"><i /><i /></div></div>)}</div>
+}
+
+function sortMovieCards(movies, sort) {
+  if (sort === 'rating') return [...movies].sort((left, right) => Number(right.rating) - Number(left.rating))
+  if (sort === 'release') return [...movies].sort((left, right) => new Date(right.releaseDate || 0) - new Date(left.releaseDate || 0))
+  return movies
+}
+
+function HorizontalMovieRail({ movies, ariaLabel, kind, onOpenMovie, watchedMovieIds, watchlistMovieIds, onToggleWatchlist, onToggleWatched }) {
+  const railRef = useRef(null)
+  const scrollRail = (direction) => railRef.current?.scrollBy({ left: direction * Math.max(railRef.current.clientWidth * 0.8, 260), behavior: 'smooth' })
+  return <div className="movie-rail-wrap"><div className="movie-rail-navigation" aria-label={`${ariaLabel} navigation`}><button type="button" onClick={() => scrollRail(-1)} aria-label={`Previous ${ariaLabel}`}><ChevronLeftIcon /></button><button type="button" onClick={() => scrollRail(1)} aria-label={`Next ${ariaLabel}`}><ChevronRight /></button></div><div ref={railRef} className="movie-card-grid popular-movies-slider" aria-label={ariaLabel}>{movies.map((movie, index) => <MovieCard key={movie.id} movie={movie} railKind={kind} railIndex={index} onOpenMovie={onOpenMovie} isWatched={watchedMovieIds.has(Number(movie.id))} isInWatchlist={watchlistMovieIds.has(Number(movie.id))} onToggleWatchlist={onToggleWatchlist} onToggleWatched={onToggleWatched} />)}</div></div>
+}
+
+function PopularMoviesGrid({ popularMoviesState, layout = 'slider', onOpenMovie, watchedMovieIds = new Set(), watchlistMovieIds = new Set(), onToggleWatchlist, onToggleWatched, sort = 'featured' }) {
   if (popularMoviesState.status === 'loading' || popularMoviesState.status === 'idle') {
-    return <SectionMessage message="Loading popular movies from your local database..." />
+    return <MoviePosterSkeletons />
   }
 
   if (popularMoviesState.status === 'error') {
@@ -7169,29 +7567,35 @@ function PopularMoviesGrid({ popularMoviesState, layout = 'slider', onOpenMovie,
     return <SectionMessage message="No movies are available in the local database yet." />
   }
 
-  const movies = layout === 'catalog' ? popularMoviesState.movies : popularMoviesState.movies.slice(0, 10)
+  const movies = sortMovieCards(layout === 'catalog' ? popularMoviesState.movies : popularMoviesState.movies.slice(0, 10), sort)
+
+  if (layout !== 'catalog') return <HorizontalMovieRail movies={movies} ariaLabel="Popular movies" kind="popular" onOpenMovie={onOpenMovie} watchedMovieIds={watchedMovieIds} watchlistMovieIds={watchlistMovieIds} onToggleWatchlist={onToggleWatchlist} onToggleWatched={onToggleWatched} />
 
   return (
     <div
       className={`movie-card-grid${layout === 'catalog' ? ' popular-movies-catalog' : ' popular-movies-slider'}`}
       aria-label={layout === 'catalog' ? 'Popular movies list' : 'Popular movies slider'}
     >
-      {movies.map((movie) => (
+      {movies.map((movie, index) => (
         <MovieCard
           key={movie.id}
           movie={movie}
           onOpenMovie={onOpenMovie}
           isWatched={watchedMovieIds.has(Number(movie.id))}
           isInWatchlist={watchlistMovieIds.has(Number(movie.id))}
+          onToggleWatchlist={onToggleWatchlist}
+          onToggleWatched={onToggleWatched}
+          railKind="popular"
+          railIndex={index}
         />
       ))}
     </div>
   )
 }
 
-function RecentlyReleasedSlider({ recentMoviesState, layout = 'slider', onOpenMovie, watchedMovieIds = new Set(), watchlistMovieIds = new Set() }) {
+function RecentlyReleasedSlider({ recentMoviesState, layout = 'slider', onOpenMovie, watchedMovieIds = new Set(), watchlistMovieIds = new Set(), onToggleWatchlist, onToggleWatched, sort = 'featured' }) {
   if (recentMoviesState.status === 'loading' || recentMoviesState.status === 'idle') {
-    return <SectionMessage message="Loading recently released movies from your local database..." />
+    return <MoviePosterSkeletons />
   }
 
   if (recentMoviesState.status === 'error') {
@@ -7202,29 +7606,34 @@ function RecentlyReleasedSlider({ recentMoviesState, layout = 'slider', onOpenMo
     return <SectionMessage message="No recently released movies are available in the local database yet." />
   }
 
-  const movies = layout === 'catalog' ? recentMoviesState.movies : recentMoviesState.movies.slice(0, 10)
+  const movies = sortMovieCards(layout === 'catalog' ? recentMoviesState.movies : recentMoviesState.movies.slice(0, 10), sort)
+  if (layout !== 'catalog') return <HorizontalMovieRail movies={movies} ariaLabel="Recently released movies" kind="recent" onOpenMovie={onOpenMovie} watchedMovieIds={watchedMovieIds} watchlistMovieIds={watchlistMovieIds} onToggleWatchlist={onToggleWatchlist} onToggleWatched={onToggleWatched} />
 
   return (
     <div
       className={`movie-card-grid${layout === 'catalog' ? ' popular-movies-catalog' : ' popular-movies-slider'}`}
       aria-label={layout === 'catalog' ? 'Now playing movies list' : 'Recently released movies slider'}
     >
-      {movies.map((movie) => (
+      {movies.map((movie, index) => (
         <MovieCard
           key={movie.id}
           movie={movie}
           onOpenMovie={onOpenMovie}
           isWatched={watchedMovieIds.has(Number(movie.id))}
           isInWatchlist={watchlistMovieIds.has(Number(movie.id))}
+          onToggleWatchlist={onToggleWatchlist}
+          onToggleWatched={onToggleWatched}
+          railKind="recent"
+          railIndex={index}
         />
       ))}
     </div>
   )
 }
 
-function UpcomingMoviesGrid({ upcomingMoviesState, layout = 'slider', onOpenMovie, watchedMovieIds = new Set(), watchlistMovieIds = new Set() }) {
+function UpcomingMoviesGrid({ upcomingMoviesState, layout = 'slider', onOpenMovie, watchedMovieIds = new Set(), watchlistMovieIds = new Set(), onToggleWatchlist, onToggleWatched, sort = 'featured' }) {
   if (upcomingMoviesState.status === 'loading' || upcomingMoviesState.status === 'idle') {
-    return <SectionMessage message="Loading upcoming movies from your local database..." />
+    return <MoviePosterSkeletons />
   }
 
   if (upcomingMoviesState.status === 'error') {
@@ -7235,29 +7644,34 @@ function UpcomingMoviesGrid({ upcomingMoviesState, layout = 'slider', onOpenMovi
     return <SectionMessage message="No upcoming movies are available in the local database yet." />
   }
 
-  const movies = layout === 'catalog' ? upcomingMoviesState.movies : upcomingMoviesState.movies.slice(0, 10)
+  const movies = sortMovieCards(layout === 'catalog' ? upcomingMoviesState.movies : upcomingMoviesState.movies.slice(0, 10), sort)
+  if (layout !== 'catalog') return <HorizontalMovieRail movies={movies} ariaLabel="Upcoming movies" kind="upcoming" onOpenMovie={onOpenMovie} watchedMovieIds={watchedMovieIds} watchlistMovieIds={watchlistMovieIds} onToggleWatchlist={onToggleWatchlist} onToggleWatched={onToggleWatched} />
 
   return (
     <div
       className={`movie-card-grid${layout === 'catalog' ? ' popular-movies-catalog' : ' popular-movies-slider'}`}
       aria-label={layout === 'catalog' ? 'Upcoming movies list' : 'Upcoming movies slider'}
     >
-      {movies.map((movie) => (
+      {movies.map((movie, index) => (
         <MovieCard
           key={movie.id}
           movie={movie}
           onOpenMovie={onOpenMovie}
           isWatched={watchedMovieIds.has(Number(movie.id))}
           isInWatchlist={watchlistMovieIds.has(Number(movie.id))}
+          onToggleWatchlist={onToggleWatchlist}
+          onToggleWatched={onToggleWatched}
+          railKind="upcoming"
+          railIndex={index}
         />
       ))}
     </div>
   )
 }
 
-function TopRatedMoviesGrid({ topRatedMoviesState, layout = 'slider', onOpenMovie, watchedMovieIds = new Set(), watchlistMovieIds = new Set() }) {
+function TopRatedMoviesGrid({ topRatedMoviesState, layout = 'slider', onOpenMovie, watchedMovieIds = new Set(), watchlistMovieIds = new Set(), onToggleWatchlist, onToggleWatched, sort = 'featured' }) {
   if (topRatedMoviesState.status === 'loading' || topRatedMoviesState.status === 'idle') {
-    return <SectionMessage message="Loading top rated movies from your local database..." />
+    return <MoviePosterSkeletons />
   }
 
   if (topRatedMoviesState.status === 'error') {
@@ -7268,20 +7682,25 @@ function TopRatedMoviesGrid({ topRatedMoviesState, layout = 'slider', onOpenMovi
     return <SectionMessage message="No top rated movies are available in the local database yet." />
   }
 
-  const movies = layout === 'catalog' ? topRatedMoviesState.movies : topRatedMoviesState.movies.slice(0, 10)
+  const movies = sortMovieCards(layout === 'catalog' ? topRatedMoviesState.movies : topRatedMoviesState.movies.slice(0, 10), sort)
+  if (layout !== 'catalog') return <HorizontalMovieRail movies={movies} ariaLabel="Top rated movies" kind="top-rated" onOpenMovie={onOpenMovie} watchedMovieIds={watchedMovieIds} watchlistMovieIds={watchlistMovieIds} onToggleWatchlist={onToggleWatchlist} onToggleWatched={onToggleWatched} />
 
   return (
     <div
       className={`movie-card-grid${layout === 'catalog' ? ' popular-movies-catalog' : ' popular-movies-slider'}`}
       aria-label={layout === 'catalog' ? 'Top rated movies list' : 'Top rated movies slider'}
     >
-      {movies.map((movie) => (
+      {movies.map((movie, index) => (
         <MovieCard
           key={movie.id}
           movie={movie}
           onOpenMovie={onOpenMovie}
           isWatched={watchedMovieIds.has(Number(movie.id))}
           isInWatchlist={watchlistMovieIds.has(Number(movie.id))}
+          onToggleWatchlist={onToggleWatchlist}
+          onToggleWatched={onToggleWatched}
+          railKind="top-rated"
+          railIndex={index}
         />
       ))}
     </div>
@@ -7362,9 +7781,9 @@ function PaginationControls({ pagination, onPageChange }) {
   )
 }
 
-function GenreMoviesGrid({ genreMoviesState, onOpenMovie, watchedMovieIds = new Set(), watchlistMovieIds = new Set() }) {
+function GenreMoviesGrid({ genreMoviesState, onOpenMovie, watchedMovieIds = new Set(), watchlistMovieIds = new Set(), onToggleWatchlist, onToggleWatched }) {
   if (genreMoviesState.status === 'loading' || genreMoviesState.status === 'idle') {
-    return <SectionMessage message="Loading genre movies..." />
+    return <MoviePosterSkeletons />
   }
 
   if (genreMoviesState.status === 'error') {
@@ -7384,6 +7803,8 @@ function GenreMoviesGrid({ genreMoviesState, onOpenMovie, watchedMovieIds = new 
           onOpenMovie={onOpenMovie}
           isWatched={watchedMovieIds.has(Number(movie.id))}
           isInWatchlist={watchlistMovieIds.has(Number(movie.id))}
+          onToggleWatchlist={onToggleWatchlist}
+          onToggleWatched={onToggleWatched}
         />
       ))}
     </div>
@@ -7652,6 +8073,10 @@ function mapWatchlistMoviePayload(movie, index = 0) {
     rating: typeof movie.rating === 'number' ? movie.rating : 0,
     type: movie.type || 'Movies',
     posterUrl: movie.posterUrl || null,
+    backdropUrl: movie.backdropUrl || null,
+    runtime: movie.runtime || 'Runtime TBA',
+    streamingService: movie.streamingService || 'Streaming TBA',
+    watchlistedAt: movie.watchlistedAt || null,
     accent: watchlistAccentOptions[index % watchlistAccentOptions.length],
     bookmarked: true,
   }
@@ -7666,6 +8091,7 @@ function mapWatchlistBookPayload(book, index = 0) {
     categoriesLabel: book.categoriesLabel || 'Category TBA',
     type: 'Books',
     posterUrl: book.posterUrl || null,
+    watchlistedAt: book.watchlistedAt || null,
     accent: watchlistAccentOptions[index % watchlistAccentOptions.length],
     bookmarked: true,
   }
@@ -7731,6 +8157,8 @@ function mapTvWatchlistShowPayload(show, index = 0) {
     rating: typeof show.rating === 'number' ? show.rating : 0,
     type: 'TV Shows',
     posterUrl: show.posterUrl || null,
+    backdropUrl: show.backdropUrl || null,
+    watchlistedAt: show.watchlistedAt || null,
     accent: watchlistAccentOptions[index % watchlistAccentOptions.length],
     bookmarked: true,
   }
@@ -7746,6 +8174,10 @@ function mapContinueWatchingTvShowPayload(show) {
     airedEpisodeCount: Number(show.airedEpisodeCount) || 0,
     progress: Number(show.progress) || 0,
     latestWatchedEpisodeLabel: show.latestWatchedEpisodeLabel || 'Latest episode',
+    nextEpisodeLabel: show.nextEpisodeLabel || 'Next episode',
+    nextEpisodeTitle: show.nextEpisodeTitle || 'Next episode',
+    runtime: show.runtime || 'Runtime TBA',
+    streamingService: show.streamingService || 'Streaming TBA',
   }
 }
 
@@ -8174,6 +8606,8 @@ function mapMovieDetailPayload(movie) {
     originalLanguage: movie.originalLanguage || 'Unknown',
     releaseDate: movie.releaseDate || null,
     releaseDateLabel: formatLongDate(movie.releaseDate),
+    availability: movie.availability || 'Availability TBA',
+    hasReleaseReminder: Boolean(movie.hasReleaseReminder),
     posterUrl: movie.posterUrl || null,
     backdropUrl: movie.backdropUrl || null,
     director: movie.director || null,
@@ -8447,6 +8881,22 @@ function formatMovieYear(releaseDate) {
   }
 
   return String(releaseDate).slice(0, 4)
+}
+
+function formatShortMovieDate(releaseDate) {
+  if (!releaseDate) return 'New release'
+  const date = new Date(releaseDate)
+  if (Number.isNaN(date.getTime())) return 'New release'
+  return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(date)
+}
+
+function formatMovieCountdown(releaseDate) {
+  if (!releaseDate) return 'Coming soon'
+  const date = new Date(releaseDate)
+  if (Number.isNaN(date.getTime())) return 'Coming soon'
+  const days = Math.ceil((date.getTime() - Date.now()) / 86400000)
+  if (days <= 0) return 'Out now'
+  return days === 1 ? '1 day' : `${days} days`
 }
 
 function formatMovieRating(voteAverage) {

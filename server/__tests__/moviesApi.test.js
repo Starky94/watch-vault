@@ -1,11 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createApp } from '../app.js'
-import { buildStatsInsights, countMovies, countStoredDataBytes, ensureMoviesTable, getBookStatsForUser, getMostWatchedActorsForUser, getMovieStatsForUser, getStatsInsightsForUser, getStreamingPlatformsForUser, getTopRatedThisMonthForUser, listCalendarEventsForUser, listContinueWatchingTvShowsForUser, listGenres, listLatestEpisodeTvShows, listMovies, listRecentlyReleasedMovies, listSimilarMovies, listTopRatedMovies, listTvShows, listTvWatchlistShowsForUser, listUpcomingMovies, listWatchedMoviesByGenreForUser, listWatchedTvEpisodesForUser, searchActors, searchBooks, searchMovies, searchTvShows, updateTvEpisodeWatchStateForUser, upsertTvEpisodeRatingForUser } from '../database.js'
+import { createApp, readMovieAvailability } from '../app.js'
+import { addMovieReleaseReminderForUser, buildStatsInsights, countMovies, countStoredDataBytes, ensureMoviesTable, getBookStatsForUser, getMostWatchedActorsForUser, getMovieStatsForUser, getStatsInsightsForUser, getStreamingPlatformsForUser, getTopRatedThisMonthForUser, hasMovieReleaseReminderForUser, listCalendarEventsForUser, listContinueWatchingTvShowsForUser, listGenres, listLatestEpisodeTvShows, listMovies, listRecentlyReleasedMovies, listSimilarMovies, listTopRatedMovies, listTvShows, listTvWatchlistShowsForUser, listUpcomingMovies, listWatchedMoviesByGenreForUser, listWatchedTvEpisodesForUser, removeMovieReleaseReminderForUser, searchActors, searchBooks, searchMovies, searchTvShows, updateTvEpisodeWatchStateForUser, upsertTvEpisodeRatingForUser } from '../database.js'
 
 function isSchemaSetupQuery(sql) {
   return (
     sql.includes('CREATE TABLE IF NOT EXISTS movies') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS movie_release_reminders') ||
     sql.includes('CREATE TABLE IF NOT EXISTS movie_keyword') ||
     sql.includes('CREATE TABLE IF NOT EXISTS books') ||
     sql.includes('CREATE TABLE IF NOT EXISTS authors') ||
@@ -72,6 +73,13 @@ async function closeServer(server) {
   })
 }
 
+test('movie availability prefers regional streaming, then rental and purchase providers', () => {
+  assert.equal(readMovieAvailability({ 'watch/providers': { results: { RO: { flatrate: [{ provider_name: 'Netflix' }, { provider_name: 'Max' }], rent: [{ provider_name: 'Apple TV' }] } } } }), 'Netflix · Max')
+  assert.equal(readMovieAvailability({ 'watch/providers': { results: { RO: { rent: [{ provider_name: 'Apple TV' }] } } } }), 'Rent on Apple TV')
+  assert.equal(readMovieAvailability({ 'watch/providers': { results: { US: { buy: [{ provider_name: 'Prime Video' }] } } } }), 'Buy on Prime Video')
+  assert.equal(readMovieAvailability({ 'watch/providers': { results: {} } }), 'Availability TBA')
+})
+
 test('listMovies requests the top 30 titles ordered by popularity descending', async () => {
   let executedSql = ''
   let executedParams = []
@@ -109,6 +117,30 @@ test('listMovies applies a case-insensitive genre filter when provided', async (
   assert.match(executedSql, /WHERE EXISTS/i)
   assert.match(executedSql, /LOWER\(selected_genres\.name\) = LOWER\(\$3\)/i)
   assert.deepEqual(executedParams, [30, 0, 'action'])
+})
+
+test('movie catalog queries exclude the signed-in user’s watched movies before pagination', async () => {
+  const queries = []
+  const pool = {
+    async query(sql, params) {
+      queries.push({ sql, params })
+      return { rows: [] }
+    },
+  }
+
+  await Promise.all([
+    listMovies(pool, { excludeWatchedForUsername: 'florind' }),
+    listRecentlyReleasedMovies(pool, { excludeWatchedForUsername: 'florind' }),
+    listTopRatedMovies(pool, { excludeWatchedForUsername: 'florind' }),
+    listUpcomingMovies(pool, { excludeWatchedForUsername: 'florind' }),
+  ])
+
+  assert.equal(queries.length, 4)
+  for (const { sql, params } of queries) {
+    assert.match(sql, /NOT EXISTS\s*\(\s*SELECT 1\s+FROM watched_movies\s+JOIN users ON users\.id = watched_movies\.user_id\s+WHERE watched_movies\.movie_id = movies\.id\s+AND users\.username = \$3\s*\)/i)
+    assert.match(sql, /LIMIT \$1\s+OFFSET \$2/i)
+    assert.deepEqual(params, [30, 0, 'florind'])
+  }
 })
 
 test('listWatchedMoviesByGenreForUser scopes, filters, orders, and paginates watched movies', async () => {
@@ -221,6 +253,7 @@ test('ensureMoviesTable creates normalized cast tables and watchlist tables', as
   assert.equal(executedSql.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS users')), true)
   assert.equal(executedSql.some((sql) => sql.includes('INSERT INTO users')), true)
   assert.equal(executedSql.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS watchlist_items')), true)
+  assert.equal(executedSql.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS movie_release_reminders')), true)
   assert.equal(executedSql.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS watched_movies')), true)
   assert.equal(executedSql.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS movie_ratings')), true)
   assert.equal(executedSql.some((sql) => sql.includes('UNIQUE (user_id, movie_id)')), true)
@@ -228,6 +261,75 @@ test('ensureMoviesTable creates normalized cast tables and watchlist tables', as
   assert.equal(executedSql.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS tv_watchlist_items')), true)
   assert.equal(executedSql.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS watched_tv_shows')), true)
   assert.equal(executedSql.some((sql) => sql.includes('UPDATE movies')), true)
+})
+
+test('movie release reminders are scoped to the user and only insert for an upcoming movie', async () => {
+  const queries = []
+  const pool = {
+    async query(sql, params) {
+      queries.push({ sql, params })
+      if (sql.includes('INSERT INTO movie_release_reminders')) return { rowCount: 1, rows: [{ id: 1 }] }
+      if (sql.includes('SELECT EXISTS')) return { rows: [{ has_reminder: true }] }
+      if (sql.includes('DELETE FROM movie_release_reminders')) return { rowCount: 1, rows: [] }
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+
+  assert.deepEqual(await addMovieReleaseReminderForUser(pool, { username: 'florind', movieId: 42 }), { status: 'added' })
+  assert.equal(await hasMovieReleaseReminderForUser(pool, { username: 'florind', movieId: 42 }), true)
+  assert.equal(await removeMovieReleaseReminderForUser(pool, { username: 'florind', movieId: 42 }), 1)
+
+  const combined = queries.map(({ sql }) => sql).join('\n')
+  assert.match(combined, /movies\.release_date > \(NOW\(\) AT TIME ZONE COALESCE\(users\.alert_timezone, 'UTC'\)\)::DATE/)
+  assert.match(combined, /ON CONFLICT \(user_id, movie_id\) DO NOTHING/)
+  assert.match(combined, /WHERE users\.username = \$1 AND movies\.tmdb_id = \$2/)
+})
+
+test('movie release reminder endpoints require authentication and toggle the dedicated reminder', async () => {
+  let reminderEnabled = false
+  const pool = {
+    async query(sql, params) {
+      if (isSchemaSetupQuery(sql)) return { rowCount: null, rows: [] }
+      if (sql.includes('SELECT\n        id,\n        username,\n        full_name\n      FROM users')) {
+        return { rows: params[0] === 'florind' ? [{ id: 7, username: 'florind', full_name: 'Florin' }] : [] }
+      }
+      if (sql.includes('INSERT INTO movie_release_reminders')) {
+        if (reminderEnabled) return { rowCount: 0, rows: [] }
+        reminderEnabled = true
+        return { rowCount: 1, rows: [{ id: 1 }] }
+      }
+      if (sql.includes('SELECT EXISTS')) return { rows: [{ has_reminder: reminderEnabled }] }
+      if (sql.includes('DELETE FROM movie_release_reminders')) {
+        reminderEnabled = false
+        return { rowCount: 1, rows: [] }
+      }
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+  const app = await createApp(pool)
+  const server = await new Promise((resolve) => {
+    const nextServer = app.listen(0, '127.0.0.1', () => resolve(nextServer))
+  })
+
+  try {
+    const address = server.address()
+    const baseUrl = `http://127.0.0.1:${address.port}/api/movies/42/release-reminder`
+    const unauthenticated = await fetch(baseUrl, { method: 'POST' })
+    assert.equal(unauthenticated.status, 401)
+
+    const added = await fetch(baseUrl, { method: 'POST', headers: { 'x-watchvault-username': 'florind' } })
+    assert.equal(added.status, 201)
+    assert.deepEqual(await added.json(), { hasReleaseReminder: true })
+
+    const duplicate = await fetch(baseUrl, { method: 'POST', headers: { 'x-watchvault-username': 'florind' } })
+    assert.equal(duplicate.status, 201)
+
+    const removed = await fetch(baseUrl, { method: 'DELETE', headers: { 'x-watchvault-username': 'florind' } })
+    assert.equal(removed.status, 200)
+    assert.deepEqual(await removed.json(), { hasReleaseReminder: false })
+  } finally {
+    await closeServer(server)
+  }
 })
 
 test('POST /api/auth/login authenticates seeded users from the database', async () => {
@@ -690,7 +792,11 @@ test('watchlist endpoints stay isolated per user and duplicate adds are idempote
     genre_names: ['Adventure', 'Sci-Fi'],
     runtime_minutes: 166,
     certification: 'PG-13',
-    detail_payload: {},
+    detail_payload: {
+      'watch/providers': {
+        results: { RO: { flatrate: [{ provider_name: 'Max' }] } },
+      },
+    },
     raw_payload: {},
     import_rank: 1,
     imported_at: '2026-07-02T00:00:00.000Z',
@@ -860,6 +966,8 @@ test('watchlist endpoints stay isolated per user and duplicate adds are idempote
       type: 'Movies',
       posterUrl: 'https://image.tmdb.org/t/p/w500/poster.jpg',
       backdropUrl: 'https://image.tmdb.org/t/p/w1280/backdrop.jpg',
+      runtime: '2h 46m',
+      streamingService: 'Max',
       watchlistedAt: '2026-07-03T10:00:00.000Z',
     })
     assert.equal(alexWatchlistResponse.status, 200)
@@ -1862,6 +1970,26 @@ test('GET /api/movies returns the popular movies payload from the local DB', asy
   }
 })
 
+test('movie catalog hideWatched requests require authentication', async () => {
+  const pool = {
+    async query(sql) {
+      if (isSchemaSetupQuery(sql)) return { rowCount: null }
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+  const app = await createApp(pool)
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const paths = ['/api/movies', '/api/movies/recently-released', '/api/movies/top-rated', '/api/movies/upcoming']
+    const responses = await Promise.all(paths.map((path) => fetch(`http://127.0.0.1:${address.port}${path}?hideWatched=true`)))
+    assert.deepEqual(responses.map((response) => response.status), [401, 401, 401, 401])
+  } finally {
+    await closeServer(server)
+  }
+})
+
 test('GET /api/genres returns database-backed genres ordered alphabetically', async () => {
   const pool = {
     async query(sql) {
@@ -2195,6 +2323,8 @@ test('GET /api/movies/:movieId returns a mapped movie detail payload from the lo
       audience: '2.1k votes',
       originalLanguage: 'en',
       releaseDate: '2024-03-01',
+      availability: 'Availability TBA',
+      hasReleaseReminder: false,
       posterUrl: 'https://image.tmdb.org/t/p/w500/poster.jpg',
       backdropUrl: 'https://image.tmdb.org/t/p/w1280/backdrop.jpg',
       director: {
@@ -4092,6 +4222,8 @@ test('listContinueWatchingTvShowsForUser selects paginated, most recently watche
   assert.match(executedSql, /HAVING COUNT\(watched_tv_episodes\.id\) > 0/i)
   assert.match(executedSql, /COUNT\(watched_tv_episodes\.id\) < COUNT\(\*\)/i)
   assert.match(executedSql, /MAX\(watched_tv_episodes\.watched_at\) AS last_watched_at/i)
+  assert.match(executedSql, /AS next_episode ON TRUE/i)
+  assert.match(executedSql, /watched_tv_episodes\.id IS NULL/i)
   assert.match(executedSql, /ORDER BY episode_progress\.last_watched_at DESC, tv_shows\.tmdb_id ASC/i)
   assert.match(executedSql, /LIMIT \$2/i)
   assert.match(executedSql, /OFFSET \$3/i)
@@ -4223,6 +4355,12 @@ test('GET /api/tv/library returns mapped in-progress TV shows for Continue Watch
     name: 'In Progress',
     poster_path: '/progress.jpg',
     backdrop_path: '/progress-backdrop.jpg',
+    detail_payload: { episode_run_time: [], networks: [{ name: 'Max' }] },
+    remaining_episode_runtime_minutes: 52,
+    next_season_number: 2,
+    next_episode_number: 5,
+    next_episode_name: 'The Next Chapter',
+    next_episode_runtime_minutes: 54,
     watched_episode_count: 3,
     aired_episode_count: 8,
     latest_watched_season_number: 2,
@@ -4263,6 +4401,10 @@ test('GET /api/tv/library returns mapped in-progress TV shows for Continue Watch
       airedEpisodeCount: 8,
       progress: 38,
       latestWatchedEpisodeLabel: 'S2 E4',
+      nextEpisodeLabel: 'S2 E5',
+      nextEpisodeTitle: 'The Next Chapter',
+      runtime: '54m episodes',
+      streamingService: 'Max',
       lastWatchedAt: '2026-07-12T10:00:00.000Z',
     }])
   } finally {
@@ -4276,6 +4418,12 @@ test('GET /api/tv/continue-watching returns paginated mapped in-progress shows',
     name: 'In Progress',
     poster_path: '/progress.jpg',
     backdrop_path: '/progress-backdrop.jpg',
+    detail_payload: { episode_run_time: [], networks: [{ name: 'Max' }] },
+    remaining_episode_runtime_minutes: 52,
+    next_season_number: 2,
+    next_episode_number: 5,
+    next_episode_name: 'The Next Chapter',
+    next_episode_runtime_minutes: 54,
     watched_episode_count: 3,
     aired_episode_count: 8,
     latest_watched_season_number: 2,
@@ -4314,6 +4462,10 @@ test('GET /api/tv/continue-watching returns paginated mapped in-progress shows',
       airedEpisodeCount: 8,
       progress: 38,
       latestWatchedEpisodeLabel: 'S2 E4',
+      nextEpisodeLabel: 'S2 E5',
+      nextEpisodeTitle: 'The Next Chapter',
+      runtime: '54m episodes',
+      streamingService: 'Max',
       lastWatchedAt: '2026-07-12T10:00:00.000Z',
     }])
   } finally {

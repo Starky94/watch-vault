@@ -229,7 +229,7 @@ export async function fetchMovieDetails(fetchImpl, options) {
     baseUrl,
     path: `movie/${movieId}`,
     searchParams: {
-      append_to_response: 'release_dates',
+      append_to_response: 'release_dates,watch/providers',
     },
   })
 }

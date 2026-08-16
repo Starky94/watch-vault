@@ -31,7 +31,7 @@ export async function dispatchReleaseAlerts(pool) {
   await ensureMoviesTable(pool)
   await ensureTvDetailTables(pool)
 
-  const [movieResult, episodeResult] = await Promise.all([
+  const [movieResult, reminderResult, episodeResult] = await Promise.all([
     pool.query(`
       INSERT INTO user_alerts (user_id, kind, source_key, movie_id, title, message)
       SELECT
@@ -44,6 +44,24 @@ export async function dispatchReleaseAlerts(pool) {
       FROM watchlist_items
       JOIN users ON users.id = watchlist_items.user_id
       JOIN movies ON movies.id = watchlist_items.movie_id
+      CROSS JOIN alert_feature_state
+      WHERE movies.release_date = (NOW() AT TIME ZONE COALESCE(users.alert_timezone, 'UTC'))::DATE
+        AND (alert_feature_state.activated_at AT TIME ZONE COALESCE(users.alert_timezone, 'UTC'))::DATE
+          < (NOW() AT TIME ZONE COALESCE(users.alert_timezone, 'UTC'))::DATE
+      ON CONFLICT (source_key) DO NOTHING
+    `),
+    pool.query(`
+      INSERT INTO user_alerts (user_id, kind, source_key, movie_id, title, message)
+      SELECT
+        users.id,
+        'movie_release_reminder',
+        CONCAT('movie-release-reminder:', users.id, ':', movies.id),
+        movies.id,
+        movies.title,
+        'Your movie reminder: releases today.'
+      FROM movie_release_reminders
+      JOIN users ON users.id = movie_release_reminders.user_id
+      JOIN movies ON movies.id = movie_release_reminders.movie_id
       CROSS JOIN alert_feature_state
       WHERE movies.release_date = (NOW() AT TIME ZONE COALESCE(users.alert_timezone, 'UTC'))::DATE
         AND (alert_feature_state.activated_at AT TIME ZONE COALESCE(users.alert_timezone, 'UTC'))::DATE
@@ -83,6 +101,7 @@ export async function dispatchReleaseAlerts(pool) {
 
   return {
     movieReleaseCount: movieResult.rowCount ?? 0,
+    movieReminderCount: reminderResult.rowCount ?? 0,
     episodeReleaseCount: episodeResult.rowCount ?? 0,
   }
 }

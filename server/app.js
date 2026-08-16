@@ -2,6 +2,7 @@ import express from 'express'
 import { loadConfig } from './config.js'
 import {
   addMovieToWatchlistForUser,
+  addMovieReleaseReminderForUser,
   addBookToWatchlistForUser,
   addBookToReadForUser,
   addMovieToWatchedForUser,
@@ -59,6 +60,7 @@ import {
   getTvShowByTmdbId,
   getFilelistTvEpisodeTargetForUser,
   getMovieByTmdbId,
+  hasMovieReleaseReminderForUser,
   listCoStarsForPerson,
   listFavoriteActorsForUser,
   listFavoriteAuthorsForUser,
@@ -90,6 +92,7 @@ import {
   recordBookAchievementEventForUser,
   removeMovieFromWatchedForUser,
   removeMovieFromWatchlistForUser,
+  removeMovieReleaseReminderForUser,
   removeBookFromWatchlistForUser,
   removeBookFromReadForUser,
   listSimilarMovies,
@@ -1228,7 +1231,7 @@ export async function createApp(pool, options = {}) {
   app.post('/api/tv/library/:kind', async (request, response, next) => {
     const kind = request.params.kind
     const showId = Number.parseInt(request.body?.showId, 10)
-    if (kind !== 'watchlist' || !Number.isInteger(showId)) return response.status(400).json({ error: 'Only TV watchlist updates are supported' })
+    if (!['watchlist', 'watched'].includes(kind) || !Number.isInteger(showId)) return response.status(400).json({ error: 'TV library updates must target watchlist or watched' })
     try {
       const user = await getAuthenticatedUser(pool, request)
       if (!user) return response.status(401).json({ error: 'Authentication required' })
@@ -1241,7 +1244,7 @@ export async function createApp(pool, options = {}) {
         getTvStatsForUser(pool, user.username, period),
         listTvWatchlistShowsForUser(pool, user.username),
       ])
-      const newlyUnlockedAchievements = result.added && await recordAchievementEventForUser(pool, { username: user.username, eventType: 'tv_watchlist_added', mediaType: 'tv', entityId: result.entityId, baselineKind: 'tv_watchlist' }) ? await evaluateAchievementsForUser(pool, user.username) : []
+      const newlyUnlockedAchievements = result.added && kind === 'watchlist' && await recordAchievementEventForUser(pool, { username: user.username, eventType: 'tv_watchlist_added', mediaType: 'tv', entityId: result.entityId, baselineKind: 'tv_watchlist' }) ? await evaluateAchievementsForUser(pool, user.username) : []
       response.json({ added: result.added, watchedIds: library.watchedIds, watchlistIds: library.watchlistIds, watchlistShows: watchlistShows.map(mapWatchlistTvShow), stats: mapTvStats(stats), newlyUnlockedAchievements })
     } catch (error) {
       next(error)
@@ -1336,8 +1339,12 @@ export async function createApp(pool, options = {}) {
     try {
       const pagination = readPaginationQuery(request, { defaultLimit: 30 })
       const genre = typeof request.query.genre === 'string' ? request.query.genre.trim() : ''
+      const hideWatched = request.query.hideWatched === 'true'
+      const user = hideWatched ? await getAuthenticatedUser(pool, request) : null
+      if (hideWatched && !user) return response.status(401).json({ error: 'Authentication required' })
       const movies = await listMovies(pool, {
         genre,
+        excludeWatchedForUsername: user?.username,
         limit: pagination.limit + 1,
         page: pagination.page,
       })
@@ -1463,7 +1470,11 @@ export async function createApp(pool, options = {}) {
   app.get('/api/movies/recently-released', async (request, response, next) => {
     try {
       const pagination = readPaginationQuery(request, { defaultLimit: 30 })
+      const hideWatched = request.query.hideWatched === 'true'
+      const user = hideWatched ? await getAuthenticatedUser(pool, request) : null
+      if (hideWatched && !user) return response.status(401).json({ error: 'Authentication required' })
       const movies = await listRecentlyReleasedMovies(pool, {
+        excludeWatchedForUsername: user?.username,
         limit: pagination.limit + 1,
         page: pagination.page,
       })
@@ -1481,7 +1492,11 @@ export async function createApp(pool, options = {}) {
   app.get('/api/movies/top-rated', async (request, response, next) => {
     try {
       const pagination = readPaginationQuery(request, { defaultLimit: 30 })
+      const hideWatched = request.query.hideWatched === 'true'
+      const user = hideWatched ? await getAuthenticatedUser(pool, request) : null
+      if (hideWatched && !user) return response.status(401).json({ error: 'Authentication required' })
       const movies = await listTopRatedMovies(pool, {
+        excludeWatchedForUsername: user?.username,
         limit: pagination.limit + 1,
         page: pagination.page,
       })
@@ -1499,7 +1514,11 @@ export async function createApp(pool, options = {}) {
   app.get('/api/movies/upcoming', async (request, response, next) => {
     try {
       const pagination = readPaginationQuery(request, { defaultLimit: 30 })
+      const hideWatched = request.query.hideWatched === 'true'
+      const user = hideWatched ? await getAuthenticatedUser(pool, request) : null
+      if (hideWatched && !user) return response.status(401).json({ error: 'Authentication required' })
       const movies = await listUpcomingMovies(pool, {
+        excludeWatchedForUsername: user?.username,
         limit: pagination.limit + 1,
         page: pagination.page,
       })
@@ -1742,6 +1761,9 @@ export async function createApp(pool, options = {}) {
 
       const reviews = await loadMovieReviews(movieId, loadRuntimeConfig)
       const user = await getAuthenticatedUser(pool, request)
+      const hasReleaseReminder = user
+        ? await hasMovieReleaseReminderForUser(pool, { username: user.username, movieId })
+        : false
       const communityRating = user
         ? await getMovieCommunityRating(pool, { movieId, username: user.username })
         : {
@@ -1754,8 +1776,40 @@ export async function createApp(pool, options = {}) {
           }
 
       response.json({
-        movie: mapMovieDetail(movie, reviews, communityRating),
+        movie: mapMovieDetail(movie, reviews, communityRating, hasReleaseReminder),
       })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/movies/:movieId/release-reminder', async (request, response, next) => {
+    const movieId = Number.parseInt(request.params.movieId, 10)
+    if (!Number.isInteger(movieId)) return response.status(400).json({ error: `Invalid movie id: ${request.params.movieId}` })
+
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const result = await addMovieReleaseReminderForUser(pool, { username: user.username, movieId })
+      if (result.status !== 'added') {
+        const hasReleaseReminder = await hasMovieReleaseReminderForUser(pool, { username: user.username, movieId })
+        if (!hasReleaseReminder) return response.status(409).json({ error: 'Only upcoming movies can be added to release reminders.' })
+      }
+      response.status(201).json({ hasReleaseReminder: true })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.delete('/api/movies/:movieId/release-reminder', async (request, response, next) => {
+    const movieId = Number.parseInt(request.params.movieId, 10)
+    if (!Number.isInteger(movieId)) return response.status(400).json({ error: `Invalid movie id: ${request.params.movieId}` })
+
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      await removeMovieReleaseReminderForUser(pool, { username: user.username, movieId })
+      response.json({ hasReleaseReminder: false })
     } catch (error) {
       next(error)
     }
@@ -2137,7 +2191,7 @@ function selectPlayableMovieTrailer(videos) {
   }
 }
 
-function mapMovieDetail(movie, reviews = [], communityRating = null) {
+function mapMovieDetail(movie, reviews = [], communityRating = null, hasReleaseReminder = false) {
   return {
     id: movie.tmdb_id,
     title: movie.title,
@@ -2150,6 +2204,8 @@ function mapMovieDetail(movie, reviews = [], communityRating = null) {
     audience: formatVoteCount(movie.vote_count),
     originalLanguage: movie.original_language || 'Unknown',
     releaseDate: movie.release_date || null,
+    availability: readMovieAvailability(movie.detail_payload),
+    hasReleaseReminder,
     posterUrl: resolvePosterPath(movie.poster_path),
     backdropUrl: resolveBackdropPath(movie.backdrop_path),
     director: movie.director
@@ -2370,6 +2426,41 @@ function formatRuntime(runtimeMinutes) {
   }
 
   return `${hours}h ${minutes}m`
+}
+
+function readMovieStreamingService(detailPayload) {
+  const providerResults = detailPayload?.['watch/providers']?.results
+
+  if (!providerResults || typeof providerResults !== 'object') {
+    return 'Streaming TBA'
+  }
+
+  const preferredRegion = providerResults.RO || providerResults.US || Object.values(providerResults)[0]
+  const providers = preferredRegion?.flatrate
+
+  if (!Array.isArray(providers) || !providers.length) {
+    return 'Streaming TBA'
+  }
+
+  return providers.map((provider) => provider?.provider_name).filter(Boolean).slice(0, 2).join(' · ') || 'Streaming TBA'
+}
+
+export function readMovieAvailability(detailPayload) {
+  const providerResults = detailPayload?.['watch/providers']?.results
+  if (!providerResults || typeof providerResults !== 'object') return 'Availability TBA'
+
+  const preferredRegion = providerResults.RO || providerResults.US || Object.values(providerResults)[0]
+  const providerNames = (providers) => Array.isArray(providers) ? providers.map((provider) => provider?.provider_name).filter(Boolean).slice(0, 2) : []
+  const streamingProviders = providerNames(preferredRegion?.flatrate)
+  if (streamingProviders.length) return streamingProviders.join(' · ')
+
+  const rentalProviders = providerNames(preferredRegion?.rent)
+  if (rentalProviders.length) return `Rent on ${rentalProviders.join(' · ')}`
+
+  const purchaseProviders = providerNames(preferredRegion?.buy)
+  if (purchaseProviders.length) return `Buy on ${purchaseProviders.join(' · ')}`
+
+  return 'Availability TBA'
 }
 
 function formatTvRuntime(runtimeMinutes) {
@@ -2628,6 +2719,8 @@ function mapWatchlistMovie(movie) {
     type: 'Movies',
     posterUrl: resolvePosterPath(movie.poster_path),
     backdropUrl: resolveBackdropPath(movie.backdrop_path),
+    runtime: formatRuntime(movie.runtime_minutes),
+    streamingService: readMovieStreamingService(movie.detail_payload),
     watchlistedAt: movie.watchlisted_at ?? null,
   }
 }
@@ -2825,6 +2918,15 @@ function mapWatchlistTvShow(show) {
 function mapContinueWatchingTvShow(show) {
   const watchedEpisodeCount = Number(show.watched_episode_count) || 0
   const airedEpisodeCount = Number(show.aired_episode_count) || 0
+  const details = show.detail_payload ?? {}
+  const detailEpisodeRuntime = Array.isArray(details.episode_run_time) ? details.episode_run_time.find((value) => typeof value === 'number' && value > 0) : null
+  const episodeRuntime = Number(show.next_episode_runtime_minutes) || detailEpisodeRuntime || Number(show.remaining_episode_runtime_minutes) || null
+  const network = Array.isArray(details.networks) ? details.networks.find((item) => item?.name)?.name : null
+  const nextSeasonNumber = Number(show.next_season_number)
+  const nextEpisodeNumber = Number(show.next_episode_number)
+  const nextEpisodeLabel = Number.isInteger(nextSeasonNumber) && Number.isInteger(nextEpisodeNumber)
+    ? `S${nextSeasonNumber} E${nextEpisodeNumber}`
+    : 'Next episode'
 
   return {
     id: show.tmdb_id,
@@ -2835,6 +2937,10 @@ function mapContinueWatchingTvShow(show) {
     airedEpisodeCount,
     progress: airedEpisodeCount > 0 ? Math.round((watchedEpisodeCount / airedEpisodeCount) * 100) : 0,
     latestWatchedEpisodeLabel: `S${show.latest_watched_season_number} E${show.latest_watched_episode_number}`,
+    nextEpisodeLabel,
+    nextEpisodeTitle: show.next_episode_name || 'Next episode',
+    runtime: formatTvRuntime(episodeRuntime),
+    streamingService: network || 'Streaming TBA',
     lastWatchedAt: show.last_watched_at ?? null,
   }
 }

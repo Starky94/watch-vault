@@ -6,8 +6,8 @@
   --border-soft: rgba(255, 255, 255, 0.06);
   --border-strong: rgba(182, 163, 255, 0.14);
   --text-primary: #f5f2f9;
-  --text-secondary: #b6b1c7;
-  --text-muted: #7d7890;
+  --text-secondary: #c5bfd3;
+  --text-muted: #a7a1b5;
   --accent: #8f4fff;
   --accent-soft: rgba(143, 79, 255, 0.18);
   --shadow-panel:
@@ -55,6 +55,27 @@ select {
 
 button {
   -webkit-tap-highlight-color: transparent;
+}
+
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 3px solid #d39aff;
+  outline-offset: 3px;
+  box-shadow: 0 0 0 5px rgba(132, 75, 255, 0.26);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 img,
