@@ -150,6 +150,120 @@ export async function listDiscoverExcludedTmdbIdsForUser(pool, username, mediaTy
   return new Set(result.rows.map((row) => Number(row.tmdb_id)).filter(Number.isInteger))
 }
 
+// Returns just the user-specific state required by a person filmography. Keeping
+// this batched avoids one query per credit for prolific people.
+export async function getPersonFilmographyPersonalStates(pool, { username, movieIds = [], tvIds = [] }) {
+  const normalizedMovieIds = [...new Set(movieIds.map(Number).filter(Number.isInteger))]
+  const normalizedTvIds = [...new Set(tvIds.map(Number).filter(Number.isInteger))]
+  if (!username) return { movies: new Map(), tv: new Map() }
+
+  const [movieResult, tvResult] = await Promise.all([
+    normalizedMovieIds.length
+      ? pool.query(
+          `WITH selected_user AS (SELECT id FROM users WHERE username = $1 LIMIT 1)
+           SELECT movies.tmdb_id,
+             BOOL_OR(watchlist_items.id IS NOT NULL) AS watchlisted,
+             BOOL_OR(watched_movies.id IS NOT NULL) AS watched,
+             MAX(movie_ratings.score)::DOUBLE PRECISION AS your_score
+           FROM movies
+           LEFT JOIN watchlist_items ON watchlist_items.movie_id = movies.id AND watchlist_items.user_id IN (SELECT id FROM selected_user)
+           LEFT JOIN watched_movies ON watched_movies.movie_id = movies.id AND watched_movies.user_id IN (SELECT id FROM selected_user)
+           LEFT JOIN movie_ratings ON movie_ratings.movie_id = movies.id AND movie_ratings.user_id IN (SELECT id FROM selected_user)
+           WHERE movies.tmdb_id = ANY($2::int[])
+           GROUP BY movies.tmdb_id`,
+          [username, normalizedMovieIds]
+        )
+      : Promise.resolve({ rows: [] }),
+    normalizedTvIds.length
+      ? pool.query(
+          `WITH selected_user AS (SELECT id FROM users WHERE username = $1 LIMIT 1)
+           SELECT tv_shows.tmdb_id,
+             BOOL_OR(tv_watchlist_items.id IS NOT NULL) AS watchlisted,
+             BOOL_OR(watched_tv_shows.id IS NOT NULL) AS watched,
+             AVG(tv_episode_ratings.score)::DOUBLE PRECISION AS your_score,
+             COUNT(tv_episode_ratings.id)::INTEGER AS rating_count
+           FROM tv_shows
+           LEFT JOIN tv_watchlist_items ON tv_watchlist_items.tv_show_id = tv_shows.id AND tv_watchlist_items.user_id IN (SELECT id FROM selected_user)
+           LEFT JOIN watched_tv_shows ON watched_tv_shows.tv_show_id = tv_shows.id AND watched_tv_shows.user_id IN (SELECT id FROM selected_user)
+           LEFT JOIN tv_seasons ON tv_seasons.tv_show_id = tv_shows.id AND tv_seasons.season_number > 0
+           LEFT JOIN tv_episodes ON tv_episodes.tv_season_id = tv_seasons.id
+           LEFT JOIN tv_episode_ratings ON tv_episode_ratings.tv_episode_id = tv_episodes.id AND tv_episode_ratings.user_id IN (SELECT id FROM selected_user)
+           WHERE tv_shows.tmdb_id = ANY($2::int[])
+           GROUP BY tv_shows.tmdb_id`,
+          [username, normalizedTvIds]
+        )
+      : Promise.resolve({ rows: [] }),
+  ])
+
+  return {
+    movies: new Map(movieResult.rows.map((row) => [Number(row.tmdb_id), { watchlisted: Boolean(row.watchlisted), watched: Boolean(row.watched), yourScore: row.your_score === null ? null : Number(row.your_score), ratingCount: 0 }])),
+    tv: new Map(tvResult.rows.map((row) => [Number(row.tmdb_id), { watchlisted: Boolean(row.watchlisted), watched: Boolean(row.watched), yourScore: row.your_score === null ? null : Number(row.your_score), ratingCount: Number(row.rating_count ?? 0) }])),
+  }
+}
+
+export async function getPersonHistoryForUser(pool, { username, movieIds = [], tvIds = [] }) {
+  const normalizedMovieIds = [...new Set(movieIds.map(Number).filter(Number.isInteger))]
+  const normalizedTvIds = [...new Set(tvIds.map(Number).filter(Number.isInteger))]
+  if (!username) return { titlesWatched: 0, averageRating: null, hoursWatched: 0 }
+
+  const [movieWatchResult, tvWatchResult, ratingResult] = await Promise.all([
+    normalizedMovieIds.length
+      ? pool.query(
+          `SELECT COUNT(DISTINCT watched_movies.movie_id)::INTEGER AS title_count,
+             COALESCE(SUM(movies.runtime_minutes), 0)::INTEGER AS minutes
+           FROM watched_movies
+           JOIN users ON users.id = watched_movies.user_id
+           JOIN movies ON movies.id = watched_movies.movie_id
+           WHERE users.username = $1 AND movies.tmdb_id = ANY($2::int[])`,
+          [username, normalizedMovieIds]
+        )
+      : Promise.resolve({ rows: [{ title_count: 0, minutes: 0 }] }),
+    normalizedTvIds.length
+      ? pool.query(
+          `SELECT COUNT(DISTINCT watched_tv_shows.tv_show_id)::INTEGER AS title_count,
+             COALESCE(SUM(tv_episodes.runtime_minutes) FILTER (WHERE watched_tv_episodes.id IS NOT NULL), 0)::INTEGER AS minutes
+           FROM tv_shows
+           JOIN users ON users.username = $1
+           LEFT JOIN watched_tv_shows ON watched_tv_shows.tv_show_id = tv_shows.id AND watched_tv_shows.user_id = users.id
+           LEFT JOIN tv_seasons ON tv_seasons.tv_show_id = tv_shows.id AND tv_seasons.season_number > 0
+           LEFT JOIN tv_episodes ON tv_episodes.tv_season_id = tv_seasons.id
+           LEFT JOIN watched_tv_episodes ON watched_tv_episodes.tv_episode_id = tv_episodes.id AND watched_tv_episodes.user_id = users.id
+           WHERE tv_shows.tmdb_id = ANY($2::int[])`,
+          [username, normalizedTvIds]
+        )
+      : Promise.resolve({ rows: [{ title_count: 0, minutes: 0 }] }),
+    pool.query(
+      `WITH movie_scores AS (
+         SELECT movie_ratings.score::DOUBLE PRECISION AS score
+         FROM movie_ratings
+         JOIN users ON users.id = movie_ratings.user_id
+         JOIN movies ON movies.id = movie_ratings.movie_id
+         WHERE users.username = $1 AND movies.tmdb_id = ANY($2::int[])
+       ), tv_scores AS (
+         SELECT tv_episode_ratings.score::DOUBLE PRECISION AS score
+         FROM tv_episode_ratings
+         JOIN users ON users.id = tv_episode_ratings.user_id
+         JOIN tv_episodes ON tv_episodes.id = tv_episode_ratings.tv_episode_id
+         JOIN tv_seasons ON tv_seasons.id = tv_episodes.tv_season_id AND tv_seasons.season_number > 0
+         JOIN tv_shows ON tv_shows.id = tv_seasons.tv_show_id
+         WHERE users.username = $1 AND tv_shows.tmdb_id = ANY($3::int[])
+       )
+       SELECT AVG(score)::DOUBLE PRECISION AS average_rating, COUNT(*)::INTEGER AS rating_count
+       FROM (SELECT score FROM movie_scores UNION ALL SELECT score FROM tv_scores) scores`,
+      [username, normalizedMovieIds, normalizedTvIds]
+    ),
+  ])
+  const movieWatch = movieWatchResult.rows[0] ?? {}
+  const tvWatch = tvWatchResult.rows[0] ?? {}
+  const ratings = ratingResult.rows[0] ?? {}
+  const minutes = Number(movieWatch.minutes ?? 0) + Number(tvWatch.minutes ?? 0)
+  return {
+    titlesWatched: Number(movieWatch.title_count ?? 0) + Number(tvWatch.title_count ?? 0),
+    averageRating: ratings.average_rating === null || ratings.average_rating === undefined ? null : Number(ratings.average_rating),
+    hoursWatched: Math.round((minutes / 60) * 10) / 10,
+  }
+}
+
 export async function ensureMoviesTable(pool) {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS genres (
@@ -388,7 +502,30 @@ export async function ensureMoviesTable(pool) {
       movie_id BIGINT NOT NULL REFERENCES movies(id) ON DELETE CASCADE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       UNIQUE (user_id, movie_id)
-    )
+    );
+    CREATE TABLE IF NOT EXISTS watchlist_priorities (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      media_type TEXT NOT NULL CHECK (media_type IN ('movie', 'tv', 'book')),
+      media_id TEXT NOT NULL,
+      top_slot INTEGER CHECK (top_slot BETWEEN 1 AND 3),
+      queue_position INTEGER CHECK (queue_position >= 1),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (user_id, media_type, media_id)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS watchlist_priorities_top_slot_idx ON watchlist_priorities (user_id, top_slot) WHERE top_slot IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS watchlist_priorities_queue_position_idx ON watchlist_priorities (user_id, queue_position) WHERE queue_position IS NOT NULL;
+    CREATE OR REPLACE FUNCTION cleanup_movie_watchlist_priority() RETURNS TRIGGER AS $$
+    DECLARE old_queue INTEGER;
+    BEGIN
+      DELETE FROM watchlist_priorities p USING movies m
+      WHERE p.user_id = OLD.user_id AND p.media_type = 'movie' AND p.media_id = m.tmdb_id::TEXT AND m.id = OLD.movie_id
+      RETURNING p.queue_position INTO old_queue;
+      IF old_queue IS NOT NULL THEN UPDATE watchlist_priorities SET queue_position = queue_position - 1 WHERE user_id = OLD.user_id AND queue_position > old_queue; END IF;
+      RETURN OLD;
+    END; $$ LANGUAGE plpgsql;
+    DROP TRIGGER IF EXISTS cleanup_movie_watchlist_priority_trigger ON watchlist_items;
+    CREATE TRIGGER cleanup_movie_watchlist_priority_trigger AFTER DELETE ON watchlist_items FOR EACH ROW EXECUTE FUNCTION cleanup_movie_watchlist_priority()
   `)
 
   await pool.query(`
@@ -622,7 +759,25 @@ export async function ensureBooksTable(pool) {
       book_id BIGINT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       UNIQUE (user_id, book_id)
-    )
+    );
+    CREATE OR REPLACE FUNCTION cleanup_tv_watchlist_priority() RETURNS TRIGGER AS $$
+    DECLARE old_queue INTEGER;
+    BEGIN
+      DELETE FROM watchlist_priorities p USING tv_shows s WHERE p.user_id = OLD.user_id AND p.media_type = 'tv' AND p.media_id = s.tmdb_id::TEXT AND s.id = OLD.tv_show_id RETURNING p.queue_position INTO old_queue;
+      IF old_queue IS NOT NULL THEN UPDATE watchlist_priorities SET queue_position = queue_position - 1 WHERE user_id = OLD.user_id AND queue_position > old_queue; END IF;
+      RETURN OLD;
+    END; $$ LANGUAGE plpgsql;
+    CREATE OR REPLACE FUNCTION cleanup_book_watchlist_priority() RETURNS TRIGGER AS $$
+    DECLARE old_queue INTEGER;
+    BEGIN
+      DELETE FROM watchlist_priorities p USING books b WHERE p.user_id = OLD.user_id AND p.media_type = 'book' AND p.media_id = b.google_books_id AND b.id = OLD.book_id RETURNING p.queue_position INTO old_queue;
+      IF old_queue IS NOT NULL THEN UPDATE watchlist_priorities SET queue_position = queue_position - 1 WHERE user_id = OLD.user_id AND queue_position > old_queue; END IF;
+      RETURN OLD;
+    END; $$ LANGUAGE plpgsql;
+    DROP TRIGGER IF EXISTS cleanup_tv_watchlist_priority_trigger ON tv_watchlist_items;
+    CREATE TRIGGER cleanup_tv_watchlist_priority_trigger AFTER DELETE ON tv_watchlist_items FOR EACH ROW EXECUTE FUNCTION cleanup_tv_watchlist_priority();
+    DROP TRIGGER IF EXISTS cleanup_book_watchlist_priority_trigger ON book_watchlist_items;
+    CREATE TRIGGER cleanup_book_watchlist_priority_trigger AFTER DELETE ON book_watchlist_items FOR EACH ROW EXECUTE FUNCTION cleanup_book_watchlist_priority()
   `)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS read_books (
@@ -832,7 +987,9 @@ export async function toggleFavoriteAuthorForUser(pool, { username, authorId }) 
 export async function listWatchlistBooksForUser(pool, username) {
   const result = await pool.query(`
     SELECT books.google_books_id, books.title, books.authors, books.categories, books.cover_image_url,
-      books.published_date, book_watchlist_items.created_at AS watchlisted_at
+      books.published_date, books.page_count, book_watchlist_items.created_at AS watchlisted_at,
+      (SELECT top_slot FROM watchlist_priorities p WHERE p.user_id = book_watchlist_items.user_id AND p.media_type = 'book' AND p.media_id = books.google_books_id) AS top_slot,
+      (SELECT queue_position FROM watchlist_priorities p WHERE p.user_id = book_watchlist_items.user_id AND p.media_type = 'book' AND p.media_id = books.google_books_id) AS queue_position
     FROM book_watchlist_items
     JOIN users ON users.id = book_watchlist_items.user_id
     JOIN books ON books.id = book_watchlist_items.book_id
@@ -3811,7 +3968,8 @@ export async function listCoStarsForPerson(pool, tmdbPersonId, options = {}) {
         peer_cast.tmdb_person_id,
         peer_cast.name,
         peer_cast.profile_path,
-        COUNT(*)::INTEGER AS shared_credits
+        COUNT(DISTINCT target_movie_cast.movie_id)::INTEGER AS shared_credits,
+        (ARRAY_AGG(DISTINCT movies.title ORDER BY movies.title))[1:2] AS shared_titles
       FROM cast_members target_cast
       JOIN movie_cast target_movie_cast
         ON target_movie_cast.cast_member_id = target_cast.id
@@ -3820,6 +3978,8 @@ export async function listCoStarsForPerson(pool, tmdbPersonId, options = {}) {
        AND peer_movie_cast.credit_type = 'actor'
       JOIN cast_members peer_cast
         ON peer_cast.id = peer_movie_cast.cast_member_id
+      JOIN movies
+        ON movies.id = target_movie_cast.movie_id
       WHERE target_cast.tmdb_person_id = $1
         AND peer_cast.tmdb_person_id <> $1
       GROUP BY peer_cast.tmdb_person_id, peer_cast.name, peer_cast.profile_path
@@ -4017,6 +4177,85 @@ export async function toggleFavoriteActorForUser(pool, { username, personId }) {
   return { status: 'ok', favorited: Boolean(row.favorited) }
 }
 
+export async function setWatchlistPriorityForUser(pool, { username, mediaType, mediaId, topSlot, queuePosition }) {
+  if (!['movie', 'tv', 'book'].includes(mediaType)) return { status: 'invalid_media_type' }
+  if (topSlot !== undefined && topSlot !== null && (!Number.isInteger(topSlot) || topSlot < 1 || topSlot > 3)) return { status: 'invalid_top_slot' }
+  if (queuePosition !== undefined && queuePosition !== null && (!Number.isInteger(queuePosition) || queuePosition < 1)) return { status: 'invalid_queue_position' }
+
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const membership = await client.query(`
+      WITH selected_user AS (SELECT id FROM users WHERE username = $1 LIMIT 1)
+      SELECT EXISTS(SELECT 1 FROM selected_user) AS has_user,
+        EXISTS(
+          SELECT 1 FROM watchlist_items wi JOIN movies m ON m.id = wi.movie_id
+          WHERE $2 = 'movie' AND wi.user_id IN (SELECT id FROM selected_user) AND m.tmdb_id::TEXT = $3
+          UNION ALL
+          SELECT 1 FROM tv_watchlist_items wi JOIN tv_shows s ON s.id = wi.tv_show_id
+          WHERE $2 = 'tv' AND wi.user_id IN (SELECT id FROM selected_user) AND s.tmdb_id::TEXT = $3
+          UNION ALL
+          SELECT 1 FROM book_watchlist_items wi JOIN books b ON b.id = wi.book_id
+          WHERE $2 = 'book' AND wi.user_id IN (SELECT id FROM selected_user) AND b.google_books_id = $3
+        ) AS is_watchlisted
+    `, [username, mediaType, String(mediaId)])
+    const row = membership.rows[0] ?? {}
+    if (!row.has_user) { await client.query('ROLLBACK'); return { status: 'missing_user' } }
+    if (!row.is_watchlisted) { await client.query('ROLLBACK'); return { status: 'missing_watchlist_item' } }
+
+    const userResult = await client.query('SELECT id FROM users WHERE username = $1 LIMIT 1', [username])
+    const userId = userResult.rows[0].id
+    await client.query('SELECT id FROM watchlist_priorities WHERE user_id = $1 FOR UPDATE', [userId])
+    await client.query(`INSERT INTO watchlist_priorities (user_id, media_type, media_id) VALUES ($1, $2, $3) ON CONFLICT (user_id, media_type, media_id) DO NOTHING`, [userId, mediaType, String(mediaId)])
+
+    if (topSlot !== undefined) {
+      if (topSlot === null) {
+        await client.query(`UPDATE watchlist_priorities SET top_slot = NULL, updated_at = NOW() WHERE user_id = $1 AND media_type = $2 AND media_id = $3`, [userId, mediaType, String(mediaId)])
+      } else {
+        await client.query(`UPDATE watchlist_priorities SET top_slot = NULL, updated_at = NOW() WHERE user_id = $1 AND top_slot = $2`, [userId, topSlot])
+        await client.query(`UPDATE watchlist_priorities SET top_slot = $4, updated_at = NOW() WHERE user_id = $1 AND media_type = $2 AND media_id = $3`, [userId, mediaType, String(mediaId), topSlot])
+      }
+    }
+
+    if (queuePosition !== undefined) {
+      const current = await client.query(`SELECT queue_position FROM watchlist_priorities WHERE user_id = $1 AND media_type = $2 AND media_id = $3`, [userId, mediaType, String(mediaId)])
+      const previousPosition = current.rows[0]?.queue_position ?? null
+      if (previousPosition !== null) {
+        await client.query(`UPDATE watchlist_priorities SET queue_position = NULL WHERE user_id = $1 AND media_type = $2 AND media_id = $3`, [userId, mediaType, String(mediaId)])
+        await client.query(`UPDATE watchlist_priorities SET queue_position = queue_position - 1 WHERE user_id = $1 AND queue_position > $2`, [userId, previousPosition])
+      }
+      if (queuePosition !== null) {
+        await client.query(`UPDATE watchlist_priorities SET queue_position = queue_position + 100000 WHERE user_id = $1 AND queue_position >= $2`, [userId, queuePosition])
+        await client.query(`UPDATE watchlist_priorities SET queue_position = queue_position - 99999 WHERE user_id = $1 AND queue_position >= $2 + 100000`, [userId, queuePosition])
+        await client.query(`UPDATE watchlist_priorities SET queue_position = $4, updated_at = NOW() WHERE user_id = $1 AND media_type = $2 AND media_id = $3`, [userId, mediaType, String(mediaId), queuePosition])
+      }
+    }
+
+    await client.query(`DELETE FROM watchlist_priorities WHERE user_id = $1 AND media_type = $2 AND media_id = $3 AND top_slot IS NULL AND queue_position IS NULL`, [userId, mediaType, String(mediaId)])
+    const priority = await client.query(`SELECT top_slot, queue_position FROM watchlist_priorities WHERE user_id = $1 AND media_type = $2 AND media_id = $3`, [userId, mediaType, String(mediaId)])
+    await client.query('COMMIT')
+    return { status: 'ok', topSlot: priority.rows[0]?.top_slot ?? null, queuePosition: priority.rows[0]?.queue_position ?? null }
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally { client.release() }
+}
+
+export async function removeWatchlistPriorityForUser(pool, { username, mediaType, mediaId }) {
+  const result = await pool.query(`
+    WITH selected_user AS (SELECT id FROM users WHERE username = $1 LIMIT 1), removed AS (
+      DELETE FROM watchlist_priorities
+      WHERE user_id IN (SELECT id FROM selected_user) AND media_type = $2 AND media_id = $3
+      RETURNING user_id, queue_position
+    ), shifted AS (
+      UPDATE watchlist_priorities SET queue_position = queue_position - 1
+      WHERE user_id IN (SELECT user_id FROM removed) AND queue_position > (SELECT queue_position FROM removed WHERE queue_position IS NOT NULL LIMIT 1)
+      RETURNING id
+    ) SELECT EXISTS(SELECT 1 FROM removed) AS removed
+  `, [username, mediaType, String(mediaId)])
+  return Boolean(result.rows[0]?.removed)
+}
+
 export async function listWatchlistMoviesForUser(pool, username) {
   const result = await pool.query(
     `
@@ -4045,14 +4284,17 @@ export async function listWatchlistMoviesForUser(pool, username) {
         movies.raw_payload,
         movies.import_rank,
         movies.imported_at,
-        watchlist_items.created_at AS watchlisted_at
+        watchlist_items.created_at AS watchlisted_at,
+        (SELECT top_slot FROM watchlist_priorities p WHERE p.user_id = watchlist_items.user_id AND p.media_type = 'movie' AND p.media_id = movies.tmdb_id::TEXT) AS top_slot,
+        (SELECT queue_position FROM watchlist_priorities p WHERE p.user_id = watchlist_items.user_id AND p.media_type = 'movie' AND p.media_id = movies.tmdb_id::TEXT) AS queue_position,
+        EXISTS(SELECT 1 FROM movie_release_reminders r WHERE r.user_id = watchlist_items.user_id AND r.movie_id = movies.id) AS has_release_reminder
       FROM watchlist_items
       JOIN users ON users.id = watchlist_items.user_id
       JOIN movies ON movies.id = watchlist_items.movie_id
       LEFT JOIN LATERAL UNNEST(movies.genre_ids) WITH ORDINALITY AS genre_ids(tmdb_genre_id, ordinality) ON TRUE
       LEFT JOIN genres ON genres.tmdb_genre_id = genre_ids.tmdb_genre_id
       WHERE users.username = $1
-      GROUP BY movies.id, watchlist_items.created_at
+      GROUP BY movies.id, watchlist_items.created_at, watchlist_items.user_id
       ORDER BY watchlist_items.created_at DESC, movies.tmdb_id ASC
     `,
     [username]
@@ -5052,14 +5294,20 @@ export async function listTvWatchlistShowsForUser(pool, username) {
           ARRAY_REMOVE(ARRAY_AGG(tv_genres.name ORDER BY genre_ids.ordinality), NULL),
           '{}'
         ) AS genre_names,
-        tv_watchlist_items.created_at AS watchlisted_at
+        tv_watchlist_items.created_at AS watchlisted_at,
+        (SELECT top_slot FROM watchlist_priorities p WHERE p.user_id = tv_watchlist_items.user_id AND p.media_type = 'tv' AND p.media_id = tv_shows.tmdb_id::TEXT) AS top_slot,
+        (SELECT queue_position FROM watchlist_priorities p WHERE p.user_id = tv_watchlist_items.user_id AND p.media_type = 'tv' AND p.media_id = tv_shows.tmdb_id::TEXT) AS queue_position,
+        (SELECT ROUND(AVG(e.runtime_minutes))::INTEGER FROM tv_episodes e JOIN tv_seasons s ON s.id = e.tv_season_id WHERE s.tv_show_id = tv_shows.id AND s.season_number > 0 AND e.runtime_minutes IS NOT NULL) AS runtime_minutes,
+        (SELECT e.air_date FROM tv_episodes e JOIN tv_seasons s ON s.id = e.tv_season_id WHERE s.tv_show_id = tv_shows.id AND s.season_number > 0 AND e.air_date > CURRENT_DATE ORDER BY e.air_date, s.season_number, e.episode_number LIMIT 1) AS next_episode_date,
+        (SELECT e.name FROM tv_episodes e JOIN tv_seasons s ON s.id = e.tv_season_id WHERE s.tv_show_id = tv_shows.id AND s.season_number > 0 AND e.air_date > CURRENT_DATE ORDER BY e.air_date, s.season_number, e.episode_number LIMIT 1) AS next_episode_name,
+        COALESCE(tv_shows.detail_payload #>> '{networks,0,name}', '') AS network
       FROM tv_watchlist_items
       JOIN users ON users.id = tv_watchlist_items.user_id
       JOIN tv_shows ON tv_shows.id = tv_watchlist_items.tv_show_id
       LEFT JOIN LATERAL UNNEST(tv_shows.genre_ids) WITH ORDINALITY AS genre_ids(tmdb_genre_id, ordinality) ON TRUE
       LEFT JOIN tv_genres ON tv_genres.tmdb_genre_id = genre_ids.tmdb_genre_id
       WHERE users.username = $1
-      GROUP BY tv_shows.id, tv_watchlist_items.created_at
+      GROUP BY tv_shows.id, tv_watchlist_items.created_at, tv_watchlist_items.user_id
       ORDER BY tv_watchlist_items.created_at DESC, tv_shows.tmdb_id ASC
     `,
     [username]

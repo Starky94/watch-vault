@@ -54,6 +54,8 @@ import {
   getBookStatsForUser,
   getStatsInsightsForUser,
   getMovieCommunityRating,
+  getPersonFilmographyPersonalStates,
+  getPersonHistoryForUser,
   getTvLibraryForUser,
   getTvDetailForUser,
   getTvStatsForUser,
@@ -74,6 +76,7 @@ import {
   searchTvShows,
   listWatchlistMoviesForUser,
   listWatchlistBooksForUser,
+  setWatchlistPriorityForUser,
   listReadBooksForUser,
   listCalendarEventsForUser,
   listWatchedMoviesByGenreForUser,
@@ -143,6 +146,16 @@ export async function createApp(pool, options = {}) {
       }),
   } = options
 
+  async function hydrateMissingMovie(movieId) {
+    const config = loadRuntimeConfig()
+    await hydrateMovie(pool, { token: config.tmdbBearerToken, baseUrl: config.tmdbBaseUrl, movieId, importRank: 1 })
+  }
+
+  async function hydrateMissingTvShow(showId) {
+    const config = loadRuntimeConfig()
+    await hydrateTvShow(pool, { token: config.tmdbBearerToken, baseUrl: config.tmdbBaseUrl, tvShowId: showId, importRank: 1 })
+  }
+
   await ensureMoviesTable(pool)
   await ensureMovieKeywordTables(pool)
   await ensureBooksTable(pool)
@@ -211,6 +224,51 @@ export async function createApp(pool, options = {}) {
     } catch (error) {
       next(error)
     }
+  })
+
+  app.get('/api/search/suggestions', async (request, response, next) => {
+    const query = typeof request.query.q === 'string' ? request.query.q.trim() : ''
+    if (query.length < 2) return response.status(400).json({ error: 'q must be at least 2 characters' })
+
+    try {
+      const [movies, shows, books, people] = await Promise.all([
+        searchMovies(pool, query, 4),
+        searchTvShows(pool, query, 4),
+        searchBooks(pool, query, 4),
+        searchActors(pool, query, 4),
+      ])
+      const titles = [
+        ...movies.map(mapMovieSearchSuggestion),
+        ...shows.map(mapTvSearchSuggestion),
+        ...books.map(mapBookSearchSuggestion),
+      ].sort((left, right) => right.popularity - left.popularity || left.label.localeCompare(right.label)).slice(0, 8)
+      response.json({ query, titles, people: people.map(mapPersonSearchSuggestion) })
+    } catch (error) { next(error) }
+  })
+
+  app.get('/api/search/popular', async (_request, response, next) => {
+    try {
+      const [movies, shows] = await Promise.all([listMovies(pool, { limit: 5 }), listTvShows(pool, { limit: 5 })])
+      const titles = [...movies.map(mapMovieSearchSuggestion), ...shows.map(mapTvSearchSuggestion)]
+        .sort((left, right) => right.popularity - left.popularity || left.label.localeCompare(right.label))
+        .slice(0, 8)
+      response.json({ titles })
+    } catch (error) { next(error) }
+  })
+
+  app.get('/api/search/alternatives', async (request, response, next) => {
+    const query = typeof request.query.q === 'string' ? request.query.q.trim() : ''
+    if (query.length < 2) return response.status(400).json({ error: 'q must be at least 2 characters' })
+    try {
+      const [movies, shows, books, people] = await Promise.all([
+        pool.query('SELECT title AS label FROM movies WHERE title IS NOT NULL ORDER BY popularity DESC NULLS LAST, title ASC LIMIT 200'),
+        pool.query('SELECT name AS label FROM tv_shows WHERE name IS NOT NULL ORDER BY popularity DESC NULLS LAST, name ASC LIMIT 200'),
+        pool.query('SELECT title AS label FROM books WHERE title IS NOT NULL ORDER BY import_rank ASC, title ASC LIMIT 200'),
+        pool.query('SELECT name AS label FROM cast_members WHERE name IS NOT NULL ORDER BY popularity DESC NULLS LAST, name ASC LIMIT 200'),
+      ])
+      const labels = [...movies.rows, ...shows.rows, ...books.rows, ...people.rows].map((row) => row.label).filter(Boolean)
+      response.json({ query, alternatives: findSearchAlternatives(query, labels) })
+    } catch (error) { next(error) }
   })
 
   app.get('/api/search/tmdb', async (request, response, next) => {
@@ -628,19 +686,39 @@ export async function createApp(pool, options = {}) {
         return
       }
 
-      const [movies, books] = await Promise.all([
+      const [movies, books, tvShows] = await Promise.all([
         listWatchlistMoviesForUser(pool, user.username),
         listWatchlistBooksForUser(pool, user.username),
+        listTvWatchlistShowsForUser(pool, user.username),
       ])
 
       response.json({
-        count: movies.length + books.length,
+        count: movies.length + books.length + tvShows.length,
         movies: movies.map(mapWatchlistMovie),
         books: books.map(mapWatchlistBook),
+        tvShows: tvShows.map(mapWatchlistTvShow),
       })
     } catch (error) {
       next(error)
     }
+  })
+
+  app.patch('/api/watchlist/priority', async (request, response, next) => {
+    const mediaType = typeof request.body?.mediaType === 'string' ? request.body.mediaType.trim() : ''
+    const mediaId = request.body?.mediaId === undefined || request.body?.mediaId === null ? '' : String(request.body.mediaId).trim()
+    const topSlot = Object.hasOwn(request.body ?? {}, 'topSlot') ? request.body.topSlot : undefined
+    const queuePosition = Object.hasOwn(request.body ?? {}, 'queuePosition') ? request.body.queuePosition : undefined
+    if (!mediaId || (!['movie', 'tv', 'book'].includes(mediaType)) || (topSlot === undefined && queuePosition === undefined)) return response.status(400).json({ error: 'mediaType, mediaId, and a priority change are required' })
+    if (topSlot !== undefined && topSlot !== null && !Number.isInteger(topSlot)) return response.status(400).json({ error: 'topSlot must be 1, 2, 3, or null' })
+    if (queuePosition !== undefined && queuePosition !== null && !Number.isInteger(queuePosition)) return response.status(400).json({ error: 'queuePosition must be a positive integer or null' })
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const result = await setWatchlistPriorityForUser(pool, { username: user.username, mediaType, mediaId, topSlot, queuePosition })
+      if (result.status === 'missing_watchlist_item') return response.status(404).json({ error: 'This title is no longer in your watchlist.' })
+      if (result.status === 'invalid_top_slot' || result.status === 'invalid_queue_position' || result.status === 'invalid_media_type') return response.status(400).json({ error: 'Invalid priority value.' })
+      response.json(result)
+    } catch (error) { next(error) }
   })
 
   app.get('/api/alerts', async (request, response, next) => {
@@ -796,17 +874,17 @@ export async function createApp(pool, options = {}) {
         return
       }
 
-      const result = await addMovieToWatchlistForUser(pool, {
+      let result = await addMovieToWatchlistForUser(pool, {
         username: user.username,
         movieId,
       })
 
       if (result.status === 'missing_movie') {
-        response.status(404).json({
-          error: `Movie ${movieId} was not found in the local database`,
-        })
-        return
+        await hydrateMissingMovie(movieId)
+        result = await addMovieToWatchlistForUser(pool, { username: user.username, movieId })
       }
+
+      if (result.status === 'missing_movie') return response.status(404).json({ error: `Movie ${movieId} could not be loaded from TMDB` })
 
       if (result.status === 'missing_user') {
         response.status(401).json({
@@ -1080,18 +1158,18 @@ export async function createApp(pool, options = {}) {
         return response.status(409).json({ error: 'Only the accepted Tonight’s pick can be marked watched together' })
       }
 
-      const result = await addMovieToWatchedForUser(pool, {
+      let result = await addMovieToWatchedForUser(pool, {
         username: user.username,
         movieId,
         watchService: request.body?.watchService,
       })
 
       if (result.status === 'missing_movie') {
-        response.status(404).json({
-          error: `Movie ${movieId} was not found in the local database`,
-        })
-        return
+        await hydrateMissingMovie(movieId)
+        result = await addMovieToWatchedForUser(pool, { username: user.username, movieId, watchService: request.body?.watchService })
       }
+
+      if (result.status === 'missing_movie') return response.status(404).json({ error: `Movie ${movieId} could not be loaded from TMDB` })
 
       if (result.status === 'missing_user') {
         response.status(401).json({
@@ -1237,8 +1315,12 @@ export async function createApp(pool, options = {}) {
       if (!user) return response.status(401).json({ error: 'Authentication required' })
       const period = readStatsPeriod(request, response)
       if (!period) return
-      const result = await toggleTvLibraryItemForUser(pool, { username: user.username, showId, kind })
-      if (result.status === 'missing_show') return response.status(404).json({ error: `TV show ${showId} was not found in the local database` })
+      let result = await toggleTvLibraryItemForUser(pool, { username: user.username, showId, kind })
+      if (result.status === 'missing_show') {
+        await hydrateMissingTvShow(showId)
+        result = await toggleTvLibraryItemForUser(pool, { username: user.username, showId, kind })
+      }
+      if (result.status === 'missing_show') return response.status(404).json({ error: `TV show ${showId} could not be loaded from TMDB` })
       const [library, stats, watchlistShows] = await Promise.all([
         getTvLibraryForUser(pool, user.username),
         getTvStatsForUser(pool, user.username, period),
@@ -1973,9 +2055,14 @@ export async function createApp(pool, options = {}) {
       const normalizedProfile = normalizePersonProfile(personPayload, creditsPayload)
       await syncPersonProfile(pool, normalizedProfile)
 
-      const [movieSummaries, coStars] = await Promise.all([
-        listMovieSummariesByTmdbIds(pool, collectCreditMovieIds(creditsPayload)),
+      const user = await getAuthenticatedUser(pool, request)
+      const movieCreditIds = collectCreditIds(creditsPayload, 'movie')
+      const tvCreditIds = collectCreditIds(creditsPayload, 'tv')
+      const [movieSummaries, coStars, personalStates, personalHistory] = await Promise.all([
+        listMovieSummariesByTmdbIds(pool, movieCreditIds),
         listCoStarsForPerson(pool, personId),
+        user ? getPersonFilmographyPersonalStates(pool, { username: user.username, movieIds: movieCreditIds, tvIds: tvCreditIds }) : Promise.resolve({ movies: new Map(), tv: new Map() }),
+        user ? getPersonHistoryForUser(pool, { username: user.username, movieIds: movieCreditIds, tvIds: tvCreditIds }) : Promise.resolve(null),
       ])
 
       response.json(
@@ -1984,6 +2071,8 @@ export async function createApp(pool, options = {}) {
           credits: creditsPayload,
           movieSummaries,
           coStars,
+          personalStates,
+          personalHistory,
         })
       )
     } catch (error) {
@@ -2031,6 +2120,60 @@ function mapTmdbMovieSearchResult(movie) {
     posterUrl: resolvePosterPath(movie?.poster_path),
     theme: 'theme-catalog',
   }
+}
+
+function mapMovieSearchSuggestion(movie) {
+  return {
+    kind: 'movie', id: movie.tmdb_id, label: movie.title || 'Untitled', meta: movie.release_date ? `Movie · ${formatMovieYear(movie.release_date)}` : 'Movie', imageUrl: resolvePosterPath(movie.poster_path), popularity: Number(movie.popularity) || 0,
+  }
+}
+
+function mapTvSearchSuggestion(show) {
+  return {
+    kind: 'tv', id: show.tmdb_id, label: show.name || 'Untitled', meta: show.first_air_date ? `TV · ${formatMovieYear(show.first_air_date)}` : 'TV Series', imageUrl: resolvePosterPath(show.poster_path), popularity: Number(show.popularity) || 0,
+  }
+}
+
+function mapBookSearchSuggestion(book) {
+  return {
+    kind: 'book', id: book.google_books_id, label: book.title || 'Untitled', meta: Array.isArray(book.authors) && book.authors.length ? `Book · ${book.authors.join(', ')}` : 'Book', imageUrl: book.cover_image_url || null, popularity: 0,
+  }
+}
+
+function mapPersonSearchSuggestion(person) {
+  return {
+    kind: 'person', id: person.tmdb_person_id, label: person.name || 'Unknown performer', meta: person.known_for_department || 'Person', imageUrl: resolvePosterPath(person.profile_path), popularity: Number(person.popularity) || 0,
+  }
+}
+
+function findSearchAlternatives(query, labels) {
+  const normalizedQuery = normalizeSearchText(query)
+  if (!normalizedQuery) return []
+  const maximumDistance = Math.max(2, Math.floor(normalizedQuery.length * 0.45))
+  return [...new Set(labels.map((label) => String(label).trim()).filter(Boolean))]
+    .map((label) => ({ label, distance: Math.min(...[normalizeSearchText(label), ...String(label).split(/\s+/).map(normalizeSearchText)].filter(Boolean).map((candidate) => levenshteinDistance(normalizedQuery, candidate))) }))
+    .filter((item) => item.distance <= maximumDistance)
+    .sort((left, right) => left.distance - right.distance || left.label.localeCompare(right.label))
+    .slice(0, 4)
+    .map((item) => item.label)
+}
+
+function normalizeSearchText(value) {
+  return String(value || '').toLocaleLowerCase().replace(/[^a-z0-9]/g, '')
+}
+
+function levenshteinDistance(left, right) {
+  const previous = Array.from({ length: right.length + 1 }, (_value, index) => index)
+  for (let row = 1; row <= left.length; row += 1) {
+    let diagonal = previous[0]
+    previous[0] = row
+    for (let column = 1; column <= right.length; column += 1) {
+      const current = previous[column]
+      previous[column] = Math.min(previous[column] + 1, previous[column - 1] + 1, diagonal + (left[row - 1] === right[column - 1] ? 0 : 1))
+      diagonal = current
+    }
+  }
+  return previous[right.length]
 }
 
 function mapTmdbTvSearchResult(show) {
@@ -2297,16 +2440,16 @@ function normalizePersonProfile(person, credits) {
   }
 }
 
-function collectCreditMovieIds(credits) {
-  return [
+function collectCreditIds(credits, mediaType) {
+  return [...new Set([
     ...(Array.isArray(credits?.cast) ? credits.cast : []),
     ...(Array.isArray(credits?.crew) ? credits.crew : []),
   ]
-    .filter((entry) => entry?.media_type === 'movie' && Number.isInteger(entry?.id))
-    .map((entry) => entry.id)
+    .filter((entry) => entry?.media_type === mediaType && Number.isInteger(entry?.id))
+    .map((entry) => entry.id))]
 }
 
-function mapPersonDetailPayload({ person, credits, movieSummaries, coStars }) {
+function mapPersonDetailPayload({ person, credits, movieSummaries, coStars, personalStates = { movies: new Map(), tv: new Map() }, personalHistory = null }) {
   const movieSummaryById = new Map(movieSummaries.map((movie) => [Number(movie.tmdb_id), movie]))
   const combinedCredits = [
     ...(Array.isArray(credits?.cast) ? credits.cast : []),
@@ -2321,6 +2464,13 @@ function mapPersonDetailPayload({ person, credits, movieSummaries, coStars }) {
         .slice(0, 4)
     )
   )
+
+  const filmography = buildFilmography(combinedCredits, movieSummaryById, personalStates)
+  const nextRecommendation = personalHistory
+    ? [...filmography]
+        .filter((item) => !item.personal.watched && item.releaseDate && item.releaseDate <= new Date().toISOString().slice(0, 10))
+        .sort((left, right) => (right.popularity ?? -1) - (left.popularity ?? -1) || (right.voteAverage ?? -1) - (left.voteAverage ?? -1))[0] ?? null
+    : null
 
   return {
     person: {
@@ -2337,14 +2487,16 @@ function mapPersonDetailPayload({ person, credits, movieSummaries, coStars }) {
       roles,
       heroBackdropUrl: resolveBackdropFromCredits(movieCredits, movieSummaryById),
     },
-    knownFor: buildKnownForCredits(movieCredits, movieSummaryById),
-    filmography: buildFilmography(movieCredits, movieSummaryById),
+    knownFor: buildKnownForCredits(combinedCredits, movieSummaryById),
+    filmography,
+    personalHistory: personalHistory ? { ...personalHistory, nextRecommendation } : null,
     coStars: Array.isArray(coStars)
       ? coStars.map((entry) => ({
           id: entry.tmdb_person_id,
           name: entry.name,
           profileUrl: resolveProfilePath(entry.profile_path),
           sharedCredits: entry.shared_credits,
+          sharedTitles: Array.isArray(entry.shared_titles) ? entry.shared_titles : [],
         }))
       : [],
     facts: buildPersonFacts(person, movieCredits),
@@ -2591,45 +2743,89 @@ function formatPopularity(value) {
   return `${Math.round(value)}%`
 }
 
-function buildKnownForCredits(movieCredits, movieSummaryById) {
+function buildKnownForCredits(credits, movieSummaryById) {
   const seen = new Set()
 
-  return movieCredits
-    .filter((entry) => !seen.has(entry.id) && (seen.add(entry.id), true))
+  const candidates = credits
+    .filter((entry) => ['movie', 'tv'].includes(entry?.media_type) && Number.isInteger(entry?.id))
+    .filter((entry) => {
+      const key = `${entry.media_type}:${entry.id}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
     .sort((left, right) => {
       const leftPopularity = typeof left.popularity === 'number' ? left.popularity : -1
       const rightPopularity = typeof right.popularity === 'number' ? right.popularity : -1
 
       return rightPopularity - leftPopularity
     })
-    .slice(0, 5)
-    .map((entry) => mapCreditToMovieCard(entry, movieSummaryById))
+  const selected = candidates.slice(0, 5)
+  const keyFor = (entry) => `${entry.media_type}:${entry.id}`
+  const highestRated = [...candidates].sort((left, right) => (Number(right.vote_average) || -1) - (Number(left.vote_average) || -1))[0]
+  const earliestActing = [...candidates]
+    .filter((entry) => entry.character || entry.department === 'Acting')
+    .sort((left, right) => (Date.parse(left.release_date || left.first_air_date || '') || Number.MAX_SAFE_INTEGER) - (Date.parse(right.release_date || right.first_air_date || '') || Number.MAX_SAFE_INTEGER))[0]
+
+  return selected.map((entry, index) => {
+    const key = keyFor(entry)
+    const reason = index === 0 ? 'Most popular'
+      : highestRated && key === keyFor(highestRated) ? 'Highest rated'
+        : earliestActing && key === keyFor(earliestActing) ? 'Early career role'
+          : 'Popular credit'
+    return { ...mapCreditToMovieCard(entry, movieSummaryById), knownForReason: reason }
+  })
 }
 
-function buildFilmography(movieCredits, movieSummaryById) {
-  const seen = new Set()
+function buildFilmography(credits, movieSummaryById, personalStates) {
+  const titles = new Map()
 
-  return movieCredits
-    .filter((entry) => !seen.has(entry.id) && (seen.add(entry.id), true))
-    .sort((left, right) => {
-      const leftDate = Date.parse(left.release_date || '') || 0
-      const rightDate = Date.parse(right.release_date || '') || 0
+  for (const entry of credits) {
+    if (!['movie', 'tv'].includes(entry?.media_type) || !Number.isInteger(entry?.id)) continue
+    const key = `${entry.media_type}:${entry.id}`
+    const current = titles.get(key) ?? { ...entry, roles: [], creditCategories: new Set() }
+    const role = entry.character || entry.job || 'Credit'
+    if (!current.roles.includes(role)) current.roles.push(role)
+    const category = getCreditCategory(entry)
+    if (category) current.creditCategories.add(category)
+    titles.set(key, current)
+  }
 
-      return rightDate - leftDate
-    })
+  return [...titles.values()]
     .map((entry) => {
-      const summary = movieSummaryById.get(Number(entry.id))
+      const isMovie = entry.media_type === 'movie'
+      const summary = isMovie ? movieSummaryById.get(Number(entry.id)) : null
+      const releaseDate = summary?.release_date || entry.release_date || entry.first_air_date || null
+      const voteAverage = Number(summary?.vote_average ?? entry.vote_average)
+      const personal = (isMovie ? personalStates.movies : personalStates.tv).get(Number(entry.id)) ?? { watchlisted: false, watched: false, yourScore: null, ratingCount: 0 }
+      const year = formatMovieYear(releaseDate)
+      const numericYear = /^\d{4}$/.test(year) ? Number(year) : null
 
       return {
         id: entry.id,
-        mediaType: 'movie',
-        title: summary?.title || entry.title || 'Untitled',
-        year: formatMovieYear(summary?.release_date || entry.release_date || null),
-        role: entry.character || entry.job || 'Credit',
-        rating: summary?.vote_average ? formatScore(summary.vote_average) : formatScore(entry.vote_average),
+        mediaType: entry.media_type,
+        title: summary?.title || entry.title || entry.name || 'Untitled',
+        year,
+        releaseDate,
+        decade: numericYear === null ? null : `${Math.floor(numericYear / 10) * 10}s`,
+        roles: entry.roles,
+        role: entry.roles.join(' · '),
+        creditCategories: [...entry.creditCategories],
+        popularity: Number.isFinite(Number(entry.popularity)) ? Number(entry.popularity) : null,
+        voteAverage: Number.isFinite(voteAverage) && voteAverage > 0 ? voteAverage : null,
+        rating: Number.isFinite(voteAverage) && voteAverage > 0 ? formatScore(voteAverage) : 'N/A',
         posterUrl: resolvePosterPath(summary?.poster_path || entry.poster_path || null),
+        personal,
       }
     })
+    .sort((left, right) => (Date.parse(right.releaseDate || '') || 0) - (Date.parse(left.releaseDate || '') || 0) || left.title.localeCompare(right.title))
+}
+
+function getCreditCategory(entry) {
+  if (entry.character || entry.department === 'Acting') return 'acting'
+  if (entry.department === 'Directing') return 'directing'
+  if (entry.department === 'Production') return 'producing'
+  return null
 }
 
 function buildPersonFacts(person, movieCredits) {
@@ -2660,13 +2856,14 @@ function resolveBackdropFromCredits(movieCredits, movieSummaryById) {
 }
 
 function mapCreditToMovieCard(entry, movieSummaryById) {
-  const summary = movieSummaryById.get(Number(entry.id))
+  const isMovie = entry.media_type === 'movie'
+  const summary = isMovie ? movieSummaryById.get(Number(entry.id)) : null
 
   return {
     id: entry.id,
-    mediaType: 'movie',
-    title: summary?.title || entry.title || 'Untitled',
-    year: formatMovieYear(summary?.release_date || entry.release_date || null),
+    mediaType: isMovie ? 'movie' : 'tv',
+    title: summary?.title || entry.title || entry.name || 'Untitled',
+    year: formatMovieYear(summary?.release_date || entry.release_date || entry.first_air_date || null),
     meta: entry.character || entry.job || 'Credit',
     posterUrl: resolvePosterPath(summary?.poster_path || entry.poster_path || null),
     backdropUrl: resolveBackdropPath(summary?.backdrop_path || entry.backdrop_path || null),
@@ -2722,6 +2919,7 @@ function mapWatchlistMovie(movie) {
     runtime: formatRuntime(movie.runtime_minutes),
     streamingService: readMovieStreamingService(movie.detail_payload),
     watchlistedAt: movie.watchlisted_at ?? null,
+    ...Object.hasOwn(movie, 'top_slot') ? { releaseDate: movie.release_date ?? null, runtimeMinutes: Number.isInteger(movie.runtime_minutes) ? movie.runtime_minutes : null, topSlot: movie.top_slot === null ? null : Number(movie.top_slot), queuePosition: movie.queue_position === null ? null : Number(movie.queue_position), hasReleaseReminder: Boolean(movie.has_release_reminder) } : {},
   }
 }
 
@@ -2823,6 +3021,7 @@ function mapWatchlistBook(book) {
     type: 'Books',
     posterUrl: book.cover_image_url || null,
     watchlistedAt: book.watchlisted_at ?? null,
+    ...Object.hasOwn(book, 'top_slot') ? { releaseDate: book.published_date ?? null, pageCount: Number.isInteger(book.page_count) ? book.page_count : null, topSlot: book.top_slot === null ? null : Number(book.top_slot), queuePosition: book.queue_position === null ? null : Number(book.queue_position) } : {},
   }
 }
 
@@ -2912,6 +3111,7 @@ function mapWatchlistTvShow(show) {
     posterUrl: resolvePosterPath(show.poster_path),
     backdropUrl: resolveBackdropPath(show.backdrop_path),
     watchlistedAt: show.watchlisted_at ?? null,
+    ...Object.hasOwn(show, 'top_slot') ? { releaseDate: show.first_air_date ?? null, runtimeMinutes: Number.isInteger(show.runtime_minutes) ? show.runtime_minutes : null, streamingService: show.network || 'Streaming TBA', nextEpisodeDate: show.next_episode_date ?? null, nextEpisodeName: show.next_episode_name || null, topSlot: show.top_slot === null ? null : Number(show.top_slot), queuePosition: show.queue_position === null ? null : Number(show.queue_position) } : {},
   }
 }
 

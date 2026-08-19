@@ -49,6 +49,7 @@ const routeKinds = {
   discover: 'discover',
   continueWatching: 'continueWatching',
   calendar: 'calendar',
+  watchlist: 'watchlist',
   movieDetail: 'movieDetail',
   tvDetail: 'tvDetail',
   bookDetail: 'bookDetail',
@@ -57,6 +58,8 @@ const routeKinds = {
 }
 
 const authStorageKey = 'watchvault.auth.user'
+const recentSearchesStorageKey = 'watchvault.search.recent'
+const maxRecentSearches = 8
 const adminRunIdleState = {
   status: 'idle',
   message: '',
@@ -165,6 +168,8 @@ function App() {
       ? primaryViews.stats
       : readAppRoute().kind === routeKinds.calendar
         ? primaryViews.calendar
+        : readAppRoute().kind === routeKinds.watchlist
+          ? primaryViews.watchlist
       : readAppRoute().kind === routeKinds.bookDetail
         ? primaryViews.books
       : readAppRoute().kind === routeKinds.authorDetail
@@ -175,7 +180,9 @@ function App() {
   )
   const [activeMovieTab, setActiveMovieTab] = useState(movieTabs[0])
   const [activeTvTab, setActiveTvTab] = useState(tvShowTabs[0])
-  const [activeWatchlistTab, setActiveWatchlistTab] = useState(watchlistTabs[0])
+  const [activeWatchlistTab, setActiveWatchlistTab] = useState(() => readWatchlistViewState().tab)
+  const [watchlistAvailability, setWatchlistAvailability] = useState(() => readWatchlistViewState().availability)
+  const [watchlistSort, setWatchlistSort] = useState(() => readWatchlistViewState().sort)
   const [calendarMonth, setCalendarMonth] = useState(() => getLocalIsoMonth())
   const [calendarMediaType, setCalendarMediaType] = useState('all')
   const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => getLocalIsoDate())
@@ -199,6 +206,7 @@ function App() {
     error: '',
   })
   const tmdbSearchRequestId = useRef(0)
+  const tmdbSearchStartedQueryRef = useRef('')
   const [googleBooksSearchState, setGoogleBooksSearchState] = useState({
     status: 'idle',
     books: [],
@@ -206,6 +214,8 @@ function App() {
     persistingBookId: null,
   })
   const googleBooksSearchRequestId = useRef(0)
+  const googleBooksSearchStartedQueryRef = useRef('')
+  const [activeSearchSource, setActiveSearchSource] = useState('watchvault')
   const [user, setUser] = useState(null)
   const [authStatus, setAuthStatus] = useState('idle')
   const [authError, setAuthError] = useState('')
@@ -264,8 +274,10 @@ function App() {
     filmography: [],
     coStars: [],
     facts: [],
+    personalHistory: null,
     error: '',
   })
+  const [personDetailRefreshKey, setPersonDetailRefreshKey] = useState(0)
   const [adminOverviewState, setAdminOverviewState] = useState({
     status: 'idle',
     crons: [],
@@ -360,6 +372,8 @@ function App() {
           ? primaryViews.stats
           : nextRoute.kind === routeKinds.calendar
             ? primaryViews.calendar
+            : nextRoute.kind === routeKinds.watchlist
+              ? primaryViews.watchlist
           : nextRoute.kind === routeKinds.bookDetail
             ? primaryViews.books
             : nextRoute.kind === routeKinds.authorDetail
@@ -368,6 +382,12 @@ function App() {
           ? primaryViews.movies
           : primaryViews.home
       )
+      if (nextRoute.kind === routeKinds.watchlist) {
+        const view = readWatchlistViewState()
+        setActiveWatchlistTab(view.tab)
+        setWatchlistAvailability(view.availability)
+        setWatchlistSort(view.sort)
+      }
     }
 
     window.addEventListener('popstate', handlePopState)
@@ -500,8 +520,16 @@ function App() {
     setActiveView(nextView)
   }
 
-  function handleSearchSubmit() {
-    const query = searchInput.trim()
+  function saveRecentSearch(query) {
+    const normalizedQuery = query.trim()
+    if (!normalizedQuery) return
+    const current = readRecentSearches()
+    const next = [normalizedQuery, ...current.filter((item) => item.toLocaleLowerCase() !== normalizedQuery.toLocaleLowerCase())].slice(0, maxRecentSearches)
+    window.localStorage.setItem(recentSearchesStorageKey, JSON.stringify(next))
+  }
+
+  function handleSearchSubmit(nextQuery = searchInput) {
+    const query = nextQuery.trim()
 
     if (!query) {
       setSearchError('Enter a movie, show, book, or actor to search.')
@@ -509,8 +537,20 @@ function App() {
     }
 
     setSearchError('')
+    setSearchInput(query)
+    saveRecentSearch(query)
     handleNavigateToPath(buildSearchPath(query), { kind: routeKinds.search, query })
     return true
+  }
+
+  function handleOpenSearchSuggestion(suggestion) {
+    if (!suggestion?.id || !suggestion?.label) return
+    saveRecentSearch(suggestion.label)
+    setSearchInput(suggestion.label)
+    if (suggestion.kind === 'movie') handleOpenMovieDetail({ id: suggestion.id })
+    if (suggestion.kind === 'tv') handleOpenTvDetail({ id: suggestion.id })
+    if (suggestion.kind === 'book') handleOpenBookDetail({ id: suggestion.id })
+    if (suggestion.kind === 'person') handleOpenPersonDetail({ id: suggestion.id, name: suggestion.label })
   }
 
   function handleOpenDiscover() {
@@ -519,8 +559,9 @@ function App() {
 
   async function handleSearchTmdb() {
     const query = currentRoute.kind === routeKinds.search ? currentRoute.query : ''
-    if (!query) return
+    if (!query || tmdbSearchStartedQueryRef.current === query) return
 
+    tmdbSearchStartedQueryRef.current = query
     const requestId = ++tmdbSearchRequestId.current
     setTmdbSearchState({ status: 'loading', movies: [], shows: [], error: '' })
 
@@ -551,8 +592,9 @@ function App() {
 
   async function handleSearchGoogleBooks() {
     const query = currentRoute.kind === routeKinds.search ? currentRoute.query : ''
-    if (!query) return
+    if (!query || googleBooksSearchStartedQueryRef.current === query) return
 
+    googleBooksSearchStartedQueryRef.current = query
     const requestId = ++googleBooksSearchRequestId.current
     setGoogleBooksSearchState({ status: 'loading', books: [], error: '', persistingBookId: null })
 
@@ -690,6 +732,7 @@ function App() {
       filmography: [],
       coStars: [],
       facts: [],
+      personalHistory: null,
       error: '',
     })
 
@@ -699,6 +742,20 @@ function App() {
     }, primaryViews.movies, {
       personPreview: person,
     })
+  }
+
+  function updatePersonFilmographyPersonalState(mediaType, id, changes) {
+    setPersonDetailState((state) => ({
+      ...state,
+      filmography: state.filmography.map((item) => item.mediaType === mediaType && Number(item.id) === Number(id)
+        ? { ...item, personal: { ...item.personal, ...changes } }
+        : item),
+    }))
+    refreshPersonDetailHistory()
+  }
+
+  function refreshPersonDetailHistory() {
+    if (currentRoute.kind === routeKinds.personDetail) setPersonDetailRefreshKey((key) => key + 1)
   }
 
   async function handleLogin(credentials) {
@@ -787,6 +844,16 @@ function App() {
       return
     }
 
+    if (view === primaryViews.watchlist) {
+      const next = readWatchlistViewState()
+      handleNavigateToPath(buildWatchlistPath(next), { kind: routeKinds.watchlist }, view)
+      setActiveWatchlistTab(next.tab)
+      setWatchlistAvailability(next.availability)
+      setWatchlistSort(next.sort)
+      setSelectedGenre(null)
+      return
+    }
+
     setActiveView(view)
     if (currentRoute.kind === routeKinds.movieDetail || currentRoute.kind === routeKinds.personDetail || currentRoute.kind === routeKinds.tvDetail || currentRoute.kind === routeKinds.bookDetail || currentRoute.kind === routeKinds.authorDetail) {
       handleNavigateToPath('/', { kind: routeKinds.home }, view)
@@ -825,8 +892,16 @@ function App() {
     setMoviesScreenMode(movieScreenModes.overview)
   }
 
+  function handleWatchlistViewChange(patch) {
+    const next = { tab: activeWatchlistTab, availability: watchlistAvailability, sort: watchlistSort, ...patch }
+    setActiveWatchlistTab(next.tab)
+    setWatchlistAvailability(next.availability)
+    setWatchlistSort(next.sort)
+    handleNavigateToPath(buildWatchlistPath(next), { kind: routeKinds.watchlist }, primaryViews.watchlist)
+  }
+
   function handleWatchlistTabChange(tab) {
-    setActiveWatchlistTab(tab)
+    handleWatchlistViewChange({ tab })
   }
 
   function handleTvTabChange(tab) {
@@ -998,6 +1073,10 @@ function App() {
       setTvWatchlistIds(new Set(payload.watchlistIds ?? []))
       setTvWatchlistShows(Array.isArray(payload.watchlistShows) ? payload.watchlistShows.map(mapTvWatchlistShowPayload) : [])
       setTvStatsState({ status: 'success', stats: mapTvStatsPayload(payload.stats), error: '' })
+      updatePersonFilmographyPersonalState('tv', showId, {
+        watchlisted: (payload.watchlistIds ?? []).map(Number).includes(showId),
+        watched: (payload.watchedIds ?? []).map(Number).includes(showId),
+      })
       receiveAchievementUnlocks(payload.newlyUnlockedAchievements)
     } catch (error) {
       setTvStatsState((state) => ({ ...state, status: 'error', error: error instanceof Error ? error.message : 'Unable to update TV library.' }))
@@ -1384,6 +1463,7 @@ function App() {
         movieId: normalizedMovieId,
         error: '',
       })
+      updatePersonFilmographyPersonalState('movie', normalizedMovieId, { watchlisted: true, watched: false })
       receiveAchievementUnlocks(payload.newlyUnlockedAchievements)
       void loadWatchedForUser(user)
     } catch (error) {
@@ -1433,6 +1513,7 @@ function App() {
         movieId: normalizedMovieId,
         error: '',
       })
+      updatePersonFilmographyPersonalState('movie', normalizedMovieId, { watchlisted: false })
       void loadWatchedForUser(user)
     } catch (error) {
       setWatchlistActionState({
@@ -1480,9 +1561,27 @@ function App() {
           ? { ...state, movie: { ...state.movie, hasReleaseReminder: Boolean(payload.hasReleaseReminder) } }
           : state
       ))
+      setWatchlistState((state) => ({ ...state, movies: state.movies.map((item) => Number(item.id) === movieId ? { ...item, hasReleaseReminder: Boolean(payload.hasReleaseReminder) } : item) }))
       setMovieReleaseReminderActionState({ status: 'success', movieId, error: '' })
     } catch (error) {
       setMovieReleaseReminderActionState({ status: 'error', movieId, error: error instanceof Error ? error.message : 'Unable to update this release reminder right now.' })
+    }
+  }
+
+  async function handleSetWatchlistPriority(item, patch) {
+    if (!user) return handleOpenLogin()
+    const mediaType = item.type === 'Movies' ? 'movie' : item.type === 'TV Shows' ? 'tv' : item.type === 'Books' ? 'book' : null
+    if (!mediaType) return
+    try {
+      const response = await fetch('/api/watchlist/priority', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json', ...buildAuthHeaders(user) },
+        body: JSON.stringify({ mediaType, mediaId: item.id, ...patch }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || 'Unable to update priority')
+      await Promise.all([loadWatchlistForUser(user), loadTvLibraryForUser(user)])
+    } catch (error) {
+      setWatchlistState((state) => ({ ...state, status: 'error', error: error instanceof Error ? error.message : 'Unable to update priority.' }))
     }
   }
 
@@ -1875,6 +1974,7 @@ function App() {
         movieId: normalizedMovieId,
         error: '',
       })
+      updatePersonFilmographyPersonalState('movie', normalizedMovieId, { watched: true, watchlisted: false })
       receiveAchievementUnlocks(payload.newlyUnlockedAchievements)
       // Do not unmount the completed title before the confirming partner can
       // rate it. The rating dialog refreshes the shared state when it closes.
@@ -1933,6 +2033,7 @@ function App() {
         movieId: normalizedMovieId,
         error: '',
       })
+      updatePersonFilmographyPersonalState('movie', normalizedMovieId, { watched: false })
     } catch (error) {
       setWatchedActionState({
         status: 'error',
@@ -2139,9 +2240,12 @@ function App() {
 
   useEffect(() => {
     tmdbSearchRequestId.current += 1
+    tmdbSearchStartedQueryRef.current = ''
     setTmdbSearchState({ status: 'idle', movies: [], shows: [], error: '' })
     googleBooksSearchRequestId.current += 1
+    googleBooksSearchStartedQueryRef.current = ''
     setGoogleBooksSearchState({ status: 'idle', books: [], error: '', persistingBookId: null })
+    setActiveSearchSource('watchvault')
 
     if (currentRoute.kind !== routeKinds.search || !currentRoute.query) {
       setSearchResultsState({
@@ -2369,6 +2473,7 @@ function App() {
         filmography: [],
         coStars: [],
         facts: [],
+        personalHistory: null,
         error: '',
       })
       return
@@ -2384,7 +2489,7 @@ function App() {
       }))
 
       try {
-        const response = await fetch(`/api/people/${currentRoute.personId}`)
+        const response = await fetch(`/api/people/${currentRoute.personId}`, { headers: buildAuthHeaders(user) })
         const payload = await response.json().catch(() => ({}))
 
         if (!response.ok) {
@@ -2398,6 +2503,7 @@ function App() {
               filmography: [],
               coStars: [],
               facts: [],
+              personalHistory: null,
               error: '',
             })
             return
@@ -2414,6 +2520,7 @@ function App() {
             filmography: Array.isArray(payload.filmography) ? payload.filmography.map(mapPersonFilmographyRow) : [],
             coStars: Array.isArray(payload.coStars) ? payload.coStars.map(mapPersonCoStar) : [],
             facts: Array.isArray(payload.facts) ? payload.facts : [],
+            personalHistory: mapPersonHistoryPayload(payload.personalHistory),
             error: '',
           })
         }
@@ -2426,6 +2533,7 @@ function App() {
             filmography: [],
             coStars: [],
             facts: [],
+            personalHistory: null,
             error: error instanceof Error ? error.message : 'Unable to load the person detail right now.',
           })
         }
@@ -2437,7 +2545,7 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [currentRoute])
+  }, [currentRoute, user, personDetailRefreshKey])
 
   useEffect(() => {
     if (currentRoute.kind !== routeKinds.tvDetail) {
@@ -3235,6 +3343,7 @@ function App() {
                 if (searchError) setSearchError('')
               }}
               onSearchSubmit={handleSearchSubmit}
+              onSearchSuggestionSelect={handleOpenSearchSuggestion}
               onOpenAdmin={handleOpenAdmin}
               onOpenAccount={handleOpenAccount}
               onOpenLogin={handleOpenLogin}
@@ -3255,6 +3364,7 @@ function App() {
                 if (searchError) setSearchError('')
               }}
               onSearchSubmit={handleSearchSubmit}
+              onSearchSuggestionSelect={handleOpenSearchSuggestion}
               alertsState={alertsState}
               onOpenAlert={handleOpenAlert}
               onOpenAlerts={handleOpenAlerts}
@@ -3284,8 +3394,12 @@ function App() {
                 searchResultsState={searchResultsState}
                 tmdbSearchState={tmdbSearchState}
                 googleBooksSearchState={googleBooksSearchState}
-                onSearchTmdb={handleSearchTmdb}
-                onSearchGoogleBooks={handleSearchGoogleBooks}
+                activeSearchSource={activeSearchSource}
+                onSelectSearchSource={(source) => {
+                  setActiveSearchSource(source)
+                  if (source === 'tmdb') void handleSearchTmdb()
+                  if (source === 'books') void handleSearchGoogleBooks()
+                }}
                 onOpenMovie={handleOpenMovieDetail}
                 onOpenTvShow={handleOpenTvDetail}
                 onOpenPerson={handleOpenPersonDetail}
@@ -3295,6 +3409,14 @@ function App() {
                 watchlistMovieIds={watchlistMovieIds}
                 watchedTvIds={tvWatchedIds}
                 watchlistTvIds={tvWatchlistIds}
+                favoriteActorIds={new Set(favoriteActorsState.actors.map((actor) => Number(actor.id)))}
+                onToggleMovieWatchlist={handleToggleMovieInWatchlist}
+                onToggleMovieWatched={handleToggleMovieWatched}
+                onToggleTvWatchlist={handleToggleTvWatchlist}
+                onToggleTvWatched={handleToggleTvWatched}
+                onToggleFavoriteActor={handleToggleFavoriteActor}
+                onOpenDiscover={handleOpenDiscover}
+                onSearchQuery={handleSearchSubmit}
               />
             ) : currentRoute.kind === routeKinds.discover ? (
               <DiscoverScreen
@@ -3401,8 +3523,11 @@ function App() {
             ) : activeView === primaryViews.watchlist ? (
               <WatchlistScreen
                 activeTab={activeWatchlistTab}
+                availability={watchlistAvailability}
+                sort={watchlistSort}
                 isSignedIn={Boolean(user)}
                 onTabChange={handleWatchlistTabChange}
+                onViewChange={handleWatchlistViewChange}
                 onOpenLogin={handleOpenLogin}
                 onOpenMovie={handleOpenMovieDetail}
                 onOpenTvShow={handleOpenTvDetail}
@@ -3413,6 +3538,13 @@ function App() {
                 watchlistState={watchlistState}
                 tvWatchlistShows={tvWatchlistShows}
                 onOpenAuthor={handleOpenAuthorDetail}
+                onRemoveMovie={handleRemoveMovieFromWatchlist}
+                onRemoveBook={handleToggleBookInWatchlist}
+                onToggleTvWatchlist={handleToggleTvWatchlist}
+                onMarkMovieWatched={handleToggleMovieWatched}
+                onMarkBookRead={handleToggleBookRead}
+                onMarkTvWatched={handleToggleTvWatched}
+                onSetPriority={handleSetWatchlistPriority}
               />
             ) : activeView === primaryViews.watchTogether ? (
               <WatchTogetherScreen
@@ -3505,8 +3637,14 @@ function App() {
                 personDetailState={personDetailState}
                 onBackToMovies={() => handleMovieViewSelection(primaryViews.movies)}
                 onOpenMovie={handleOpenMovieDetail}
+                onOpenTv={handleOpenTvDetail}
                 onOpenPerson={handleOpenPersonDetail}
                 isSignedIn={Boolean(user)}
+                onOpenLogin={handleOpenLogin}
+                onToggleMovieWatchlist={handleToggleMovieInWatchlist}
+                onToggleMovieWatched={handleToggleMovieWatched}
+                onToggleTvWatchlist={handleToggleTvWatchlist}
+                onToggleTvWatched={handleToggleTvWatched}
                 favoriteActorIds={new Set(favoriteActorsState.actors.map((actor) => Number(actor.id)))}
                 onToggleFavorite={handleToggleFavoriteActor}
               />
@@ -3594,7 +3732,7 @@ function Brand() {
   )
 }
 
-function DesktopTopbar({ alertsState, onOpenAdmin, onOpenAccount, onOpenAlert, onOpenAlerts, onOpenLogin, onLogout, onRespondToWatchTogetherRequest, onSearchInputChange, onSearchSubmit, searchError, searchInput, user }) {
+function DesktopTopbar({ alertsState, onOpenAdmin, onOpenAccount, onOpenAlert, onOpenAlerts, onOpenLogin, onLogout, onRespondToWatchTogetherRequest, onSearchInputChange, onSearchSubmit, onSearchSuggestionSelect, searchError, searchInput, user }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef(null)
 
@@ -3634,17 +3772,7 @@ function DesktopTopbar({ alertsState, onOpenAdmin, onOpenAccount, onOpenAlert, o
   return (
     <header className="topbar desktop-only">
       <form className="topbar-search" onSubmit={(event) => { event.preventDefault(); onSearchSubmit() }}>
-        <label className="searchbar" aria-label="Search movies, shows, books, and actors">
-          <SearchIcon />
-          <input
-            type="text"
-            value={searchInput}
-            onChange={(event) => onSearchInputChange(event.target.value)}
-            placeholder="Search movies, shows, books, actors..."
-            aria-invalid={Boolean(searchError)}
-            aria-describedby={searchError ? 'desktop-search-error' : undefined}
-          />
-        </label>
+        <SearchAutocomplete inputId="desktop-search" onChange={onSearchInputChange} onSelect={onSearchSuggestionSelect} onSubmit={onSearchSubmit} searchError={searchError} value={searchInput} />
         <button type="submit" className="search-submit-button">Search</button>
         {searchError ? <span id="desktop-search-error" className="search-error" role="alert">{searchError}</span> : null}
       </form>
@@ -3702,7 +3830,7 @@ function DesktopTopbar({ alertsState, onOpenAdmin, onOpenAccount, onOpenAlert, o
   )
 }
 
-function MobileHeader({ alertsState, onOpenAccount, onOpenAlert, onOpenAlerts, onOpenLogin, onRespondToWatchTogetherRequest, onSearchInputChange, onSearchSubmit, searchError, searchInput, user }) {
+function MobileHeader({ alertsState, onOpenAccount, onOpenAlert, onOpenAlerts, onOpenLogin, onRespondToWatchTogetherRequest, onSearchInputChange, onSearchSubmit, onSearchSuggestionSelect, searchError, searchInput, user }) {
   const [searchOpen, setSearchOpen] = useState(false)
 
   return (
@@ -3729,16 +3857,117 @@ function MobileHeader({ alertsState, onOpenAccount, onOpenAlert, onOpenAlerts, o
 
       {searchOpen ? (
         <form className="mobile-search-form" onSubmit={(event) => { event.preventDefault(); if (onSearchSubmit()) setSearchOpen(false) }}>
-          <label className="searchbar" aria-label="Search movies, shows, books, and actors">
-            <SearchIcon />
-            <input type="text" autoFocus value={searchInput} onChange={(event) => onSearchInputChange(event.target.value)} placeholder="Search movies, shows, books, actors..." aria-invalid={Boolean(searchError)} aria-describedby={searchError ? 'mobile-search-error' : undefined} />
-          </label>
+          <SearchAutocomplete autoFocus inputId="mobile-search" onChange={onSearchInputChange} onSelect={onSearchSuggestionSelect} onSubmit={onSearchSubmit} searchError={searchError} value={searchInput} />
           <button type="submit" className="search-submit-button">Search</button>
           {searchError ? <span id="mobile-search-error" className="search-error" role="alert">{searchError}</span> : null}
         </form>
       ) : null}
     </div>
   )
+}
+
+function SearchAutocomplete({ autoFocus = false, inputId, onChange, onSelect, onSubmit, searchError, value }) {
+  const [open, setOpen] = useState(false)
+  const [activeIndex, setActiveIndex] = useState(-1)
+  const [suggestionState, setSuggestionState] = useState({ status: 'idle', titles: [], people: [], error: '' })
+  const [popularState, setPopularState] = useState({ status: 'idle', titles: [], error: '' })
+  const requestId = useRef(0)
+  const recentSearches = readRecentSearches()
+  const menuItems = value.trim().length >= 2
+    ? [...suggestionState.titles, ...suggestionState.people]
+    : [...recentSearches.map((label) => ({ kind: 'recent', label, meta: 'Recent search' })), ...popularState.titles.map((item) => ({ ...item, searchOnly: true }))]
+
+  useEffect(() => {
+    const query = value.trim()
+    if (query.length < 2) {
+      requestId.current += 1
+      setSuggestionState({ status: 'idle', titles: [], people: [], error: '' })
+      return
+    }
+    const currentRequestId = ++requestId.current
+    const timeout = window.setTimeout(async () => {
+      setSuggestionState({ status: 'loading', titles: [], people: [], error: '' })
+      try {
+        const response = await fetch(`/api/search/suggestions?q=${encodeURIComponent(query)}`)
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+        if (currentRequestId === requestId.current) setSuggestionState({ status: 'success', titles: Array.isArray(payload.titles) ? payload.titles : [], people: Array.isArray(payload.people) ? payload.people : [], error: '' })
+      } catch (error) {
+        if (currentRequestId === requestId.current) setSuggestionState({ status: 'error', titles: [], people: [], error: error instanceof Error ? error.message : 'Unable to load suggestions.' })
+      }
+    }, 200)
+    return () => window.clearTimeout(timeout)
+  }, [value])
+
+  useEffect(() => {
+    if (!open || value.trim()) return
+    if (popularState.status !== 'idle') return
+    let cancelled = false
+    setPopularState({ status: 'loading', titles: [], error: '' })
+    fetch('/api/search/popular').then(async (response) => {
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+      if (!cancelled) setPopularState({ status: 'success', titles: Array.isArray(payload.titles) ? payload.titles : [], error: '' })
+    }).catch((error) => { if (!cancelled) setPopularState({ status: 'error', titles: [], error: error instanceof Error ? error.message : 'Unable to load popular searches.' }) })
+    return () => { cancelled = true }
+  }, [open, popularState.status, value])
+
+  const showTypedSuggestions = value.trim().length >= 2
+  const selectItem = (item) => {
+    setOpen(false)
+    setActiveIndex(-1)
+    if (item.kind === 'recent' || item.searchOnly) {
+      onChange(item.label)
+      onSubmit(item.label)
+      return
+    }
+    onSelect(item)
+  }
+
+  const handleKeyDown = (event) => {
+    if (event.key === 'Escape') { setOpen(false); setActiveIndex(-1); return }
+    if (!open || !menuItems.length) return
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      setActiveIndex((index) => (index + (event.key === 'ArrowDown' ? 1 : menuItems.length - 1)) % menuItems.length)
+    }
+    if (event.key === 'Enter' && activeIndex >= 0) { event.preventDefault(); selectItem(menuItems[activeIndex]) }
+  }
+
+  return <div className="search-autocomplete">
+    <label className="searchbar" aria-label="Search movies, shows, books, and actors">
+      <SearchIcon />
+      <input id={inputId} type="text" autoFocus={autoFocus} value={value} onFocus={() => setOpen(true)} onBlur={() => window.setTimeout(() => setOpen(false), 120)} onChange={(event) => { onChange(event.target.value); setOpen(true); setActiveIndex(-1) }} onKeyDown={handleKeyDown} placeholder="Search movies, shows, books, actors..." role="combobox" aria-expanded={open} aria-controls={`${inputId}-suggestions`} aria-autocomplete="list" aria-activedescendant={activeIndex >= 0 ? `${inputId}-suggestion-${activeIndex}` : undefined} aria-invalid={Boolean(searchError)} aria-describedby={searchError ? `${inputId}-error` : undefined} />
+    </label>
+    {open ? <div className="search-suggestions" id={`${inputId}-suggestions`} role="listbox">
+      {showTypedSuggestions ? <SearchSuggestionGroups activeIndex={activeIndex} inputId={inputId} onSelect={selectItem} people={suggestionState.people} status={suggestionState.status} titles={suggestionState.titles} /> : <>
+        {recentSearches.length ? <SearchSuggestionGroup heading="Recent searches" items={recentSearches.map((label) => ({ kind: 'recent', label, meta: 'Recent search' }))} inputId={inputId} offset={0} activeIndex={activeIndex} onSelect={selectItem} /> : null}
+        <SearchSuggestionGroup heading="Popular searches" items={popularState.titles.map((item) => ({ ...item, searchOnly: true }))} inputId={inputId} offset={recentSearches.length} activeIndex={activeIndex} onSelect={selectItem} />
+      </>}
+      {showTypedSuggestions && suggestionState.status === 'loading' ? <p className="search-suggestions-message">Loading suggestions…</p> : null}
+      {showTypedSuggestions && suggestionState.status === 'error' ? <p className="search-suggestions-message error">{suggestionState.error}</p> : null}
+      {!showTypedSuggestions && popularState.status === 'loading' ? <p className="search-suggestions-message">Loading popular searches…</p> : null}
+    </div> : null}
+  </div>
+}
+
+function readRecentSearches() {
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(recentSearchesStorageKey) || '[]')
+    return Array.isArray(stored) ? stored.filter((item) => typeof item === 'string' && item.trim()).slice(0, maxRecentSearches) : []
+  } catch {
+    return []
+  }
+}
+
+function SearchSuggestionGroups({ activeIndex, inputId, onSelect, people, status, titles }) {
+  if (status === 'success' && !titles.length && !people.length) return <p className="search-suggestions-message">No suggestions found.</p>
+  return <><SearchSuggestionGroup heading="Titles" items={titles} inputId={inputId} offset={0} activeIndex={activeIndex} onSelect={onSelect} /><SearchSuggestionGroup heading="People" items={people} inputId={inputId} offset={titles.length} activeIndex={activeIndex} onSelect={onSelect} /></>
+}
+
+function SearchSuggestionGroup({ activeIndex, heading, inputId, items, offset, onSelect }) {
+  if (!items.length) return null
+  return <section className="search-suggestion-group"><p>{heading}</p>{items.map((item, index) => <button key={`${item.kind}-${item.id || item.label}`} id={`${inputId}-suggestion-${offset + index}`} type="button" role="option" aria-selected={activeIndex === offset + index} className={activeIndex === offset + index ? 'active' : ''} onMouseDown={(event) => event.preventDefault()} onClick={() => onSelect(item)}><span className={`search-suggestion-image${item.imageUrl ? ' has-image' : ''}`}>{item.imageUrl ? <img src={item.imageUrl} alt="" /> : <SearchIcon />}</span><span><b>{item.label}</b><small>{item.meta}</small></span></button>)}</section>
 }
 
 function AlertInbox({ alertsState, onOpenAlert, onOpenAlerts, onOpenLogin, onRespondToWatchTogetherRequest, user }) {
@@ -3789,14 +4018,22 @@ function AlertInbox({ alertsState, onOpenAlert, onOpenAlerts, onOpenLogin, onRes
 }
 
 function SearchResultsPage({
+  activeSearchSource,
+  favoriteActorIds,
   googleBooksSearchState,
   onOpenBook,
   onOpenGoogleBook,
+  onOpenDiscover,
   onOpenMovie,
   onOpenPerson,
-  onSearchGoogleBooks,
-  onSearchTmdb,
+  onSelectSearchSource,
+  onSearchQuery,
   onOpenTvShow,
+  onToggleFavoriteActor,
+  onToggleMovieWatched,
+  onToggleMovieWatchlist,
+  onToggleTvWatched,
+  onToggleTvWatchlist,
   query,
   searchResultsState,
   tmdbSearchState,
@@ -3817,67 +4054,169 @@ function SearchResultsPage({
     )
   }
 
-  const isLoading = searchResultsState.status === 'loading' || searchResultsState.status === 'idle'
-  const hasError = searchResultsState.status === 'error'
-  const isTmdbLoading = tmdbSearchState.status === 'loading'
-  const isGoogleBooksLoading = googleBooksSearchState.status === 'loading'
-  const showingTmdbResults = tmdbSearchState.status === 'success'
-  const showingGoogleBooksResults = googleBooksSearchState.status === 'success'
+  const sourceTabs = [
+    { id: 'watchvault', label: 'WatchVault', state: searchResultsState },
+    { id: 'tmdb', label: 'TMDB', state: tmdbSearchState },
+    { id: 'books', label: 'Google Books', state: googleBooksSearchState },
+  ]
+  const activeSourceState = sourceTabs.find((source) => source.id === activeSearchSource)?.state ?? searchResultsState
+  const isLoading = activeSourceState.status === 'loading' || activeSourceState.status === 'idle'
+  const hasError = activeSourceState.status === 'error'
+  const showingWatchVaultResults = activeSearchSource === 'watchvault'
+  const showingTmdbResults = activeSearchSource === 'tmdb'
+  const showingGoogleBooksResults = activeSearchSource === 'books'
   const titleMovies = showingTmdbResults ? tmdbSearchState.movies : searchResultsState.movies
   const titleShows = showingTmdbResults ? tmdbSearchState.shows : searchResultsState.shows
   const titleBooks = showingGoogleBooksResults ? googleBooksSearchState.books : searchResultsState.books
+  const localClusters = showingWatchVaultResults ? buildAmbiguousSearchClusters(searchResultsState) : []
+  const clusteredMovieIds = new Set(localClusters.flatMap((cluster) => cluster.items.filter((item) => item.kind === 'movie').map((item) => item.id)))
+  const clusteredShowIds = new Set(localClusters.flatMap((cluster) => cluster.items.filter((item) => item.kind === 'tv').map((item) => item.id)))
+  const clusteredBookIds = new Set(localClusters.flatMap((cluster) => cluster.items.filter((item) => item.kind === 'book').map((item) => item.id)))
+  const visibleMovies = showingWatchVaultResults ? titleMovies.filter((item) => !clusteredMovieIds.has(item.id)) : titleMovies
+  const visibleShows = showingWatchVaultResults ? titleShows.filter((item) => !clusteredShowIds.has(item.id)) : titleShows
+  const visibleBooks = showingWatchVaultResults ? titleBooks.filter((item) => !clusteredBookIds.has(item.id)) : titleBooks
+  const hasNoLocalMatches = showingWatchVaultResults && !isLoading && !hasError && !searchResultsState.movies.length && !searchResultsState.shows.length && !searchResultsState.books.length && !searchResultsState.actors.length
 
   return (
     <section className="search-results-page">
       <div className="search-results-heading">
         <p className="eyebrow">Search results</p>
         <h1>Results for “{query}”</h1>
-        <div className="tmdb-search-action">
-          <button type="button" className="search-tmdb-button" onClick={onSearchTmdb} disabled={isTmdbLoading}>
-            {isTmdbLoading ? 'Searching TMDB…' : 'Search TMDB'}
-          </button>
-          <button type="button" className="search-tmdb-button" onClick={onSearchGoogleBooks} disabled={isGoogleBooksLoading}>
-            {isGoogleBooksLoading ? 'Searching Google Books…' : 'Search Google Books'}
-          </button>
-          {tmdbSearchState.status === 'error' ? <p className="tmdb-search-error" role="alert">Could not search TMDB. {tmdbSearchState.error}</p> : null}
-          {googleBooksSearchState.status === 'error' || googleBooksSearchState.error ? <p className="tmdb-search-error" role="alert">Could not search or save from Google Books. {googleBooksSearchState.error}</p> : null}
+        <div className="search-source-tabs" role="tablist" aria-label="Search source">
+          {sourceTabs.map((source) => {
+            const isActive = source.id === activeSearchSource
+            const isLoading = source.state.status === 'loading'
+            return (
+              <button
+                key={source.id}
+                id={`search-source-tab-${source.id}`}
+                type="button"
+                role="tab"
+                aria-selected={isActive}
+                aria-controls={`search-source-panel-${source.id}`}
+                className={isActive ? 'active' : ''}
+                onClick={() => onSelectSearchSource(source.id)}
+                onKeyDown={(event) => {
+                  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+                  event.preventDefault()
+                  const currentIndex = sourceTabs.findIndex((item) => item.id === source.id)
+                  const nextIndex = event.key === 'Home' ? 0 : event.key === 'End' ? sourceTabs.length - 1 : (currentIndex + (event.key === 'ArrowRight' ? 1 : -1) + sourceTabs.length) % sourceTabs.length
+                  const nextSource = sourceTabs[nextIndex]
+                  onSelectSearchSource(nextSource.id)
+                  document.getElementById(`search-source-tab-${nextSource.id}`)?.focus()
+                }}
+              >
+                {source.label}{isLoading ? <span className="search-source-tab-status"> · Searching…</span> : null}
+              </button>
+            )
+          })}
         </div>
       </div>
 
-      <SearchResultGroup title={showingTmdbResults ? 'TMDB Movies' : 'Movies'} isLoading={isLoading || isTmdbLoading} error={hasError ? searchResultsState.error : ''} items={titleMovies} emptyMessage={showingTmdbResults ? 'No TMDB movies matched this search.' : 'No movies matched this search.'}>
-        <div className="movie-card-grid popular-movies-catalog">
-          {titleMovies.map((movie) => <MovieCard key={movie.id} movie={movie} onOpenMovie={onOpenMovie} isWatched={watchedMovieIds.has(Number(movie.id))} isInWatchlist={watchlistMovieIds.has(Number(movie.id))} />)}
-        </div>
-      </SearchResultGroup>
+      <div id={`search-source-panel-${activeSearchSource}`} role="tabpanel" aria-labelledby={`search-source-tab-${activeSearchSource}`}>
+        {showingGoogleBooksResults && googleBooksSearchState.error ? <p className="search-source-error" role="alert">Could not save this Google Books title. {googleBooksSearchState.error}</p> : null}
+        {hasNoLocalMatches ? <LocalSearchEmptyState query={query} onOpenDiscover={onOpenDiscover} onSearchQuery={onSearchQuery} onSelectSource={onSelectSearchSource} /> : null}
+        {showingWatchVaultResults && localClusters.length ? <SearchResultGroup title="Shared title matches" isLoading={false} error="" items={localClusters}>
+          <div className="search-result-clusters">{localClusters.map((cluster) => <article className="search-result-cluster" key={cluster.key}><header><h3><HighlightedText text={cluster.title} query={query} /></h3><span>{cluster.items.length} formats</span></header><div className="search-result-cluster-items">{cluster.items.map((item) => item.kind === 'movie' ? <MovieCard key={`movie-${item.id}`} movie={item} matchQuery={query} onOpenMovie={onOpenMovie} isWatched={watchedMovieIds.has(Number(item.id))} isInWatchlist={watchlistMovieIds.has(Number(item.id))} onToggleWatchlist={onToggleMovieWatchlist} onToggleWatched={onToggleMovieWatched} /> : item.kind === 'tv' ? <TvShowPosterCard key={`tv-${item.id}`} show={item} matchQuery={query} onSelectShow={onOpenTvShow} isWatched={watchedTvIds.has(Number(item.id))} isInWatchlist={watchlistTvIds.has(Number(item.id))} onToggleWatchlist={onToggleTvWatchlist} onToggleWatched={onToggleTvWatched} /> : <BookCard key={`book-${item.id}`} book={item} matchQuery={query} onOpenBook={onOpenBook} />)}</div></article>)}</div>
+        </SearchResultGroup> : null}
+        {!hasNoLocalMatches && !showingGoogleBooksResults ? <SearchResultGroup title="Movies" isLoading={isLoading} error={hasError ? activeSourceState.error : ''} items={visibleMovies} emptyMessage={showingTmdbResults ? 'No TMDB movies matched this search.' : 'No movies matched this search.'}>
+          <div className="movie-card-grid popular-movies-catalog">
+            {visibleMovies.map((movie) => <MovieCard key={movie.id} movie={movie} matchQuery={query} onOpenMovie={onOpenMovie} isWatched={watchedMovieIds.has(Number(movie.id))} isInWatchlist={watchlistMovieIds.has(Number(movie.id))} onToggleWatchlist={showingWatchVaultResults ? onToggleMovieWatchlist : null} onToggleWatched={showingWatchVaultResults ? onToggleMovieWatched : null} />)}
+          </div>
+        </SearchResultGroup> : null}
 
-      <SearchResultGroup title={showingTmdbResults ? 'TMDB TV Shows' : 'TV Shows'} isLoading={isLoading || isTmdbLoading} error={hasError ? searchResultsState.error : ''} items={titleShows} emptyMessage={showingTmdbResults ? 'No TMDB TV shows matched this search.' : 'No TV shows matched this search.'}>
-        <div className="tv-show-card-grid popular-movies-catalog">
-          {titleShows.map((show) => <TvShowPosterCard key={show.id} show={show} onSelectShow={onOpenTvShow} isWatched={watchedTvIds.has(Number(show.id))} isInWatchlist={watchlistTvIds.has(Number(show.id))} />)}
-        </div>
-      </SearchResultGroup>
+        {!hasNoLocalMatches && !showingGoogleBooksResults ? <SearchResultGroup title="TV Shows" isLoading={isLoading} error={hasError ? activeSourceState.error : ''} items={visibleShows} emptyMessage={showingTmdbResults ? 'No TMDB TV shows matched this search.' : 'No TV shows matched this search.'}>
+          <div className="tv-show-card-grid popular-movies-catalog">
+            {visibleShows.map((show) => <TvShowPosterCard key={show.id} show={show} matchQuery={query} onSelectShow={onOpenTvShow} isWatched={watchedTvIds.has(Number(show.id))} isInWatchlist={watchlistTvIds.has(Number(show.id))} onToggleWatchlist={showingWatchVaultResults ? onToggleTvWatchlist : null} onToggleWatched={showingWatchVaultResults ? onToggleTvWatched : null} />)}
+          </div>
+        </SearchResultGroup> : null}
 
-      <SearchResultGroup title={showingGoogleBooksResults ? 'Google Books' : 'Books'} isLoading={isLoading || isGoogleBooksLoading} error={hasError ? searchResultsState.error : ''} items={titleBooks} emptyMessage={showingGoogleBooksResults ? 'No Google Books matched this search.' : 'No locally stored books matched this search.'}>
-        <div className="movie-card-grid popular-movies-catalog">
-          {titleBooks.map((book) => <BookCard key={book.id} book={book} onOpenBook={showingGoogleBooksResults ? onOpenGoogleBook : onOpenBook} disabled={googleBooksSearchState.persistingBookId === book.id} />)}
-        </div>
-      </SearchResultGroup>
+        {!hasNoLocalMatches && !showingTmdbResults ? <SearchResultGroup title="Books" isLoading={isLoading} error={hasError ? activeSourceState.error : ''} items={visibleBooks} emptyMessage={showingGoogleBooksResults ? 'No Google Books matched this search.' : 'No locally stored books matched this search.'}>
+          <div className="movie-card-grid popular-movies-catalog">
+            {visibleBooks.map((book) => <BookCard key={book.id} book={book} matchQuery={query} onOpenBook={showingGoogleBooksResults ? onOpenGoogleBook : onOpenBook} disabled={googleBooksSearchState.persistingBookId === book.id} />)}
+          </div>
+        </SearchResultGroup> : null}
 
-      <SearchResultGroup title="Actors" isLoading={isLoading} error={hasError ? searchResultsState.error : ''} items={searchResultsState.actors} emptyMessage="No actors matched this search.">
-        <div className="favorite-actors-grid">
-          {searchResultsState.actors.map((actor) => <FavoriteActorCard key={actor.id} actor={actor} onOpenPerson={onOpenPerson} />)}
-        </div>
-      </SearchResultGroup>
+        {showingWatchVaultResults && !hasNoLocalMatches ? <SearchResultGroup title="Actors" isLoading={isLoading} error={hasError ? activeSourceState.error : ''} items={searchResultsState.actors} emptyMessage="No actors matched this search.">
+          <div className="favorite-actors-grid">
+            {searchResultsState.actors.map((actor) => <FavoriteActorCard key={actor.id} actor={actor} matchQuery={query} onOpenPerson={onOpenPerson} isFavorite={favoriteActorIds.has(Number(actor.id))} onToggleFavorite={onToggleFavoriteActor} />)}
+          </div>
+        </SearchResultGroup> : null}
+      </div>
     </section>
   )
 }
 
+function LocalSearchEmptyState({ onOpenDiscover, onSearchQuery, onSelectSource, query }) {
+  const [state, setState] = useState({ status: 'loading', alternatives: [] })
+
+  useEffect(() => {
+    let cancelled = false
+    setState({ status: 'loading', alternatives: [] })
+    fetch(`/api/search/alternatives?q=${encodeURIComponent(query)}`).then(async (response) => {
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+      if (!cancelled) setState({ status: 'success', alternatives: Array.isArray(payload.alternatives) ? payload.alternatives : [] })
+    }).catch(() => { if (!cancelled) setState({ status: 'error', alternatives: [] }) })
+    return () => { cancelled = true }
+  }, [query])
+
+  return <section className="local-search-empty-state">
+    <SearchIcon />
+    <div>
+      <h2>No local matches for “{query}”</h2>
+      <p>Try a broader search across our external sources, or let Discover find something for you.</p>
+      {state.status === 'success' && state.alternatives.length ? <div className="local-search-alternatives"><span>Did you mean</span>{state.alternatives.map((alternative) => <button key={alternative} type="button" onClick={() => onSearchQuery(alternative)}>{alternative}</button>)}</div> : null}
+      <div className="local-search-empty-actions"><button type="button" className="secondary-button" onClick={() => onSelectSource('tmdb')}>Search TMDB</button><button type="button" className="secondary-button" onClick={() => onSelectSource('books')}>Search Google Books</button><button type="button" className="primary-button" onClick={onOpenDiscover}>Open Discover</button></div>
+    </div>
+  </section>
+}
+
 function SearchResultGroup({ children, emptyMessage, error, isLoading, items, title }) {
+  if (!isLoading && !error && items.length === 0) return null
   return (
     <section className="content-section search-results-group">
       <div className="section-header"><h2>{title}</h2><span className="search-result-count">{isLoading ? '' : items.length}</span></div>
-      {isLoading ? <SectionMessage message={`Searching ${title.toLowerCase()}...`} /> : error ? <SectionMessage tone="error" message={`Could not search ${title.toLowerCase()}. ${error}`} /> : items.length ? children : <SectionMessage message={emptyMessage} />}
+      {isLoading ? <SearchResultSkeleton title={title} /> : error ? <SectionMessage tone="error" message={`Could not search ${title.toLowerCase()}. ${error}`} /> : items.length ? children : <SectionMessage message={emptyMessage} />}
     </section>
   )
+}
+
+function SearchResultSkeleton({ title }) {
+  const actorSkeleton = title === 'Actors'
+  return <div className={actorSkeleton ? 'search-skeleton-grid actors' : 'search-skeleton-grid'}>{Array.from({ length: actorSkeleton ? 4 : 5 }, (_value, index) => <div className="search-skeleton-card" key={index}><i /><span /><span /></div>)}</div>
+}
+
+function HighlightedText({ text, query }) {
+  const value = String(text || '')
+  const match = String(query || '').trim()
+  if (!match) return value
+  const parts = value.split(new RegExp(`(${escapeRegExp(match)})`, 'ig'))
+  return <>{parts.map((part, index) => part.toLocaleLowerCase() === match.toLocaleLowerCase() ? <mark key={index}>{part}</mark> : part)}</>
+}
+
+function SearchMatchLabel({ person = false, query, text }) {
+  if (!query) return null
+  const exact = normalizeSearchLabel(text) === normalizeSearchLabel(query)
+  return <span className={`search-match-label ${person ? 'person' : exact ? 'exact' : 'close'}`}>{person ? 'Person' : exact ? 'Exact match' : 'Close match'}</span>
+}
+
+function buildAmbiguousSearchClusters({ books = [], movies = [], shows = [] }) {
+  const grouped = new Map()
+  for (const item of [...movies.map((item) => ({ ...item, kind: 'movie' })), ...shows.map((item) => ({ ...item, kind: 'tv' })), ...books.map((item) => ({ ...item, kind: 'book' }))]) {
+    const key = String(item.title || '').trim().toLocaleLowerCase()
+    if (!key) continue
+    grouped.set(key, [...(grouped.get(key) || []), item])
+  }
+  return [...grouped.entries()].filter(([, items]) => items.length > 1).map(([key, items]) => ({ key, title: items[0].title, items }))
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function normalizeSearchLabel(value) {
+  return String(value || '').toLocaleLowerCase().replace(/[^a-z0-9]/g, '')
 }
 
 function DiscoverScreen({ user, onOpenMovie, onOpenTvShow }) {
@@ -4981,14 +5320,14 @@ function AuthorDetailPage({ authorDetailState, onBack, onOpenBook, onOpenLogin, 
   )
 }
 
-function BookCard({ book, disabled = false, onOpenBook }) {
+function BookCard({ book, disabled = false, matchQuery, onOpenBook }) {
   const [coverUnavailable, setCoverUnavailable] = useState(false)
   return (
     <button type="button" className="movie-card movie-card-button" onClick={() => onOpenBook(book)} aria-label={`Open ${book.title}`} disabled={disabled}>
       <div className={`movie-card-poster ${book.coverUrl && !coverUnavailable ? 'has-image' : 'theme-catalog'}`}>
         {book.coverUrl && !coverUnavailable ? <img src={book.coverUrl} alt={`${book.title} cover`} className="movie-card-poster-image" loading="lazy" onError={() => setCoverUnavailable(true)} /> : null}
       </div>
-      <div className="movie-card-copy"><h3>{book.title}</h3><p>{book.authorsLabel}</p><div className="rating-row"><span>{book.year}</span><span>{book.categoriesLabel}</span></div></div>
+      <div className="movie-card-copy"><h3><HighlightedText text={book.title} query={matchQuery} /></h3><SearchMatchLabel text={book.title} query={matchQuery} /><p><HighlightedText text={book.authorsLabel} query={matchQuery} /></p><div className="rating-row"><span>{book.year}</span><span><HighlightedText text={book.categoriesLabel} query={matchQuery} /></span></div></div>
     </button>
   )
 }
@@ -5453,8 +5792,11 @@ function WatchTogetherInProgressShowRow({ show, onOpen }) {
 
 function WatchlistScreen({
   activeTab,
+  availability,
+  sort,
   isSignedIn,
   onTabChange,
+  onViewChange,
   onOpenLogin,
   onOpenMovie,
   onOpenPerson,
@@ -5465,12 +5807,34 @@ function WatchlistScreen({
   watchlistState,
   tvWatchlistShows,
   onOpenAuthor,
+  onRemoveMovie,
+  onRemoveBook,
+  onToggleTvWatchlist,
+  onMarkMovieWatched,
+  onMarkBookRead,
+  onMarkTvWatched,
+  onSetPriority,
 }) {
+  const [watchlistQuery, setWatchlistQuery] = useState('')
   const allItems = [...watchlistState.movies, ...tvWatchlistShows, ...watchlistState.books]
   const filteredItems = getFilteredWatchlistItems({
     items: allItems,
     activeTab,
-  })
+    availability,
+    sort,
+  }).filter((item) => `${item.title} ${item.meta} ${item.categoriesLabel || ''}`.toLocaleLowerCase().includes(watchlistQuery.trim().toLocaleLowerCase()))
+
+  function renderWatchlistCard(item) {
+    return <WatchlistCard key={`${item.type}-${item.id}`} item={item} compact onOpenItem={item.type === 'TV Shows' ? onOpenTvShow : item.type === 'Books' ? onOpenBook : onOpenMovie} onRemove={item.type === 'TV Shows' ? onToggleTvWatchlist : item.type === 'Books' ? onRemoveBook : onRemoveMovie} onMarkComplete={item.type === 'TV Shows' ? onMarkTvWatched : item.type === 'Books' ? onMarkBookRead : onMarkMovieWatched} onSetPriority={onSetPriority} />
+  }
+
+  const watchlistGroups = [
+    { title: 'Continue watching / reading', detail: 'Pick up where you left off', items: filteredItems.filter((item) => item.progress > 0) },
+    { title: 'Watch next', detail: 'Your Top picks and queue', items: filteredItems.filter((item) => item.topSlot || item.queuePosition) },
+    { title: 'Upcoming releases', detail: 'What is arriving soon', items: filteredItems.filter((item) => item.nextEpisodeDate || (item.releaseDate && new Date(`${item.releaseDate}T00:00:00`).valueOf() > Date.now())) },
+  ]
+  const groupedItemKeys = new Set(watchlistGroups.flatMap((group) => group.items.map((item) => `${item.type}-${item.id}`)))
+  watchlistGroups.push({ title: 'Everything else', detail: 'The rest of your saved titles', items: filteredItems.filter((item) => !groupedItemKeys.has(`${item.type}-${item.id}`)) })
 
   if (!isSignedIn) {
     return (
@@ -5531,6 +5895,12 @@ function WatchlistScreen({
         ))}
       </div>
 
+      {activeTab !== 'Actors' && activeTab !== 'Authors' ? <div className="watchlist-toolbar" aria-label="Watchlist controls">
+        <label className="watchlist-search"><SearchIcon /><span className="sr-only">Search watchlist</span><input value={watchlistQuery} onChange={(event) => setWatchlistQuery(event.target.value)} placeholder="Search your watchlist" /></label>
+        <label className="watchlist-select"><span>Availability</span><select value={availability} onChange={(event) => onViewChange({ availability: event.target.value })}><option value="all">All availability</option><option value="streaming">Streaming now</option><option value="upcoming">Upcoming</option></select></label>
+        <label className="watchlist-select"><span>Sort</span><select value={sort} onChange={(event) => onViewChange({ sort: event.target.value })}><option value="recently-added">Recently added</option><option value="priority">Priority</option><option value="release-date">Release date</option><option value="rating">Rating</option><option value="runtime-or-pages">Runtime / pages</option><option value="alphabetical">Alphabetical</option></select></label>
+      </div> : null}
+
       {activeTab === 'Actors' ? (
         <div className="favorite-actors-grid">
           {favoriteActorsState.actors.map((actor) => <FavoriteActorCard key={actor.id} actor={actor} onOpenPerson={onOpenPerson} />)}
@@ -5540,16 +5910,7 @@ function WatchlistScreen({
           {favoriteAuthorsState.authors.map((author) => <FavoriteAuthorCard key={author.id} author={author} onOpenAuthor={onOpenAuthor} />)}
         </div>
       ) : (
-        <div className="watchlist-grid-mobile">
-          {filteredItems.map((item) => (
-            <WatchlistCard
-              key={`${item.type}-${item.id}`}
-              item={item}
-              compact
-              onOpenItem={item.type === 'TV Shows' ? onOpenTvShow : item.type === 'Books' ? onOpenBook : onOpenMovie}
-            />
-          ))}
-        </div>
+        activeTab === 'All' && availability === 'all' && !watchlistQuery.trim() ? <div className="watchlist-groups">{watchlistGroups.filter((group) => group.items.length > 0).map((group) => <section key={group.title} className="watchlist-group"><div className="watchlist-group-heading"><div><h2>{group.title}</h2><p>{group.detail}</p></div><span>{group.items.length}</span></div><div className="watchlist-grid-mobile">{group.items.map(renderWatchlistCard)}</div></section>)}</div> : <div className="watchlist-grid-mobile">{filteredItems.map(renderWatchlistCard)}</div>
       )}
 
       {watchlistState.status === 'loading' ? <SectionMessage message="Loading your watchlist..." /> : null}
@@ -5571,18 +5932,22 @@ function WatchlistScreen({
   )
 }
 
-function FavoriteActorCard({ actor, onOpenPerson }) {
+function FavoriteActorCard({ actor, isFavorite = false, matchQuery, onOpenPerson, onToggleFavorite }) {
   const [imageUnavailable, setImageUnavailable] = useState(false)
   const showImage = Boolean(actor.profileUrl) && !imageUnavailable
+  const cardContent = <>
+    <div className={`favorite-actor-portrait${showImage ? ' has-image' : ''}`}>
+      {showImage ? <img src={actor.profileUrl} alt={`${actor.name} portrait`} loading="lazy" onError={() => setImageUnavailable(true)} /> : <span>{getMovieCreditInitials(actor.name)}</span>}
+    </div>
+    <div><h2><HighlightedText text={actor.name} query={matchQuery} /></h2><SearchMatchLabel text={actor.name} query={matchQuery} person /><p><HighlightedText text={actor.role || 'Actor'} query={matchQuery} /></p></div>
+  </>
 
-  return (
-    <button type="button" className="favorite-actor-card" onClick={() => onOpenPerson(actor)} aria-label={`Open ${actor.name}`}>
-      <div className={`favorite-actor-portrait${showImage ? ' has-image' : ''}`}>
-        {showImage ? <img src={actor.profileUrl} alt={`${actor.name} portrait`} loading="lazy" onError={() => setImageUnavailable(true)} /> : <span>{getMovieCreditInitials(actor.name)}</span>}
-      </div>
-      <div><h2>{actor.name}</h2><p>{actor.role || 'Actor'}</p></div>
-    </button>
-  )
+  if (!onToggleFavorite) return <button type="button" className="favorite-actor-card" onClick={() => onOpenPerson(actor)} aria-label={`Open ${actor.name}`}>{cardContent}</button>
+
+  return <article className="favorite-actor-card favorite-actor-card-with-action">
+    <button type="button" className="favorite-actor-card-open" onClick={() => onOpenPerson(actor)} aria-label={`Open ${actor.name}`}>{cardContent}</button>
+    <button type="button" className={`favorite-actor-quick-action${isFavorite ? ' is-active' : ''}`} onClick={() => onToggleFavorite(actor)} aria-label={`${isFavorite ? 'Remove' : 'Add'} ${actor.name} ${isFavorite ? 'from' : 'to'} favorite actors`} title={isFavorite ? 'Remove from favorite actors' : 'Add to favorite actors'}><StarIcon /></button>
+  </article>
 }
 
 function FavoriteAuthorCard({ author, onOpenAuthor }) {
@@ -5657,7 +6022,7 @@ function TvFeaturedCard({ show, isWatched, isInWatchlist, onToggleWatchlist }) {
   )
 }
 
-function TvShowPosterCard({ show, onSelectShow, isActive = false, isInWatchlist = false, isWatched = false, onToggleWatchlist, onToggleWatched }) {
+function TvShowPosterCard({ show, matchQuery, onSelectShow, isActive = false, isInWatchlist = false, isWatched = false, onToggleWatchlist, onToggleWatched }) {
   const [posterUnavailable, setPosterUnavailable] = useState(false)
   const showPosterImage = Boolean(show.posterUrl) && !posterUnavailable
   const hasQuickActions = Boolean(onToggleWatchlist || onToggleWatched)
@@ -5673,9 +6038,9 @@ function TvShowPosterCard({ show, onSelectShow, isActive = false, isInWatchlist 
           <QuickMediaActions title={show.title} isInWatchlist={isInWatchlist} isWatched={isWatched} onOpen={() => onSelectShow(show)} onToggleWatchlist={onToggleWatchlist ? () => onToggleWatchlist(show) : null} onToggleWatched={onToggleWatched ? () => onToggleWatched(show) : null} />
         </div>
         <div className="tv-show-card-copy">
-          <h3>{show.title}</h3>
+          <h3><HighlightedText text={show.title} query={matchQuery} /></h3><SearchMatchLabel text={show.title} query={matchQuery} />
           <p>{show.year}</p>
-          <div className="rating-row"><span className="star-rating"><StarIcon />{show.rating}</span><span>{show.seasonMeta}</span></div>
+          <div className="rating-row"><span className="star-rating"><StarIcon />{show.rating}</span><span><HighlightedText text={show.seasonMeta} query={matchQuery} /></span></div>
         </div>
       </article>
     )
@@ -5710,14 +6075,14 @@ function TvShowPosterCard({ show, onSelectShow, isActive = false, isInWatchlist 
         ) : null}
       </div>
       <div className="tv-show-card-copy">
-        <h3>{show.title}</h3>
+        <h3><HighlightedText text={show.title} query={matchQuery} /></h3><SearchMatchLabel text={show.title} query={matchQuery} />
         <p>{show.year}</p>
         <div className="rating-row">
           <span className="star-rating">
             <StarIcon />
             {show.rating}
           </span>
-          <span>{show.seasonMeta}</span>
+          <span><HighlightedText text={show.seasonMeta} query={matchQuery} /></span>
         </div>
       </div>
     </button>
@@ -5923,17 +6288,16 @@ function TvDetailPage({ tvDetailState, tvReviewsState, user, onBackToTv, onToggl
   </section>
 }
 
-function WatchlistCard({ item, compact = false, onOpenItem }) {
+function WatchlistCard({ item, compact = false, onOpenItem, onRemove, onMarkComplete, onSetPriority }) {
   const [posterUnavailable, setPosterUnavailable] = useState(false)
+  const [priorityOpen, setPriorityOpen] = useState(false)
   const showPoster = Boolean(item.posterUrl) && !posterUnavailable
+  const availabilitySignal = getWatchlistAvailabilitySignal(item)
+  const decisionMeta = getWatchlistDecisionMeta(item)
 
   return (
-    <button
-      type="button"
-      className={`watchlist-card watchlist-card-button${compact ? ' compact' : ''}`}
-      onClick={() => onOpenItem(item)}
-      aria-label={`Open ${item.title}`}
-    >
+    <article className={`watchlist-card${compact ? ' compact' : ''}`}>
+      <button type="button" className="watchlist-card-button watchlist-card-open" onClick={() => onOpenItem(item)} aria-label={`Open ${item.title}`}>
       <div className={`watchlist-poster accent-${item.accent}${showPoster ? ' has-image' : ''}`}>
         {showPoster ? (
           <img
@@ -5945,16 +6309,19 @@ function WatchlistCard({ item, compact = false, onOpenItem }) {
         ) : null}
         <div className="watchlist-card-overlay" />
         <div className="watchlist-poster-top">
-          <span className={`poster-badge${item.checked ? ' checked' : ''}`}>{item.checked ? <CheckCircleIcon /> : <StarIcon />}</span>
+          <span className={`poster-badge${item.topSlot ? ' priority-rank' : ''}${item.checked ? ' checked' : ''}`}>{item.topSlot || (item.queuePosition ? `#${item.queuePosition}` : item.checked ? <CheckCircleIcon /> : <StarIcon />)}</span>
         </div>
         {item.seasonTag ? <span className="watchlist-season-tag">{item.seasonTag}</span> : null}
       </div>
 
       <div className="watchlist-card-copy">
+        <span className={`watchlist-media-badge ${item.type === 'Movies' ? 'movie' : item.type === 'TV Shows' ? 'tv' : 'book'}`}>{item.type === 'Movies' ? 'Movie' : item.type === 'TV Shows' ? 'TV' : 'Book'}</span>
         <h3>{item.title}</h3>
         <p>
           {item.year} <span>•</span> {item.meta}
         </p>
+        {availabilitySignal ? <p className="watchlist-availability-signal">{availabilitySignal}</p> : null}
+        {decisionMeta ? <p className="watchlist-decision-meta">{decisionMeta}</p> : null}
 
         {item.progress ? (
           <div className="watchlist-progress-wrap">
@@ -5974,7 +6341,16 @@ function WatchlistCard({ item, compact = false, onOpenItem }) {
           </div>
         )}
       </div>
-    </button>
+      </button>
+      <div className="watchlist-card-hover-actions" aria-label={`Quick actions for ${item.title}`}>
+        <button type="button" onClick={() => onMarkComplete(item)} title={item.type === 'Books' ? 'Mark read' : 'Mark watched'}><CheckIcon /></button>
+        <div className="watchlist-card-priority">
+          <button type="button" onClick={() => setPriorityOpen((open) => !open)} title="Set priority" aria-expanded={priorityOpen} aria-haspopup="menu">{item.topSlot || '★'}</button>
+          {priorityOpen ? <div className="watchlist-card-priority-menu" role="menu">{[1, 2, 3].map((slot) => <button key={slot} type="button" role="menuitem" onClick={() => { setPriorityOpen(false); void onSetPriority(item, { topSlot: item.topSlot === slot ? null : slot }) }} aria-label={`${item.topSlot === slot ? 'Remove' : 'Set'} Top ${slot}`}>{slot}</button>)}</div> : null}
+        </div>
+        <button type="button" onClick={() => onRemove(item)} title="Remove from watchlist">×</button>
+      </div>
+    </article>
   )
 }
 
@@ -6004,12 +6380,42 @@ function MovieDetailPage({
   const [selectedRating, setSelectedRating] = useState(5)
   const [trailerState, setTrailerState] = useState({ status: 'idle', trailer: null, error: '' })
   const [filelistState, setFilelistState] = useState({ open: false, status: 'idle', results: [], error: '', minutesUntilReset: null })
+  const [isOverflowOpen, setIsOverflowOpen] = useState(false)
+  const [isCastExpanded, setIsCastExpanded] = useState(false)
+  const [isStickyHeaderVisible, setIsStickyHeaderVisible] = useState(false)
+  const heroRef = useRef(null)
+  const overflowRef = useRef(null)
 
   useEffect(() => {
     setTrailerState({ status: 'idle', trailer: null, error: '' })
     setIsWatchServiceDialogOpen(false)
     setFilelistState({ open: false, status: 'idle', results: [], error: '', minutesUntilReset: null })
+    setIsOverflowOpen(false)
+    setIsCastExpanded(false)
+    setIsStickyHeaderVisible(false)
   }, [movieDetailState.movie?.id])
+
+  useEffect(() => {
+    const heroElement = heroRef.current
+    if (!movieDetailState.movie?.id || !heroElement || typeof IntersectionObserver === 'undefined') return undefined
+    const observer = new IntersectionObserver(([entry]) => setIsStickyHeaderVisible(!entry.isIntersecting), { threshold: 0.08 })
+    observer.observe(heroElement)
+    return () => observer.disconnect()
+  }, [movieDetailState.movie?.id])
+
+  useEffect(() => {
+    if (!isOverflowOpen) return undefined
+    function handleDismiss(event) {
+      if (event.type === 'keydown' && event.key === 'Escape') setIsOverflowOpen(false)
+      if (event.type === 'mousedown' && !overflowRef.current?.contains(event.target)) setIsOverflowOpen(false)
+    }
+    document.addEventListener('keydown', handleDismiss)
+    document.addEventListener('mousedown', handleDismiss)
+    return () => {
+      document.removeEventListener('keydown', handleDismiss)
+      document.removeEventListener('mousedown', handleDismiss)
+    }
+  }, [isOverflowOpen])
 
   if (movieDetailState.status === 'loading' || movieDetailState.status === 'idle') {
     return (
@@ -6051,6 +6457,9 @@ function MovieDetailPage({
   const isRatingSaving = movieRatingActionState.status === 'loading' && Number(movieRatingActionState.movieId) === Number(movie.id)
   const isUpcoming = Boolean(movie.releaseDate && movie.releaseDate > getCurrentIsoDate())
   const isReleaseReminderUpdating = movieReleaseReminderActionState.status === 'loading' && Number(movieReleaseReminderActionState.movieId) === Number(movie.id)
+  const releaseReminderTiming = isUpcoming ? `${movie.releaseDateLabel} · ${formatMovieCountdown(movie.releaseDate)}` : ''
+  const releaseContext = isUpcoming ? `Releases ${releaseReminderTiming}` : movie.releaseDate ? `Released ${movie.releaseDateLabel}` : 'Release date TBA'
+  const visibleCreditCards = isCastExpanded ? creditCards : creditCards.slice(0, 5)
   const backdropStyle = movie.backdropUrl
     ? {
         backgroundImage: `linear-gradient(90deg, rgba(7, 10, 18, 0.96) 0%, rgba(7, 10, 18, 0.74) 30%, rgba(7, 10, 18, 0.34) 62%, rgba(7, 10, 18, 0.68) 100%), url(${movie.backdropUrl})`,
@@ -6082,6 +6491,34 @@ function MovieDetailPage({
     setTrailerState({ status: 'idle', trailer: null, error: '' })
   }
 
+  function openRating() {
+    if (!isSignedIn) {
+      onOpenLogin()
+      return
+    }
+
+    setSelectedRating(communityRating.yourScore ?? 5)
+    setIsRatingDialogOpen(true)
+  }
+
+  function handlePrimaryAction() {
+    if (!isInWatchlist) {
+      onToggleWatchlist(movie)
+      return
+    }
+
+    if (!isWatched) {
+      setIsWatchServiceDialogOpen(true)
+      return
+    }
+
+    openRating()
+  }
+
+  function scrollToMovieSection(sectionId) {
+    document.getElementById(sectionId)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
   async function handleOpenFilelist() {
     setFilelistState({ open: true, status: 'loading', results: [], error: '', minutesUntilReset: null })
     try {
@@ -6096,14 +6533,26 @@ function MovieDetailPage({
   }
 
   const isTrailerLoading = trailerState.status === 'loading'
+  const primaryActionLabel = !isInWatchlist
+    ? isWatchlistUpdating ? 'Updating...' : 'Add to Watchlist'
+    : !isWatched
+      ? isWatchedUpdating ? 'Updating...' : 'Mark as Watched'
+      : communityRating.yourScore === null ? 'Rate' : 'Update Rating'
+  const isPrimaryActionDisabled = !isInWatchlist ? isWatchlistUpdating : !isWatched ? isWatchedUpdating : false
+
 
   return (
     <section className="movie-detail-page">
+      <nav className="movie-detail-breadcrumb desktop-only" aria-label="Breadcrumb">
+        <button type="button" onClick={onBackToMovies}>Movies</button>
+        <span className="movie-detail-breadcrumb-separator" aria-hidden="true">/</span>
+        <span className="movie-detail-breadcrumb-current" aria-current="page" title={movie.title}>{movie.title}</span>
+      </nav>
       <button type="button" className="movie-detail-back mobile-only" onClick={onBackToMovies}>
         <ChevronLeftIcon />
       </button>
 
-      <article className="movie-detail-hero" style={backdropStyle}>
+      <article ref={heroRef} id="movie-details" className="movie-detail-hero" style={backdropStyle}>
         <div className="movie-detail-hero-overlay" />
 
         <div className="movie-detail-poster-wrap">
@@ -6122,134 +6571,90 @@ function MovieDetailPage({
             <span>{movie.runtime}</span>
           </div>
 
-          <div className="movie-detail-score-row">
-            <MetricBadge icon={StarIcon} value={movie.score} label="IMDb" tone="gold" />
-            <MetricBadge icon={TomatoIcon} value={movie.tomatoScore} label="Rotten Tomatoes" tone="tomato" />
-            <MetricBadge icon={UserRatingIcon} value={communityRatingLabel} label={`${communityRating.voteCount} ${communityRating.voteCount === 1 ? 'vote' : 'votes'}`} tone="violet" />
+          <div className="movie-score-comparison" aria-label="Movie ratings">
+            <div className="movie-score-source tmdb"><StarIcon /><div><span>TMDB</span><strong>{movie.score}</strong></div><small>{movie.audience}</small></div>
+            <div className="movie-score-source audience"><TomatoIcon /><div><span>Audience score</span><strong>{movie.tomatoScore}</strong></div><small>Derived from TMDB</small></div>
+            <div className="movie-score-source watchvault"><UserRatingIcon /><div><span>WatchVault</span><strong>{communityRatingLabel}</strong></div><small>{communityRating.voteCount} {communityRating.voteCount === 1 ? 'rating' : 'ratings'}</small></div>
           </div>
 
+          <button type="button" className="movie-review-preview" onClick={() => scrollToMovieSection('movie-reviews')}>
+            <StarOutlineIcon />
+            <span>{communityRating.voteCount ? `${communityRatingLabel} from ${communityRating.voteCount} WatchVault ${communityRating.voteCount === 1 ? 'rating' : 'ratings'}` : 'No WatchVault ratings yet — be the first to rate'}</span>
+          </button>
+
           <p className="movie-detail-summary">{movie.overview}</p>
+
+          <section className="movie-why-watch" aria-labelledby="movie-why-watch-title">
+            <h2 id="movie-why-watch-title">Why watch?</h2>
+            <div className="movie-why-watch-list">
+              <div><span>Genre</span><strong>{movie.genresLabel}</strong></div>
+              <div><span>Runtime</span><strong>{movie.runtime}</strong></div>
+              <div><span>Release</span><strong>{releaseContext}</strong></div>
+              <div><span>Availability</span><strong>{movie.availability}</strong></div>
+            </div>
+          </section>
 
           <div className="movie-detail-actions">
             <button
               type="button"
-              className={`primary-button movie-detail-primary${isInWatchlist ? ' is-active' : ''}`}
-              onClick={() => onToggleWatchlist(movie)}
-              disabled={isWatchlistUpdating || isWatched}
+              className="primary-button movie-detail-primary"
+              onClick={handlePrimaryAction}
+              disabled={isPrimaryActionDisabled}
             >
-              <PlusIcon />
-              <span>
-                {isWatchlistUpdating
-                  ? 'Updating...'
-                  : isWatched
-                    ? 'Watched'
-                    : isInWatchlist
-                      ? 'In Watchlist'
-                      : 'Add to Watchlist'}
-              </span>
-            </button>
-            <button
-              type="button"
-              className={`secondary-button movie-detail-secondary${isWatched ? ' is-active' : ''}`}
-              onClick={() => isWatched ? onToggleWatched(movie) : setIsWatchServiceDialogOpen(true)}
-              disabled={isWatchedUpdating}
-            >
-              <CheckIcon />
-              <span>
-                {isWatchedUpdating
-                  ? 'Updating...'
-                  : isWatched
-                    ? 'Watched'
-                    : 'Mark as Watched'}
-              </span>
-            </button>
-            {isUpcoming ? (
-              <button
-                type="button"
-                className={`secondary-button movie-detail-secondary ghost${movie.hasReleaseReminder ? ' is-active' : ''}`}
-                onClick={() => onToggleReleaseReminder(movie)}
-                disabled={isReleaseReminderUpdating}
-                aria-label={movie.hasReleaseReminder ? `Cancel release reminder for ${movie.title}` : `Remind me when ${movie.title} releases`}
-              >
-                <BellIcon />
-                <span>{isReleaseReminderUpdating ? 'Updating...' : movie.hasReleaseReminder ? 'Reminder set' : 'Remind me'}</span>
-              </button>
-            ) : null}
-            <button
-              type="button"
-              className="secondary-button movie-detail-secondary ghost"
-              onClick={() => {
-                if (!isSignedIn) {
-                  onOpenLogin()
-                  return
-                }
-
-                setSelectedRating(communityRating.yourScore ?? 5)
-                setIsRatingDialogOpen(true)
-              }}
-            >
-              <StarOutlineIcon />
-              <span>{communityRating.yourScore === null ? 'Rate' : 'Update Rating'}</span>
+              {!isInWatchlist ? <PlusIcon /> : !isWatched ? <CheckIcon /> : <StarOutlineIcon />}
+              <span>{primaryActionLabel}</span>
             </button>
             <button type="button" className="secondary-button movie-detail-secondary ghost desktop-only" onClick={handleOpenTrailer} disabled={isTrailerLoading}>
               <PlayIcon />
               <span>{isTrailerLoading ? 'Loading...' : 'Trailer'}</span>
             </button>
-            <button type="button" className="secondary-button movie-detail-secondary ghost" onClick={handleOpenFilelist}>
-              <span>Filelist</span>
-            </button>
+            <div ref={overflowRef} className="movie-action-overflow">
+              <button type="button" className="secondary-button movie-detail-secondary ghost movie-action-overflow-trigger" aria-expanded={isOverflowOpen} aria-haspopup="menu" onClick={() => setIsOverflowOpen((open) => !open)}><MoreIcon /><span>More</span></button>
+              {isOverflowOpen ? <div className="movie-action-overflow-menu" role="menu">
+                <button type="button" role="menuitem" className="mobile-only" onClick={() => { setIsOverflowOpen(false); void handleOpenTrailer() }} disabled={isTrailerLoading}><PlayIcon /><span>{isTrailerLoading ? 'Loading trailer...' : 'Trailer'}</span></button>
+                {isInWatchlist && !isWatched ? <button type="button" role="menuitem" onClick={() => { setIsOverflowOpen(false); onToggleWatchlist(movie) }}><BookmarkIcon /><span>Remove from Watchlist</span></button> : null}
+                {isWatched ? <button type="button" role="menuitem" onClick={() => { setIsOverflowOpen(false); onToggleWatched(movie) }}><ReplayIcon /><span>Mark as Unwatched</span></button> : null}
+                {isUpcoming ? <button type="button" role="menuitem" onClick={() => { setIsOverflowOpen(false); onToggleReleaseReminder(movie) }} disabled={isReleaseReminderUpdating}><BellIcon /><span>{isReleaseReminderUpdating ? 'Updating...' : `${movie.hasReleaseReminder ? 'Cancel reminder' : 'Remind me'} · ${releaseReminderTiming}`}</span></button> : null}
+                <button type="button" role="menuitem" className="movie-filelist-menu-action" onClick={() => { setIsOverflowOpen(false); void handleOpenFilelist() }}><span>Filelist</span></button>
+              </div> : null}
+            </div>
           </div>
           {trailerState.status === 'error' ? <p className="movie-trailer-error" role="alert">{trailerState.error}</p> : null}
         </div>
 
         <aside className="movie-detail-status desktop-only">
-          <h2>Your Status</h2>
-          <div className="movie-detail-status-list">
-            <div className="movie-detail-status-item movie-detail-status-item-watchlist">
+          <h2>Your timeline</h2>
+          <div className="movie-detail-timeline">
+            <div className="movie-detail-timeline-item movie-detail-status-item-watchlist">
               <span className="movie-detail-status-icon" aria-hidden="true"><BookmarkStatusIcon /></span>
               <div>
-                <span>In Watchlist</span>
+                <span>Watchlist</span>
                 <strong>{isInWatchlist ? 'Saved' : 'Not yet'}</strong>
               </div>
             </div>
-            <div className="movie-detail-status-item movie-detail-status-item-watched">
+            <div className="movie-detail-timeline-item movie-detail-status-item-watched">
               <span className="movie-detail-status-icon" aria-hidden="true"><WatchedStatusIcon /></span>
               <div>
                 <span>Watched</span>
                 <strong>{watchedLabel}</strong>
               </div>
             </div>
-            <div className="movie-detail-status-item movie-detail-status-item-rating">
+            <div className="movie-detail-timeline-item movie-detail-status-item-rating">
               <span className="movie-detail-status-icon" aria-hidden="true"><StarOutlineIcon /></span>
               <div>
                 <span>Your Rating</span>
                 <strong>{yourRatingLabel}</strong>
               </div>
             </div>
-            <div className="movie-detail-status-item movie-detail-status-item-runtime">
-              <span className="movie-detail-status-icon" aria-hidden="true"><ClockIcon /></span>
-              <div>
-                <span>Runtime</span>
-                <strong>{movie.runtime}</strong>
-              </div>
-            </div>
-            <div className="movie-detail-status-item movie-detail-status-item-release">
-              <span className="movie-detail-status-icon" aria-hidden="true"><CalendarIcon /></span>
-              <div>
-                <span>Release Date</span>
-                <strong>{movie.releaseDateLabel}</strong>
-              </div>
-            </div>
-            <div className="movie-detail-status-item movie-detail-status-item-availability">
-              <span className="movie-detail-status-icon" aria-hidden="true"><PlayIcon /></span>
-              <div>
-                <span>Available on</span>
-                <strong>{movie.availability}</strong>
-              </div>
-            </div>
           </div>
         </aside>
       </article>
+
+      {isStickyHeaderVisible ? <div className="movie-detail-sticky-header" role="region" aria-label={`${movie.title} quick actions`}>
+        <div className={`movie-detail-sticky-poster${movie.posterUrl ? ' has-image' : ''}`} style={movie.posterUrl ? { backgroundImage: `url(${movie.posterUrl})` } : undefined} />
+        <div className="movie-detail-sticky-copy"><strong>{movie.title}</strong><span>{communityRatingLabel} WatchVault</span></div>
+        <button type="button" className="primary-button movie-detail-sticky-action" onClick={handlePrimaryAction} disabled={isPrimaryActionDisabled}>{!isInWatchlist ? <PlusIcon /> : !isWatched ? <CheckIcon /> : <StarOutlineIcon />}<span>{primaryActionLabel}</span></button>
+      </div> : null}
 
       {isRatingDialogOpen ? (
         <MovieRatingDialog
@@ -6275,13 +6680,14 @@ function MovieDetailPage({
       {filelistState.open ? <FilelistDialog title={movie.title} state={filelistState} onClose={() => setFilelistState((state) => ({ ...state, open: false }))} /> : null}
 
       <div className="movie-detail-grid">
-        <section className="content-section movie-detail-panel">
+        <section id="movie-cast" className="content-section movie-detail-panel movie-detail-cast-panel">
           <div className="section-header">
             <h2>Cast &amp; Crew</h2>
+            {creditCards.length > 5 ? <button type="button" className="section-link" onClick={() => setIsCastExpanded((expanded) => !expanded)}>{isCastExpanded ? 'Show less' : `View full cast (${creditCards.length})`}</button> : null}
           </div>
           <div className="movie-detail-cast">
             {creditCards.length > 0 ? (
-              creditCards.map((member) => (
+              visibleCreditCards.map((member) => (
                 <button
                   key={`${member.name}-${member.role}`}
                   type="button"
@@ -6307,14 +6713,11 @@ function MovieDetailPage({
           </div>
         </section>
 
-        <section className="content-section movie-detail-panel movie-detail-activity">
+        <section id="movie-activity" className="content-section movie-detail-panel movie-detail-activity">
           <div className="section-header">
             <h2>Your Activity</h2>
-            <button type="button" className="section-link">
-              View all
-            </button>
           </div>
-          <div className="movie-detail-activity-grid">
+          {isWatched ? <div className="movie-detail-activity-grid">
             <div className="movie-detail-activity-item">
               <CalendarIcon />
               <div>
@@ -6343,25 +6746,22 @@ function MovieDetailPage({
               <NotesIcon />
               <div>
                 <span>Notes</span>
-                <strong>{isWatched ? 'Completed and saved to your watch history.' : 'Mark as watched to start tracking this movie.'}</strong>
+                <strong>Completed and saved to your watch history.</strong>
               </div>
             </div>
-          </div>
+          </div> : <div className="movie-detail-activity-empty"><ProgressIcon /><div><strong>Ready when you are</strong><span>Mark watched to start your history and keep your rating close at hand.</span></div><button type="button" className="secondary-button" onClick={() => setIsWatchServiceDialogOpen(true)}>Mark as Watched</button></div>}
         </section>
 
-        <section className="content-section movie-detail-panel movie-detail-more-like-this">
+        <section id="movie-similar" className="content-section movie-detail-panel movie-detail-more-like-this">
           <div className="section-header">
             <h2>More Like This</h2>
           </div>
           <SimilarMoviesGrid similarMoviesState={similarMoviesState} onOpenMovie={onOpenMovie} />
         </section>
 
-        <section className="content-section movie-detail-panel movie-detail-reviews">
+        <section id="movie-reviews" className="content-section movie-detail-panel movie-detail-reviews">
           <div className="section-header">
             <h2>Community Reviews</h2>
-            <button type="button" className="section-link">
-              View all
-            </button>
           </div>
           {reviews.length > 0 ? (
             <div className="movie-detail-review-grid">
@@ -6586,15 +6986,30 @@ function MoviePosterFrame({ movie }) {
   )
 }
 
-function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOpenPerson, isSignedIn, favoriteActorIds, onToggleFavorite }) {
+function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOpenTv, onOpenPerson, isSignedIn, onOpenLogin, onToggleMovieWatchlist, onToggleMovieWatched, onToggleTvWatchlist, onToggleTvWatched, favoriteActorIds, onToggleFavorite }) {
   const filmographyPageSize = 5
+  const [filmographyRole, setFilmographyRole] = useState('all')
+  const [filmographyMedia, setFilmographyMedia] = useState('all')
+  const [filmographyDecade, setFilmographyDecade] = useState('all')
+  const [filmographySort, setFilmographySort] = useState('popular')
   const [visibleFilmographyCount, setVisibleFilmographyCount] = useState(filmographyPageSize)
+  const [isLinkCopied, setIsLinkCopied] = useState(false)
+  const shareFeedbackTimer = useRef(null)
   const personId = personDetailState.person?.id
   const filmography = personDetailState.filmography ?? []
 
   useEffect(() => {
-    setVisibleFilmographyCount(filmographyPageSize)
+    setFilmographyRole('all')
+    setFilmographyMedia('all')
+    setFilmographyDecade('all')
+    setFilmographySort('popular')
   }, [personId])
+
+  useEffect(() => {
+    setVisibleFilmographyCount(filmographyPageSize)
+  }, [personId, filmographyRole, filmographyMedia, filmographyDecade, filmographySort])
+
+  useEffect(() => () => window.clearTimeout(shareFeedbackTimer.current), [])
 
   if (personDetailState.status === 'loading' || personDetailState.status === 'idle') {
     return (
@@ -6620,10 +7035,16 @@ function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOp
     )
   }
 
-  const { person, knownFor, coStars, facts } = personDetailState
+  const { person, knownFor, coStars, facts, personalHistory } = personDetailState
   const isFavorite = favoriteActorIds.has(Number(person.id))
-  const visibleFilmography = filmography.slice(0, visibleFilmographyCount)
-  const hasMoreFilmography = filmography.length > visibleFilmography.length
+  const decades = [...new Set(filmography.map((item) => item.decade).filter(Boolean))].sort((left, right) => Number(right.slice(0, 4)) - Number(left.slice(0, 4)))
+  const filteredFilmography = filmography
+    .filter((item) => filmographyRole === 'all' || item.creditCategories.includes(filmographyRole))
+    .filter((item) => filmographyMedia === 'all' || item.mediaType === filmographyMedia)
+    .filter((item) => filmographyDecade === 'all' || item.decade === filmographyDecade)
+    .sort((left, right) => comparePersonFilmography(left, right, filmographySort, isSignedIn))
+  const visibleFilmography = filteredFilmography.slice(0, visibleFilmographyCount)
+  const hasMoreFilmography = filteredFilmography.length > visibleFilmography.length
   const heroStyle = person.heroBackdropUrl
     ? {
         backgroundImage: `linear-gradient(90deg, rgba(7, 10, 18, 0.98) 0%, rgba(7, 10, 18, 0.78) 28%, rgba(7, 10, 18, 0.4) 62%, rgba(7, 10, 18, 0.84) 100%), url(${person.heroBackdropUrl})`,
@@ -6643,7 +7064,11 @@ function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOp
         return
       }
 
-      await navigator.clipboard?.writeText(shareData.url)
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard is unavailable')
+      await navigator.clipboard.writeText(shareData.url)
+      setIsLinkCopied(true)
+      window.clearTimeout(shareFeedbackTimer.current)
+      shareFeedbackTimer.current = window.setTimeout(() => setIsLinkCopied(false), 2000)
     } catch {
       // Dismissing the native share dialog should not affect the detail page.
     }
@@ -6651,6 +7076,13 @@ function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOp
 
   return (
     <section className="person-detail-page">
+      <nav className="movie-detail-breadcrumb desktop-only" aria-label="Breadcrumb">
+        <button type="button" onClick={onBackToMovies}>Movies</button>
+        <span className="movie-detail-breadcrumb-separator" aria-hidden="true">/</span>
+        <span>Actors</span>
+        <span className="movie-detail-breadcrumb-separator" aria-hidden="true">/</span>
+        <span className="movie-detail-breadcrumb-current" aria-current="page">{person.name}</span>
+      </nav>
       <button type="button" className="movie-detail-back mobile-only" onClick={onBackToMovies}>
         <ChevronLeftIcon />
       </button>
@@ -6667,9 +7099,6 @@ function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOp
         <div className="person-detail-main">
           <div className="person-detail-title-row">
             <h1>{person.name}</h1>
-            <span className="person-detail-verified">
-              <CheckCircleIcon />
-            </span>
           </div>
 
           <div className="person-detail-role-list">
@@ -6679,10 +7108,9 @@ function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOp
           </div>
 
           <div className="person-detail-stat-row">
-            <MetricBadge icon={CalendarIcon} value={person.birthdayLabel} label="Birthdate" tone="violet" />
-            <MetricBadge icon={GlobeIcon} value={person.knownForDepartment} label="Known For" tone="gold" />
+            <MetricBadge icon={GlobeIcon} value={person.knownForDepartment} label="Career role" tone="gold" />
             <MetricBadge icon={AwardIcon} value={String(filmography.length)} label="Credits" tone="tomato" />
-            <MetricBadge icon={TrendUpIcon} value={person.popularity} label="Popularity" tone="violet" />
+            <MetricBadge icon={CheckIcon} value={isSignedIn ? String(personalHistory?.titlesWatched ?? 0) : '—'} label={isSignedIn ? 'Titles watched' : 'Sign in for history'} tone="violet" />
           </div>
 
           <p className="person-detail-summary">{person.biography}</p>
@@ -6694,8 +7122,9 @@ function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOp
             </button>
             <button type="button" className="secondary-button movie-detail-secondary ghost" onClick={handleShare}>
               <ShareIcon />
-              <span>Share</span>
+              <span>{isLinkCopied ? 'Link copied' : 'Share'}</span>
             </button>
+            {isLinkCopied ? <span className="person-share-feedback" role="status">Link copied</span> : null}
           </div>
         </div>
 
@@ -6712,6 +7141,30 @@ function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOp
         </aside>
       </article>
 
+      <section className="content-section movie-detail-panel person-history-panel">
+        <div className="section-header">
+          <h2>Your history with {person.name}</h2>
+        </div>
+        {!isSignedIn ? (
+          <div className="person-history-empty"><p>Sign in to see the titles, ratings, and watch time you share with {person.name}.</p><button type="button" className="secondary-button" onClick={onOpenLogin}>Sign in</button></div>
+        ) : personalHistory ? (
+          <div className="person-history-layout">
+            <div className="person-history-metrics">
+              <div><span>Titles watched</span><strong>{personalHistory.titlesWatched}</strong></div>
+              <div><span>Average rating</span><strong>{personalHistory.averageRating === null ? 'Not rated' : `${personalHistory.averageRating.toFixed(1)} / 5`}</strong></div>
+              <div><span>Hours watched</span><strong>{personalHistory.hoursWatched.toFixed(1)} h</strong></div>
+            </div>
+            {personalHistory.nextRecommendation ? (
+              <button type="button" className="person-history-recommendation" onClick={() => personalHistory.nextRecommendation.mediaType === 'tv' ? onOpenTv?.(personalHistory.nextRecommendation) : onOpenMovie?.(personalHistory.nextRecommendation)}>
+                <div className={`person-history-recommendation-poster${personalHistory.nextRecommendation.posterUrl ? ' has-image' : ''}`}>{personalHistory.nextRecommendation.posterUrl ? <img src={personalHistory.nextRecommendation.posterUrl} alt="" /> : null}</div>
+                <span><small>Next unwatched pick</small><strong>{personalHistory.nextRecommendation.title}</strong><em>{personalHistory.nextRecommendation.year} · {personalHistory.nextRecommendation.mediaType === 'tv' ? 'TV' : 'Movie'}</em></span>
+                <ChevronRight />
+              </button>
+            ) : <div className="person-history-empty"><p>You have watched every released title currently available for this person.</p></div>}
+          </div>
+        ) : <SectionMessage message="Your history is not available yet." />}
+      </section>
+
       <div className="person-detail-grid">
         <section className="content-section movie-detail-panel">
           <div className="section-header">
@@ -6720,10 +7173,10 @@ function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOp
           <div className="person-detail-known-for">
             {knownFor.length > 0 ? (
               knownFor.map((item) => (
-                <MovieCard key={`known-${item.id}`} movie={item} onOpenMovie={onOpenMovie} />
+                <MovieCard key={`known-${item.mediaType}-${item.id}`} movie={{ ...item, meta: `${item.mediaType === 'tv' ? 'TV' : 'Movie'} · ${item.knownForReason}`, genreLabel: item.meta }} onOpenMovie={item.mediaType === 'tv' ? onOpenTv : onOpenMovie} />
               ))
             ) : (
-              <SectionMessage message="No known-for movie credits are available yet." />
+              <div className="person-discovery-empty"><p>{filmography[0] ? `Explore other actors from ${filmography[0].title}.` : 'Explore movies to discover more actors.'}</p><button type="button" className="secondary-button" onClick={() => filmography[0] ? (filmography[0].mediaType === 'tv' ? onOpenTv?.(filmography[0]) : onOpenMovie?.(filmography[0])) : onBackToMovies()}>{filmography[0] ? `Explore ${filmography[0].title}` : 'Browse movies'}</button></div>
             )}
           </div>
         </section>
@@ -6731,19 +7184,28 @@ function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOp
         <div className="person-detail-split">
           <section className="content-section movie-detail-panel">
             <div className="section-header">
-              <h2>Filmography</h2>
+              <h2>Filmography <span className="person-detail-filmography-count">{visibleFilmography.length} of {filteredFilmography.length}</span></h2>
             </div>
             {filmography.length > 0 ? (
               <>
+                <div className="person-detail-filmography-filters" aria-label="Filmography filters">
+                  <div className="person-detail-filter-tabs" role="group" aria-label="Credit type">
+                    {[['all', 'All'], ['acting', 'Acting'], ['directing', 'Directing'], ['producing', 'Producing']].map(([value, label]) => <button key={value} type="button" className={filmographyRole === value ? 'active' : ''} onClick={() => setFilmographyRole(value)}>{label}</button>)}
+                  </div>
+                  <div className="person-detail-filter-tabs" role="group" aria-label="Media type">
+                    {[['all', 'All'], ['movie', 'Movies'], ['tv', 'TV']].map(([value, label]) => <button key={value} type="button" className={filmographyMedia === value ? 'active' : ''} onClick={() => setFilmographyMedia(value)}>{label}</button>)}
+                  </div>
+                  <label className="person-detail-filter-select"><span>Decade</span><select value={filmographyDecade} onChange={(event) => setFilmographyDecade(event.target.value)}><option value="all">All decades</option>{decades.map((decade) => <option key={decade} value={decade}>{decade}</option>)}</select></label>
+                  <label className="person-detail-filter-select"><span>Sort</span><select value={filmographySort} onChange={(event) => setFilmographySort(event.target.value)}><option value="popular">Most popular</option><option value="newest">Newest</option><option value="rated">Highest rated</option><option value="oldest">Oldest</option><option value="unwatched">Unwatched by me</option></select></label>
+                </div>
                 <div className="person-detail-filmography">
                   {visibleFilmography.map((item) => (
-                    <button
-                      key={`film-${item.id}-${item.role}`}
-                      type="button"
+                    <article
+                      key={`film-${item.mediaType}-${item.id}`}
                       className="person-detail-filmography-row"
-                      onClick={() => onOpenMovie?.(item)}
                     >
-                      <div className="person-detail-filmography-title">
+                      <div className="person-filmography-timeline-marker"><span>{item.year}</span><i /></div>
+                      <button type="button" className="person-detail-filmography-title" onClick={() => item.mediaType === 'tv' ? onOpenTv?.(item) : onOpenMovie?.(item)}>
                         <div className={`person-detail-filmography-poster${item.posterUrl ? ' has-image' : ` ${item.theme}`}`}>
                           {item.posterUrl ? (
                             <img
@@ -6756,32 +7218,31 @@ function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOp
                         </div>
                         <div className="person-detail-filmography-copy">
                           <strong>{item.title}</strong>
-                          <span>{item.year}</span>
+                          <span className="person-filmography-media-badge">{item.mediaType === 'tv' ? <TvIcon /> : <ClapperIcon />}{item.mediaType === 'tv' ? 'TV' : 'Movie'}</span>
                         </div>
-                      </div>
+                      </button>
                       <span className="person-detail-filmography-role">{item.role}</span>
                       <span className="star-rating person-detail-filmography-rating">
                         <StarIcon />
                         {item.rating}
                       </span>
-                      <ChevronRight className="person-detail-filmography-chevron" />
-                    </button>
+                      <div className="person-detail-filmography-personal" aria-label={`Your status for ${item.title}`}>
+                        {item.personal.watchlisted ? <span className="person-filmography-state saved">Saved</span> : null}
+                        {item.personal.watched ? <span className="person-filmography-state watched">Watched</span> : null}
+                        {item.personal.yourScore !== null ? <span className="person-filmography-state rated">{item.mediaType === 'tv' ? `${item.personal.yourScore.toFixed(1)} · ${item.personal.ratingCount} eps` : `${item.personal.yourScore.toFixed(1)} rated`}</span> : null}
+                      </div>
+                      <div className="person-detail-filmography-quick-actions">
+                        <button type="button" className={`quick-media-action${item.personal.watchlisted ? ' is-active' : ''}`} onClick={() => { if (!isSignedIn) return onOpenLogin(); return item.mediaType === 'tv' ? onToggleTvWatchlist(item) : onToggleMovieWatchlist(item) }} aria-label={`${item.personal.watchlisted ? 'Remove' : 'Save'} ${item.title}`} title={item.personal.watchlisted ? 'Remove from watchlist' : 'Save to watchlist'}><BookmarkIcon /></button>
+                        <button type="button" className={`quick-media-action${item.personal.watched ? ' is-active watched' : ''}`} onClick={() => { if (!isSignedIn) return onOpenLogin(); return item.mediaType === 'tv' ? onToggleTvWatched(item) : onToggleMovieWatched(item) }} aria-label={`${item.personal.watched ? 'Mark' : 'Mark'} ${item.title} as ${item.personal.watched ? 'unwatched' : 'watched'}`} title={item.personal.watched ? 'Mark as unwatched' : 'Mark as watched'}><CheckIcon /></button>
+                      </div>
+                    </article>
                   ))}
                 </div>
-                {hasMoreFilmography ? (
-                  <div className="person-detail-filmography-actions">
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      onClick={() => setVisibleFilmographyCount((count) => count + filmographyPageSize)}
-                    >
-                      Show more
-                    </button>
-                  </div>
-                ) : null}
+                {visibleFilmography.length === 0 ? <SectionMessage message="No credits match these filters." /> : null}
+                {hasMoreFilmography ? <div className="person-detail-filmography-actions"><button type="button" className="secondary-button" onClick={() => setVisibleFilmographyCount((count) => count + filmographyPageSize)}>Load 5 more</button></div> : null}
               </>
             ) : (
-              <SectionMessage message="No filmography entries are available yet." />
+              <div className="person-discovery-empty"><p>{knownFor[0] ? `Explore other actors from ${knownFor[0].title}.` : 'Explore movies to discover more actors.'}</p><button type="button" className="secondary-button" onClick={() => knownFor[0] ? (knownFor[0].mediaType === 'tv' ? onOpenTv?.(knownFor[0]) : onOpenMovie?.(knownFor[0])) : onBackToMovies()}>{knownFor[0] ? `Explore ${knownFor[0].title}` : 'Browse movies'}</button></div>
             )}
           </section>
 
@@ -6789,7 +7250,7 @@ function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOp
             <div className="section-header">
               <h2>Co-stars</h2>
             </div>
-            <div className="person-detail-costars">
+            <div className="person-detail-costars person-detail-costars-rail">
               {coStars.length > 0 ? (
                 coStars.map((member) => (
                   <button
@@ -6808,11 +7269,11 @@ function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOp
                       {!member.profileUrl ? getMovieCreditInitials(member.name) : null}
                     </div>
                     <h3>{member.name}</h3>
-                    <p>{member.sharedCredits} shared credits</p>
+                    <p>{member.sharedCredits} shared {member.sharedCredits === 1 ? 'film' : 'films'}{member.sharedTitles.length ? ` · ${member.sharedTitles.join(', ')}` : ''}</p>
                   </button>
                 ))
               ) : (
-                <SectionMessage message="Co-stars will appear here when shared credits are available." />
+                <div className="person-discovery-empty"><p>{knownFor[0] ? `Explore other actors from ${knownFor[0].title}.` : 'Explore more actors from the movie catalog.'}</p><button type="button" className="secondary-button" onClick={() => knownFor[0] ? (knownFor[0].mediaType === 'tv' ? onOpenTv?.(knownFor[0]) : onOpenMovie?.(knownFor[0])) : onBackToMovies()}>{knownFor[0] ? `Explore ${knownFor[0].title}` : 'Browse movies'}</button></div>
               )}
             </div>
           </section>
@@ -6820,6 +7281,16 @@ function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOp
       </div>
     </section>
   )
+}
+
+function comparePersonFilmography(left, right, sort, isSignedIn) {
+  const date = (item) => Date.parse(item.releaseDate || '') || 0
+  const numeric = (value) => Number.isFinite(Number(value)) ? Number(value) : -1
+  if (sort === 'newest') return date(right) - date(left) || numeric(right.popularity) - numeric(left.popularity)
+  if (sort === 'oldest') return date(left) - date(right) || numeric(right.popularity) - numeric(left.popularity)
+  if (sort === 'rated') return numeric(right.voteAverage) - numeric(left.voteAverage) || date(right) - date(left)
+  if (sort === 'unwatched' && isSignedIn) return Number(left.personal.watched) - Number(right.personal.watched) || date(right) - date(left)
+  return numeric(right.popularity) - numeric(left.popularity) || date(right) - date(left)
 }
 
 function MetricBadge({ icon: Icon, value, label, tone }) {
@@ -7384,7 +7855,7 @@ function HomeWatchlistCard({ item, onOpenMovie, onOpenTvShow, onOpenBook, isInWa
   )
 }
 
-function MovieCard({ movie, onOpenMovie, isInWatchlist = false, isWatched = false, onToggleWatchlist, onToggleWatched, railKind, railIndex }) {
+function MovieCard({ movie, matchQuery, onOpenMovie, isInWatchlist = false, isWatched = false, onToggleWatchlist, onToggleWatched, railKind, railIndex }) {
   const [posterUnavailable, setPosterUnavailable] = useState(false)
   const showPosterImage = Boolean(movie.posterUrl) && !posterUnavailable
   const hasQuickActions = Boolean(onToggleWatchlist || onToggleWatched)
@@ -7425,14 +7896,14 @@ function MovieCard({ movie, onOpenMovie, isInWatchlist = false, isWatched = fals
         ) : null}
       </div>
       <div className="movie-card-copy">
-        <h3>{movie.title}</h3>
-        <p>{movie.year} · {movie.meta || 'Catalog title'}</p>
+        <h3><HighlightedText text={movie.title} query={matchQuery} /></h3><SearchMatchLabel text={movie.title} query={matchQuery} />
+        <p>{movie.year} · <HighlightedText text={movie.meta || 'Catalog title'} query={matchQuery} /></p>
         <div className="rating-row">
           <span className="star-rating">
             <StarIcon />
             {movie.rating}
           </span>
-          {railKind === 'top-rated' ? <strong className="movie-card-score">{movie.rating}<small>/10</small></strong> : <span>{movie.genreLabel || 'Movie'}</span>}
+          {railKind === 'top-rated' ? <strong className="movie-card-score">{movie.rating}<small>/10</small></strong> : <span><HighlightedText text={movie.genreLabel || 'Movie'} query={matchQuery} /></span>}
         </div>
       </div>
     </>
@@ -7811,8 +8282,8 @@ function GenreMoviesGrid({ genreMoviesState, onOpenMovie, watchedMovieIds = new 
   )
 }
 
-function getFilteredWatchlistItems({ items, activeTab }) {
-  return items.filter((item) => {
+function getFilteredWatchlistItems({ items, activeTab, availability = 'all', sort = 'recently-added' }) {
+  const filtered = items.filter((item) => {
     if (activeTab === 'Movies' && item.type !== 'Movies') {
       return false
     }
@@ -7825,8 +8296,48 @@ function getFilteredWatchlistItems({ items, activeTab }) {
       return false
     }
 
+    if (availability === 'streaming') return Boolean(item.streamingService && item.streamingService !== 'Streaming TBA')
+    if (availability === 'upcoming') return Boolean(item.nextEpisodeDate || (item.releaseDate && new Date(`${item.releaseDate}T00:00:00`).valueOf() > Date.now()))
     return true
   })
+  const missingLast = (left, right) => (left === null || left === undefined) - (right === null || right === undefined)
+  return filtered.sort((left, right) => {
+    const titleTie = left.title.localeCompare(right.title)
+    if (sort === 'priority') {
+      const leftRank = left.topSlot ? left.topSlot : left.queuePosition ? left.queuePosition + 3 : Number.MAX_SAFE_INTEGER
+      const rightRank = right.topSlot ? right.topSlot : right.queuePosition ? right.queuePosition + 3 : Number.MAX_SAFE_INTEGER
+      return leftRank - rightRank || titleTie
+    }
+    if (sort === 'alphabetical') return titleTie
+    if (sort === 'rating') return missingLast(left.rating, right.rating) || (right.rating ?? -Infinity) - (left.rating ?? -Infinity) || titleTie
+    if (sort === 'runtime-or-pages') {
+      const leftLength = left.type === 'Books' ? left.pageCount : left.runtimeMinutes
+      const rightLength = right.type === 'Books' ? right.pageCount : right.runtimeMinutes
+      return missingLast(leftLength, rightLength) || (leftLength ?? Infinity) - (rightLength ?? Infinity) || titleTie
+    }
+    if (sort === 'release-date') {
+      const leftDate = left.nextEpisodeDate || left.releaseDate
+      const rightDate = right.nextEpisodeDate || right.releaseDate
+      return missingLast(leftDate, rightDate) || String(leftDate || '').localeCompare(String(rightDate || '')) || titleTie
+    }
+    return missingLast(left.watchlistedAt, right.watchlistedAt) || String(right.watchlistedAt || '').localeCompare(String(left.watchlistedAt || '')) || titleTie
+  })
+}
+
+function getWatchlistAvailabilitySignal(item) {
+  if (item.type === 'TV Shows' && item.nextEpisodeDate) {
+    const date = new Date(`${item.nextEpisodeDate}T00:00:00`)
+    const tomorrow = new Date(); tomorrow.setHours(0, 0, 0, 0); tomorrow.setDate(tomorrow.getDate() + 1)
+    return date.valueOf() === tomorrow.valueOf() ? 'New episode tomorrow' : `New episode ${date.toLocaleDateString(undefined, { weekday: 'long' })}`
+  }
+  if (item.type === 'Movies' && item.releaseDate && new Date(`${item.releaseDate}T00:00:00`).valueOf() > Date.now()) return `Releases ${new Date(`${item.releaseDate}T00:00:00`).toLocaleDateString(undefined, { weekday: 'long' })}`
+  return item.streamingService && item.streamingService !== 'Streaming TBA' ? `On ${item.streamingService}` : null
+}
+
+function getWatchlistDecisionMeta(item) {
+  if (item.type === 'Books') return item.pageCount ? `${item.pageCount} pages · ${item.meta}` : item.meta
+  if (item.type === 'TV Shows') return item.nextEpisodeDate ? `Next: ${item.nextEpisodeName || 'episode'} · ${new Date(`${item.nextEpisodeDate}T00:00:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}` : item.runtimeMinutes ? `${item.runtimeMinutes} min episodes` : null
+  return item.runtimeMinutes ? `${item.runtimeMinutes} min runtime` : null
 }
 
 function collectTvCatalog(collectionStates = []) {
@@ -8077,6 +8588,11 @@ function mapWatchlistMoviePayload(movie, index = 0) {
     runtime: movie.runtime || 'Runtime TBA',
     streamingService: movie.streamingService || 'Streaming TBA',
     watchlistedAt: movie.watchlistedAt || null,
+    releaseDate: movie.releaseDate || null,
+    runtimeMinutes: Number.isInteger(movie.runtimeMinutes) ? movie.runtimeMinutes : null,
+    topSlot: Number.isInteger(movie.topSlot) ? movie.topSlot : null,
+    queuePosition: Number.isInteger(movie.queuePosition) ? movie.queuePosition : null,
+    hasReleaseReminder: Boolean(movie.hasReleaseReminder),
     accent: watchlistAccentOptions[index % watchlistAccentOptions.length],
     bookmarked: true,
   }
@@ -8092,6 +8608,10 @@ function mapWatchlistBookPayload(book, index = 0) {
     type: 'Books',
     posterUrl: book.posterUrl || null,
     watchlistedAt: book.watchlistedAt || null,
+    releaseDate: book.releaseDate || null,
+    pageCount: Number.isInteger(book.pageCount) ? book.pageCount : null,
+    topSlot: Number.isInteger(book.topSlot) ? book.topSlot : null,
+    queuePosition: Number.isInteger(book.queuePosition) ? book.queuePosition : null,
     accent: watchlistAccentOptions[index % watchlistAccentOptions.length],
     bookmarked: true,
   }
@@ -8159,6 +8679,13 @@ function mapTvWatchlistShowPayload(show, index = 0) {
     posterUrl: show.posterUrl || null,
     backdropUrl: show.backdropUrl || null,
     watchlistedAt: show.watchlistedAt || null,
+    releaseDate: show.releaseDate || null,
+    runtimeMinutes: Number.isInteger(show.runtimeMinutes) ? show.runtimeMinutes : null,
+    streamingService: show.streamingService || 'Streaming TBA',
+    nextEpisodeDate: show.nextEpisodeDate || null,
+    nextEpisodeName: show.nextEpisodeName || null,
+    topSlot: Number.isInteger(show.topSlot) ? show.topSlot : null,
+    queuePosition: Number.isInteger(show.queuePosition) ? show.queuePosition : null,
     accent: watchlistAccentOptions[index % watchlistAccentOptions.length],
     bookmarked: true,
   }
@@ -8656,10 +9183,12 @@ function mapPersonPreview(person) {
 function mapPersonMovieCredit(movie) {
   return {
     id: movie.id,
+    mediaType: movie.mediaType === 'tv' ? 'tv' : 'movie',
     title: movie.title,
     year: movie.year || 'Release TBA',
     rating: movie.rating || 'N/A',
     meta: movie.meta || 'Credit',
+    knownForReason: movie.knownForReason || 'Popular credit',
     posterUrl: movie.posterUrl || null,
     backdropUrl: movie.backdropUrl || null,
     theme: 'theme-catalog',
@@ -8671,10 +9200,34 @@ function mapPersonFilmographyRow(movie) {
     id: movie.id,
     title: movie.title,
     year: movie.year || 'Release TBA',
+    mediaType: movie.mediaType === 'tv' ? 'tv' : 'movie',
+    releaseDate: movie.releaseDate || null,
+    decade: movie.decade || null,
+    roles: Array.isArray(movie.roles) ? movie.roles : [movie.role || 'Credit'],
     role: movie.role || 'Credit',
+    creditCategories: Array.isArray(movie.creditCategories) ? movie.creditCategories : [],
+    popularity: Number.isFinite(Number(movie.popularity)) ? Number(movie.popularity) : null,
+    voteAverage: Number.isFinite(Number(movie.voteAverage)) ? Number(movie.voteAverage) : null,
     rating: movie.rating || 'N/A',
     posterUrl: movie.posterUrl || null,
+    personal: {
+      watchlisted: Boolean(movie.personal?.watchlisted),
+      watched: Boolean(movie.personal?.watched),
+      yourScore: Number.isFinite(Number(movie.personal?.yourScore)) ? Number(movie.personal.yourScore) : null,
+      ratingCount: Number(movie.personal?.ratingCount) || 0,
+    },
     theme: 'theme-catalog',
+  }
+}
+
+function mapPersonHistoryPayload(history) {
+  if (!history || typeof history !== 'object') return null
+  const next = history.nextRecommendation
+  return {
+    titlesWatched: Number(history.titlesWatched) || 0,
+    averageRating: Number.isFinite(Number(history.averageRating)) ? Number(history.averageRating) : null,
+    hoursWatched: Number(history.hoursWatched) || 0,
+    nextRecommendation: next && Number.isInteger(Number(next.id)) ? mapPersonFilmographyRow(next) : null,
   }
 }
 
@@ -8684,6 +9237,7 @@ function mapPersonCoStar(person) {
     name: person.name,
     profileUrl: person.profileUrl || null,
     sharedCredits: person.sharedCredits || 0,
+    sharedTitles: Array.isArray(person.sharedTitles) ? person.sharedTitles : [],
   }
 }
 
@@ -8788,6 +9342,10 @@ function readAppRoute(pathname = window.location.pathname, search = window.locat
     return { kind: routeKinds.calendar }
   }
 
+  if (/^\/watchlist\/?$/.test(pathname)) {
+    return { kind: routeKinds.watchlist }
+  }
+
   if (/^\/search\/?$/.test(pathname)) {
     return { kind: routeKinds.search, query: new URLSearchParams(search).get('q')?.trim() || '' }
   }
@@ -8833,6 +9391,22 @@ function readAppRoute(pathname = window.location.pathname, search = window.locat
   }
 
   return { kind: routeKinds.home }
+}
+
+const watchlistTabValues = { all: 'All', movies: 'Movies', tv: 'TV Shows', books: 'Books', actors: 'Actors', authors: 'Authors' }
+const watchlistTabKeys = Object.fromEntries(Object.entries(watchlistTabValues).map(([key, value]) => [value, key]))
+
+function readWatchlistViewState(search = window.location.search) {
+  const params = new URLSearchParams(search)
+  const tab = watchlistTabValues[params.get('tab')] || 'All'
+  const availability = ['all', 'streaming', 'upcoming'].includes(params.get('availability')) ? params.get('availability') : 'all'
+  const sort = ['recently-added', 'priority', 'release-date', 'rating', 'runtime-or-pages', 'alphabetical'].includes(params.get('sort')) ? params.get('sort') : 'recently-added'
+  return { tab, availability, sort }
+}
+
+function buildWatchlistPath({ tab, availability, sort }) {
+  const params = new URLSearchParams({ tab: watchlistTabKeys[tab] || 'all', availability, sort })
+  return `/watchlist?${params.toString()}`
 }
 
 function buildSearchPath(query) {
@@ -9303,6 +9877,16 @@ function BarsIcon() {
   )
 }
 
+function MoreIcon() {
+  return (
+    <IconBase>
+      <circle cx="5" cy="12" r="1" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="12" r="1" fill="currentColor" stroke="none" />
+      <circle cx="19" cy="12" r="1" fill="currentColor" stroke="none" />
+    </IconBase>
+  )
+}
+
 function BellIcon() {
   return (
     <IconBase>
@@ -9536,15 +10120,6 @@ function GlobeIcon() {
       <path d="M4.5 12h15" />
       <path d="M12 4c2 2.1 3.2 5 3.2 8S14 17.9 12 20" />
       <path d="M12 4C10 6.1 8.8 9 8.8 12s1.2 5.9 3.2 8" />
-    </IconBase>
-  )
-}
-
-function TrendUpIcon() {
-  return (
-    <IconBase>
-      <path d="M5.5 16.5 10 12l3 3 5.5-6" />
-      <path d="M14.5 9H18v3.5" />
     </IconBase>
   )
 }

@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createApp, readMovieAvailability } from '../app.js'
-import { addMovieReleaseReminderForUser, buildStatsInsights, countMovies, countStoredDataBytes, ensureMoviesTable, getBookStatsForUser, getMostWatchedActorsForUser, getMovieStatsForUser, getStatsInsightsForUser, getStreamingPlatformsForUser, getTopRatedThisMonthForUser, hasMovieReleaseReminderForUser, listCalendarEventsForUser, listContinueWatchingTvShowsForUser, listGenres, listLatestEpisodeTvShows, listMovies, listRecentlyReleasedMovies, listSimilarMovies, listTopRatedMovies, listTvShows, listTvWatchlistShowsForUser, listUpcomingMovies, listWatchedMoviesByGenreForUser, listWatchedTvEpisodesForUser, removeMovieReleaseReminderForUser, searchActors, searchBooks, searchMovies, searchTvShows, updateTvEpisodeWatchStateForUser, upsertTvEpisodeRatingForUser } from '../database.js'
+import { addMovieReleaseReminderForUser, buildStatsInsights, countMovies, countStoredDataBytes, ensureMoviesTable, getBookStatsForUser, getMostWatchedActorsForUser, getMovieStatsForUser, getPersonFilmographyPersonalStates, getPersonHistoryForUser, getStatsInsightsForUser, getStreamingPlatformsForUser, getTopRatedThisMonthForUser, hasMovieReleaseReminderForUser, listCalendarEventsForUser, listContinueWatchingTvShowsForUser, listGenres, listLatestEpisodeTvShows, listMovies, listRecentlyReleasedMovies, listSimilarMovies, listTopRatedMovies, listTvShows, listTvWatchlistShowsForUser, listUpcomingMovies, listWatchedMoviesByGenreForUser, listWatchedTvEpisodesForUser, removeMovieReleaseReminderForUser, searchActors, searchBooks, searchMovies, searchTvShows, updateTvEpisodeWatchStateForUser, upsertTvEpisodeRatingForUser } from '../database.js'
 
 function isSchemaSetupQuery(sql) {
   return (
@@ -59,6 +59,37 @@ function isSchemaSetupQuery(sql) {
     || sql.includes('ALTER TABLE watch_together_')
   )
 }
+
+test('getPersonFilmographyPersonalStates batches movie and TV library state with user ratings', async () => {
+  const calls = []
+  const pool = {
+    async query(sql, params) {
+      calls.push({ sql, params })
+      if (sql.includes('FROM movies')) return { rows: [{ tmdb_id: 11, watchlisted: true, watched: false, your_score: 4.5 }] }
+      return { rows: [{ tmdb_id: 22, watchlisted: false, watched: true, your_score: 3.75, rating_count: 4 }] }
+    },
+  }
+
+  const states = await getPersonFilmographyPersonalStates(pool, { username: 'florin', movieIds: [11, 11], tvIds: [22] })
+
+  assert.equal(calls.length, 2)
+  assert.deepEqual(calls[0].params, ['florin', [11]])
+  assert.equal(states.movies.get(11).yourScore, 4.5)
+  assert.equal(states.tv.get(22).watched, true)
+  assert.equal(states.tv.get(22).ratingCount, 4)
+})
+
+test('getPersonHistoryForUser combines watched movie and TV time with all personal ratings', async () => {
+  const pool = {
+    async query(sql) {
+      if (sql.includes('FROM watched_movies')) return { rows: [{ title_count: 2, minutes: 210 }] }
+      if (sql.includes('FROM tv_shows')) return { rows: [{ title_count: 1, minutes: 90 }] }
+      return { rows: [{ average_rating: 4.25, rating_count: 4 }] }
+    },
+  }
+  const history = await getPersonHistoryForUser(pool, { username: 'florin', movieIds: [11, 12], tvIds: [22] })
+  assert.deepEqual(history, { titlesWatched: 3, averageRating: 4.25, hoursWatched: 5 })
+})
 
 async function closeServer(server) {
   await new Promise((resolve, reject) => {
@@ -2081,6 +2112,42 @@ test('GET /api/search validates the query and returns grouped local matches', as
   }
 })
 
+test('search suggestions return capped local titles and people, while popular search returns local catalog titles', async () => {
+  const pool = {
+    async query(sql, _params) {
+      if (isSchemaSetupQuery(sql)) return { rowCount: null }
+      if (sql.includes('FROM movies') && sql.includes('POSITION')) return { rows: [{ tmdb_id: 1, title: 'Dune', release_date: '2021-10-22', poster_path: '/dune.jpg', popularity: 100 }] }
+      if (sql.includes('FROM tv_shows') && sql.includes('POSITION')) return { rows: [{ tmdb_id: 2, name: 'Dune: Prophecy', first_air_date: '2024-11-17', poster_path: '/prophecy.jpg', popularity: 90 }] }
+      if (sql.includes('FROM books') && sql.includes('POSITION')) return { rows: [{ google_books_id: 'dune-book', title: 'Dune Messiah', authors: ['Frank Herbert'], cover_image_url: null }] }
+      if (sql.includes('FROM cast_members') && sql.includes('POSITION')) return { rows: [{ tmdb_person_id: 3, name: 'Dune Actor', known_for_department: 'Acting', profile_path: null, popularity: 80 }] }
+      if (sql.includes('AS label FROM movies')) return { rows: [{ label: 'Dune Messiah' }] }
+      if (sql.includes('AS label FROM tv_shows')) return { rows: [] }
+      if (sql.includes('AS label FROM books')) return { rows: [] }
+      if (sql.includes('AS label FROM cast_members')) return { rows: [] }
+      if (sql.includes('FROM movies')) return { rows: [{ tmdb_id: 4, title: 'Popular Movie', release_date: '2025-01-01', poster_path: null, popularity: 120 }] }
+      if (sql.includes('FROM tv_shows')) return { rows: [{ tmdb_id: 5, name: 'Popular Show', first_air_date: '2025-01-01', poster_path: null, popularity: 110 }] }
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+  const app = await createApp(pool)
+  const server = app.listen(0)
+  try {
+    const address = server.address()
+    const baseUrl = `http://127.0.0.1:${address.port}`
+    const missing = await fetch(`${baseUrl}/api/search/suggestions?q=D`)
+    assert.equal(missing.status, 400)
+    const suggestions = await (await fetch(`${baseUrl}/api/search/suggestions?q=Dune`)).json()
+    assert.deepEqual(suggestions.titles.map((item) => item.kind), ['movie', 'tv', 'book'])
+    assert.deepEqual(suggestions.people, [{ kind: 'person', id: 3, label: 'Dune Actor', meta: 'Acting', imageUrl: null, popularity: 80 }])
+    const popular = await (await fetch(`${baseUrl}/api/search/popular`)).json()
+    assert.deepEqual(popular.titles.map((item) => item.label), ['Popular Movie', 'Popular Show'])
+    const alternatives = await (await fetch(`${baseUrl}/api/search/alternatives?q=Dunee`)).json()
+    assert.deepEqual(alternatives.alternatives, ['Dune Messiah'])
+  } finally {
+    await closeServer(server)
+  }
+})
+
 test('searchBooks matches stored titles case-insensitively', async () => {
   let executedSql = ''
   let executedParams = []
@@ -2710,8 +2777,26 @@ test('GET /api/people/:personId returns normalized person detail and refreshes s
                 vote_average: 8.7,
                 popularity: 100,
               },
+              {
+                id: 203,
+                media_type: 'tv',
+                name: 'A Complete Unknown',
+                first_air_date: '2025-01-11',
+                character: 'Narrator',
+                poster_path: '/tv.jpg',
+                vote_average: 8.1,
+                popularity: 55,
+              },
             ],
             crew: [
+              {
+                id: 201,
+                media_type: 'movie',
+                title: 'Dune: Part Two',
+                release_date: '2024-03-01',
+                job: 'Executive Producer',
+                department: 'Production',
+              },
               {
                 id: 202,
                 media_type: 'movie',
@@ -2749,7 +2834,13 @@ test('GET /api/people/:personId returns normalized person detail and refreshes s
     assert.equal(payload.person.name, 'Timothee Chalamet')
     assert.equal(payload.person.knownForDepartment, 'Acting')
     assert.equal(payload.knownFor[0].title, 'Dune: Part Two')
-    assert.equal(payload.filmography[1].role, 'Producer')
+    assert.equal(payload.knownFor.find((item) => item.id === 203)?.mediaType, 'tv')
+    const dune = payload.filmography.find((item) => item.id === 201 && item.mediaType === 'movie')
+    const tvCredit = payload.filmography.find((item) => item.id === 203 && item.mediaType === 'tv')
+    assert.equal(dune.role, 'Paul Atreides · Executive Producer')
+    assert.deepEqual(dune.creditCategories.sort(), ['acting', 'producing'])
+    assert.equal(tvCredit.decade, '2020s')
+    assert.equal(tvCredit.personal.watched, false)
     assert.equal(payload.coStars[0].name, 'Zendaya')
     assert.equal(payload.facts[0].label, 'Birthdate')
     assert.equal(syncQueries.some(({ sql }) => sql.includes('INSERT INTO cast_members')), true)
