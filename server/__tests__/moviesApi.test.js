@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createApp, readMovieAvailability } from '../app.js'
-import { addMovieReleaseReminderForUser, buildStatsInsights, countMovies, countStoredDataBytes, ensureMoviesTable, getBookStatsForUser, getMostWatchedActorsForUser, getMovieStatsForUser, getPersonFilmographyPersonalStates, getPersonHistoryForUser, getStatsInsightsForUser, getStreamingPlatformsForUser, getTopRatedThisMonthForUser, hasMovieReleaseReminderForUser, listCalendarEventsForUser, listContinueWatchingTvShowsForUser, listGenres, listLatestEpisodeTvShows, listMovies, listRecentlyReleasedMovies, listSimilarMovies, listTopRatedMovies, listTvShows, listTvWatchlistShowsForUser, listUpcomingMovies, listWatchedMoviesByGenreForUser, listWatchedTvEpisodesForUser, removeMovieReleaseReminderForUser, searchActors, searchBooks, searchMovies, searchTvShows, updateTvEpisodeWatchStateForUser, upsertTvEpisodeRatingForUser } from '../database.js'
+import { addMovieReleaseReminderForUser, buildStatsInsights, countMovies, countStoredDataBytes, ensureMoviesTable, getBookStatsForUser, getMostWatchedActorsForUser, getMovieStatsForUser, getPersonFilmographyPersonalStates, getPersonHistoryForUser, getStatsInsightsForUser, getStreamingPlatformsForUser, getTopRatedThisMonthForUser, getUserEnabledSections, hasMovieReleaseReminderForUser, listCalendarEventsForUser, listContinueWatchingTvShowsForUser, listGenres, listLatestEpisodeTvShows, listMovies, listRecentlyReleasedMovies, listSimilarMovies, listTopRatedMovies, listTvShows, listTvWatchlistShowsForUser, listUpcomingMovies, listWatchedMoviesByGenreForUser, listWatchedTvEpisodesForUser, removeMovieReleaseReminderForUser, saveUserEnabledSections, searchActors, searchBooks, searchMovies, searchTvShows, updateTvEpisodeWatchStateForUser, upsertTvEpisodeRatingForUser } from '../database.js'
 
 function isSchemaSetupQuery(sql) {
   return (
@@ -9,6 +9,7 @@ function isSchemaSetupQuery(sql) {
     sql.includes('CREATE TABLE IF NOT EXISTS movie_release_reminders') ||
     sql.includes('CREATE TABLE IF NOT EXISTS movie_keyword') ||
     sql.includes('CREATE TABLE IF NOT EXISTS books') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS games') ||
     sql.includes('CREATE TABLE IF NOT EXISTS authors') ||
     sql.includes('CREATE TABLE IF NOT EXISTS book_authors') ||
     sql.includes('CREATE TABLE IF NOT EXISTS favorite_authors') ||
@@ -16,6 +17,7 @@ function isSchemaSetupQuery(sql) {
     sql.includes('CREATE TABLE IF NOT EXISTS read_books') ||
     sql.includes('CREATE TABLE IF NOT EXISTS book_ratings') ||
     sql.includes('CREATE INDEX IF NOT EXISTS books_import_order_idx') ||
+    sql.includes('CREATE INDEX IF NOT EXISTS games_import_order_idx') ||
     sql.includes('INSERT INTO authors') ||
     sql.includes('INSERT INTO book_authors') ||
     sql.includes('UPDATE books') ||
@@ -46,6 +48,8 @@ function isSchemaSetupQuery(sql) {
     sql.includes('CREATE TABLE IF NOT EXISTS tv_episode_ratings') ||
     sql.includes('ALTER TABLE tv_shows')
     || sql.includes('ALTER TABLE users')
+    || sql.includes('CREATE TABLE IF NOT EXISTS user_section_preferences')
+    || sql.includes('INSERT INTO user_section_preferences (user_id)')
     || sql.includes('CREATE TABLE IF NOT EXISTS user_alerts')
     || sql.includes('ALTER TABLE user_alerts')
     || sql.includes('CREATE TABLE IF NOT EXISTS alert_feature_state')
@@ -3501,6 +3505,67 @@ test('GET /api/movies/:movieId/similar returns an empty list when no related mov
         resolve()
       })
     })
+  }
+})
+
+test('user section preferences default to all sections and keep Movies and TV enabled', async () => {
+  const calls = []
+  const pool = {
+    async query(sql, params) {
+      calls.push({ sql, params })
+      if (sql.includes('SELECT enabled_sections')) return { rows: [] }
+      return { rows: [] }
+    },
+  }
+
+  assert.deepEqual(await getUserEnabledSections(pool, 17), ['movies', 'tv', 'books', 'calendar'])
+  assert.deepEqual(await saveUserEnabledSections(pool, { userId: 17, enabledSections: ['books'] }), ['movies', 'tv', 'books'])
+  assert.deepEqual(calls.at(-1).params, [17, ['movies', 'tv', 'books']])
+  await assert.rejects(
+    () => saveUserEnabledSections(pool, { userId: 17, enabledSections: ['music'] }),
+    /Enabled sections/
+  )
+})
+
+test('section preference APIs require authentication and validate updates', async () => {
+  let savedSections = ['movies', 'tv', 'books', 'calendar']
+  const pool = {
+    async query(sql, params) {
+      if (isSchemaSetupQuery(sql)) return { rowCount: null, rows: [] }
+      if (sql.includes('FROM users') && sql.includes('WHERE username = $1')) return { rows: [{ id: 17, username: params[0], full_name: 'Florin' }] }
+      if (sql.includes('SELECT enabled_sections')) return { rows: [{ enabled_sections: savedSections }] }
+      if (sql.includes('INSERT INTO user_section_preferences (user_id, enabled_sections')) {
+        savedSections = params[1]
+        return { rows: [] }
+      }
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+  const app = await createApp(pool)
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const baseUrl = `http://127.0.0.1:${address.port}`
+    const unauthenticated = await fetch(`${baseUrl}/api/preferences/sections`)
+    assert.equal(unauthenticated.status, 401)
+
+    const invalid = await fetch(`${baseUrl}/api/admin/preferences/sections`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'x-watchvault-username': 'florin' },
+      body: JSON.stringify({ enabledSections: ['movies', 'music'] }),
+    })
+    assert.equal(invalid.status, 400)
+
+    const update = await fetch(`${baseUrl}/api/admin/preferences/sections`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'x-watchvault-username': 'florin' },
+      body: JSON.stringify({ enabledSections: ['calendar'] }),
+    })
+    assert.equal(update.status, 200)
+    assert.deepEqual((await update.json()).enabled, ['movies', 'tv', 'calendar'])
+  } finally {
+    await closeServer(server)
   }
 })
 

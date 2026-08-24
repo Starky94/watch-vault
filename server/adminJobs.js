@@ -1,9 +1,13 @@
 import { importNowPlayingMovies, importPopularMovies, importUpcomingMovies } from './movieImportService.js'
 import { importAiringTodayTvShows, importOnTheAirTvShows, importPopularTvShows } from './tvImportService.js'
 import { importBooks } from './bookImportService.js'
+import { importPopularGames, importRecentlyReleasedGames, importUpcomingGames } from './gameImportService.js'
 
 export const adminJobs = [
   { key: 'books', name: 'Books Import', execution: 'Interval-based loop', frequency: 'Every hour', source: 'google-books', run: importBooks },
+  { key: 'games-popular', name: 'Popular Games Import', execution: 'Interval-based loop', frequency: 'Every 24 hours', source: 'igdb', run: importPopularGames },
+  { key: 'games-recently-released', name: 'Recently Released Games Import', execution: 'Interval-based loop', frequency: 'Every 24 hours', source: 'igdb', run: importRecentlyReleasedGames },
+  { key: 'games-upcoming', name: 'Upcoming Games Import', execution: 'Interval-based loop', frequency: 'Every 24 hours', source: 'igdb', run: importUpcomingGames },
   {
     key: 'popular',
     name: 'Popular Movies Import',

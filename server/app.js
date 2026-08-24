@@ -8,6 +8,7 @@ import {
   addMovieToWatchedForUser,
   countActors,
   countBooks,
+  countGames,
   countMovies,
   countStoredDataBytes,
   countTvShows,
@@ -26,11 +27,20 @@ import {
   getBookAchievementsForUser,
   findUserByCredentials,
   findUserByUsername,
+  ensureUserSectionPreferencesTable,
+  getUserEnabledSections,
+  saveUserEnabledSections,
   ensureFilelistTables,
   getFilelistCredentialStatus,
   getFilelistCredentials,
   saveFilelistCredentials,
   deleteFilelistCredentials,
+  ensureIgdbCredentialsTable,
+  ensureGamesTable,
+  getIgdbCredentials,
+  getIgdbCredentialStatus,
+  saveIgdbCredentials,
+  deleteIgdbCredentials,
   reserveFilelistRequest,
   listWatchTogetherUsers,
   listWatchTogetherWatchedMovieIdsForUser,
@@ -82,6 +92,9 @@ import {
   listWatchedMoviesByGenreForUser,
   listWatchedMoviesForUser,
   listMovies,
+  listPopularGames,
+  listRecentlyReleasedGames,
+  listUpcomingGames,
   listMovieKeywordSuggestions,
   listDiscoverExcludedTmdbIdsForUser,
   listBooks,
@@ -159,8 +172,10 @@ export async function createApp(pool, options = {}) {
   await ensureMoviesTable(pool)
   await ensureMovieKeywordTables(pool)
   await ensureBooksTable(pool)
+  await ensureGamesTable(pool)
   await ensureTvDetailTables(pool)
   await ensureAchievementTables(pool)
+  await ensureUserSectionPreferencesTable(pool)
 
   const app = express()
   app.use(express.json())
@@ -1338,21 +1353,49 @@ export async function createApp(pool, options = {}) {
       const user = await getAuthenticatedUser(pool, request)
       if (!user) return response.status(401).json({ error: 'Authentication required' })
       await ensureFilelistTables(pool)
-      const credential = await getFilelistCredentialStatus(pool, user.id)
+      await ensureIgdbCredentialsTable(pool)
+      const [credential, enabledSections, igdbCredential] = await Promise.all([
+        getFilelistCredentialStatus(pool, user.id),
+        getUserEnabledSections(pool, user.id),
+        getIgdbCredentialStatus(pool),
+      ])
       response.json({
         crons: listAdminJobs(jobs),
         totals: {
           actors: await countActors(pool),
           books: await countBooks(pool),
+          games: await countGames(pool),
           movies: await countMovies(pool),
           storedDataBytes: await countStoredDataBytes(pool),
           tvShows: await countTvShows(pool),
         },
         filelist: { configured: Boolean(credential), updatedAt: credential?.updated_at ?? null },
+        igdb: { configured: Boolean(igdbCredential), updatedAt: igdbCredential?.updated_at ?? null },
+        sections: { enabled: enabledSections },
       })
     } catch (error) {
       next(error)
     }
+  })
+
+  app.get('/api/preferences/sections', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      response.json({ enabled: await getUserEnabledSections(pool, user.id) })
+    } catch (error) { next(error) }
+  })
+
+  app.put('/api/admin/preferences/sections', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const enabledSections = request.body?.enabledSections
+      if (!Array.isArray(enabledSections) || enabledSections.some((section) => typeof section !== 'string' || !['movies', 'tv', 'books', 'calendar'].includes(section))) {
+        return response.status(400).json({ error: 'Enabled sections must contain only movies, tv, books, and calendar.' })
+      }
+      response.json({ enabled: await saveUserEnabledSections(pool, { userId: user.id, enabledSections }) })
+    } catch (error) { next(error) }
   })
 
   app.put('/api/admin/filelist', async (request, response, next) => {
@@ -1383,6 +1426,33 @@ export async function createApp(pool, options = {}) {
     } catch (error) { next(error) }
   })
 
+  app.put('/api/admin/igdb', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const clientId = typeof request.body?.clientId === 'string' ? request.body.clientId.trim() : ''
+      const privateKey = typeof request.body?.privateKey === 'string' ? request.body.privateKey.trim() : ''
+      if (!clientId || !privateKey) return response.status(400).json({ error: 'IGDB client ID and private key are required.' })
+      const config = loadRuntimeConfig()
+      await ensureIgdbCredentialsTable(pool)
+      await saveIgdbCredentials(pool, {
+        encryptedClientId: encryptFilelistValue(clientId, config.filelistEncryptionKey),
+        encryptedPrivateKey: encryptFilelistValue(privateKey, config.filelistEncryptionKey),
+      })
+      response.json({ configured: true })
+    } catch (error) { next(error) }
+  })
+
+  app.delete('/api/admin/igdb', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      await ensureIgdbCredentialsTable(pool)
+      await deleteIgdbCredentials(pool)
+      response.json({ configured: false })
+    } catch (error) { next(error) }
+  })
+
   app.post('/api/admin/jobs/:jobKey/run', async (request, response, next) => {
     try {
       const user = await getAuthenticatedUser(pool, request)
@@ -1402,9 +1472,24 @@ export async function createApp(pool, options = {}) {
 
     try {
       const config = loadRuntimeConfig()
-      const result = await job.run(pool, job.source === 'google-books'
-        ? { apiKey: config.googleBooksApiKey, baseUrl: config.googleBooksBaseUrl }
-        : { token: config.tmdbBearerToken, baseUrl: config.tmdbBaseUrl, count: 30 })
+      let options
+      if (job.source === 'google-books') {
+        options = { apiKey: config.googleBooksApiKey, baseUrl: config.googleBooksBaseUrl }
+      } else if (job.source === 'igdb') {
+        await ensureIgdbCredentialsTable(pool)
+        const credentials = await getIgdbCredentials(pool)
+        if (!credentials) return response.status(400).json({ error: 'IGDB credentials have not been configured in Admin settings.' })
+        options = {
+          clientId: decryptFilelistValue(credentials.encrypted_client_id, config.filelistEncryptionKey),
+          clientSecret: decryptFilelistValue(credentials.encrypted_private_key, config.filelistEncryptionKey),
+          baseUrl: config.igdbBaseUrl,
+          tokenUrl: config.twitchTokenUrl,
+          count: 30,
+        }
+      } else {
+        options = { token: config.tmdbBearerToken, baseUrl: config.tmdbBaseUrl, count: 30 }
+      }
+      const result = await job.run(pool, options)
 
       response.json({
         job: job.key,
@@ -1437,6 +1522,51 @@ export async function createApp(pool, options = {}) {
         movies: pagedMovies,
         featuredMovie: mapFeaturedMovie(pagedMovies[0] ?? null),
         pagination: buildPaginationPayload(pagination, movies.length > pagination.limit),
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/games', async (request, response, next) => {
+    try {
+      const pagination = readPaginationQuery(request, { defaultLimit: 30 })
+      const games = await listPopularGames(pool, { limit: pagination.limit + 1, page: pagination.page })
+      const pagedGames = games.slice(0, pagination.limit)
+      response.json({
+        count: pagedGames.length,
+        games: pagedGames,
+        pagination: buildPaginationPayload(pagination, games.length > pagination.limit),
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/games/recently-released', async (request, response, next) => {
+    try {
+      const pagination = readPaginationQuery(request, { defaultLimit: 30 })
+      const games = await listRecentlyReleasedGames(pool, { limit: pagination.limit + 1, page: pagination.page })
+      const pagedGames = games.slice(0, pagination.limit)
+      response.json({
+        count: pagedGames.length,
+        games: pagedGames,
+        pagination: buildPaginationPayload(pagination, games.length > pagination.limit),
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/games/upcoming', async (request, response, next) => {
+    try {
+      const pagination = readPaginationQuery(request, { defaultLimit: 30 })
+      const games = await listUpcomingGames(pool, { limit: pagination.limit + 1, page: pagination.page })
+      const pagedGames = games.slice(0, pagination.limit)
+      response.json({
+        count: pagedGames.length,
+        games: pagedGames,
+        pagination: buildPaginationPayload(pagination, games.length > pagination.limit),
       })
     } catch (error) {
       next(error)

@@ -5,6 +5,7 @@ const primaryViews = {
   home: 'Home',
   movies: 'Movies',
   books: 'Books',
+  games: 'Games',
   tvShows: 'TV Shows',
   watchlist: 'Watchlist',
   calendar: 'Calendar',
@@ -17,6 +18,7 @@ const navItems = [
   { label: 'Home', icon: HomeIcon, view: primaryViews.home },
   { label: 'Movies', icon: ClapperIcon, view: primaryViews.movies },
   { label: 'Books', icon: BookmarkIcon, view: primaryViews.books },
+  { label: 'Games', icon: GamepadIcon, view: primaryViews.games },
   { label: 'TV Shows', icon: TvIcon, view: primaryViews.tvShows },
   { label: 'Watchlist', icon: BookmarkIcon, view: primaryViews.watchlist },
   { label: 'Calendar', icon: CalendarIcon, view: primaryViews.calendar },
@@ -24,6 +26,15 @@ const navItems = [
   { label: 'Achievements', icon: TrophyIcon, view: primaryViews.achievements },
   { label: 'Watch Together', icon: UserIcon, view: primaryViews.watchTogether },
 ]
+
+const defaultEnabledSections = ['movies', 'tv', 'books', 'calendar']
+const requiredEnabledSections = ['movies', 'tv']
+const sectionByPrimaryView = {
+  [primaryViews.movies]: 'movies',
+  [primaryViews.tvShows]: 'tv',
+  [primaryViews.books]: 'books',
+  [primaryViews.calendar]: 'calendar',
+}
 
 const movieTabs = ['All Movies', 'Popular', 'Now Playing', 'Upcoming', 'Top Rated']
 const movieScreenModes = {
@@ -75,6 +86,7 @@ const mobileNavItems = [
   { label: 'Home', icon: HomeIcon, view: primaryViews.home },
   { label: 'Search', icon: SearchIcon, view: primaryViews.movies },
   { label: 'Books', icon: BookmarkIcon, view: primaryViews.books },
+  { label: 'Games', icon: GamepadIcon, view: primaryViews.games },
   { label: 'Watchlist', icon: BookmarkIcon, view: primaryViews.watchlist },
   { label: 'Calendar', icon: CalendarIcon, view: primaryViews.calendar },
   { label: 'Stats', icon: BarsIcon, view: primaryViews.stats },
@@ -217,6 +229,7 @@ function App() {
   const googleBooksSearchStartedQueryRef = useRef('')
   const [activeSearchSource, setActiveSearchSource] = useState('watchvault')
   const [user, setUser] = useState(null)
+  const [enabledSections, setEnabledSections] = useState(defaultEnabledSections)
   const [authStatus, setAuthStatus] = useState('idle')
   const [authError, setAuthError] = useState('')
   const [changePasswordState, setChangePasswordState] = useState({
@@ -235,6 +248,20 @@ function App() {
   const [upcomingTvPage, setUpcomingTvPage] = useState(1)
   const [topRatedTvPage, setTopRatedTvPage] = useState(1)
   const [popularMoviesState, setPopularMoviesState] = useState(() => createMovieCollectionState({ includeFeaturedMovie: true }))
+  const [activeGamesTab, setActiveGamesTab] = useState('all')
+  const [gamesPage, setGamesPage] = useState(1)
+  const [gamesState, setGamesState] = useState(() => createGameCollectionState())
+  const [gamesDashboardState, setGamesDashboardState] = useState(() => createGamesDashboardState())
+  const [favoriteGames, setFavoriteGames] = useState(() => readStoredGameFavorites())
+  const handleToggleGameFavorite = (game) => {
+    if (!game?.id) return
+    setFavoriteGames((currentGames) => {
+      const exists = currentGames.some((favorite) => favorite.id === game.id)
+      const nextGames = exists ? currentGames.filter((favorite) => favorite.id !== game.id) : [...currentGames, game]
+      storeGameFavorites(nextGames)
+      return nextGames
+    })
+  }
   const [booksState, setBooksState] = useState(() => createBookCollectionState())
   const [recentMoviesState, setRecentMoviesState] = useState(() => createMovieCollectionState())
   const [upcomingMoviesState, setUpcomingMoviesState] = useState(() => createMovieCollectionState())
@@ -283,10 +310,13 @@ function App() {
     crons: [],
     totalActors: 0,
     totalBooks: 0,
+    totalGames: 0,
     totalMovies: 0,
     storedDataBytes: 0,
     totalTvShows: 0,
     filelist: { configured: false, updatedAt: null },
+    igdb: { configured: false, updatedAt: null },
+    sections: { enabled: defaultEnabledSections },
     error: '',
   })
   const [adminRunState, setAdminRunState] = useState({})
@@ -405,6 +435,12 @@ function App() {
   }, [currentRoute])
 
   useEffect(() => {
+    if (!enabledSections.includes('books') && activeSearchSource === 'books') {
+      setActiveSearchSource('watchvault')
+    }
+  }, [activeSearchSource, enabledSections])
+
+  useEffect(() => {
     try {
       const storedUser = window.localStorage.getItem(authStorageKey)
 
@@ -430,6 +466,37 @@ function App() {
 
     window.localStorage.removeItem(authStorageKey)
   }, [user])
+
+  useEffect(() => {
+    if (!user) {
+      setEnabledSections(defaultEnabledSections)
+      return
+    }
+
+    let cancelled = false
+
+    async function loadEnabledSections() {
+      try {
+        const response = await fetch('/api/preferences/sections', { headers: buildAuthHeaders(user) })
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+        if (!cancelled) setEnabledSections(normalizeEnabledSections(payload.enabled))
+      } catch {
+        if (!cancelled) setEnabledSections(defaultEnabledSections)
+      }
+    }
+
+    loadEnabledSections()
+    return () => { cancelled = true }
+  }, [user])
+
+  useEffect(() => {
+    if (!user || currentRoute.kind !== routeKinds.calendar || enabledSections.includes('calendar')) return
+    window.history.replaceState({}, '', '/')
+    setCurrentRoute({ kind: routeKinds.home })
+    setActiveView(primaryViews.home)
+    setCurrentScreen(appScreens.dashboard)
+  }, [currentRoute.kind, enabledSections, user])
 
   function handleOpenLogin() {
     setAuthError('')
@@ -472,6 +539,7 @@ function App() {
 
   function handleLogout() {
     setUser(null)
+    setEnabledSections(defaultEnabledSections)
     setAuthStatus('idle')
     setAuthError('')
     setWatchlistActionState({
@@ -2154,10 +2222,13 @@ function App() {
             crons: Array.isArray(payload.crons) ? payload.crons : [],
             totalActors: typeof payload?.totals?.actors === 'number' ? payload.totals.actors : 0,
             totalBooks: typeof payload?.totals?.books === 'number' ? payload.totals.books : 0,
+            totalGames: typeof payload?.totals?.games === 'number' ? payload.totals.games : 0,
             totalMovies: typeof payload?.totals?.movies === 'number' ? payload.totals.movies : 0,
             storedDataBytes: typeof payload?.totals?.storedDataBytes === 'number' ? payload.totals.storedDataBytes : 0,
             totalTvShows: typeof payload?.totals?.tvShows === 'number' ? payload.totals.tvShows : 0,
             filelist: { configured: Boolean(payload?.filelist?.configured), updatedAt: payload?.filelist?.updatedAt ?? null },
+            igdb: { configured: Boolean(payload?.igdb?.configured), updatedAt: payload?.igdb?.updatedAt ?? null },
+            sections: { enabled: normalizeEnabledSections(payload?.sections?.enabled) },
             error: '',
           })
         }
@@ -2236,6 +2307,34 @@ function App() {
     const payload = await response.json().catch(() => ({}))
     if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
     setAdminRefreshKey((value) => value + 1)
+  }
+
+  async function handleSaveIgdbSettings({ clientId, privateKey }) {
+    const response = await fetch('/api/admin/igdb', { method: 'PUT', headers: { 'Content-Type': 'application/json', ...buildAuthHeaders(user) }, body: JSON.stringify({ clientId, privateKey }) })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+    setAdminRefreshKey((value) => value + 1)
+  }
+
+  async function handleClearIgdbSettings() {
+    const response = await fetch('/api/admin/igdb', { method: 'DELETE', headers: buildAuthHeaders(user) })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+    setAdminRefreshKey((value) => value + 1)
+  }
+
+  async function handleSaveEnabledSections(nextEnabledSections) {
+    const response = await fetch('/api/admin/preferences/sections', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...buildAuthHeaders(user) },
+      body: JSON.stringify({ enabledSections: nextEnabledSections }),
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+    const enabled = normalizeEnabledSections(payload.enabled)
+    setEnabledSections(enabled)
+    setAdminOverviewState((previousState) => ({ ...previousState, sections: { enabled } }))
+    return enabled
   }
 
   useEffect(() => {
@@ -2731,6 +2830,80 @@ function App() {
     loadBooks()
     return () => { cancelled = true }
   }, [activeView, booksPage])
+
+  useEffect(() => {
+    if (activeView !== primaryViews.games) return
+
+    let cancelled = false
+    if (activeGamesTab === 'favorites') return () => { cancelled = true }
+
+    if (activeGamesTab === 'all') {
+      async function loadGamesDashboard() {
+        setGamesDashboardState(createGamesDashboardLoadingState())
+        try {
+          const [popularResponse, recentResponse, upcomingResponse] = await Promise.all([
+            fetch(buildMoviesApiPath('/api/games', 1, 6)),
+            fetch(buildMoviesApiPath('/api/games/recently-released', 1, 6)),
+            fetch(buildMoviesApiPath('/api/games/upcoming', 1, 6)),
+          ])
+          const responses = [popularResponse, recentResponse, upcomingResponse]
+          const payloads = await Promise.all(responses.map((response) => response.json().catch(() => ({}))))
+          const failedResponse = responses.find((response) => !response.ok)
+          if (failedResponse) throw new Error(payloads[responses.indexOf(failedResponse)]?.error || `Request failed with status ${failedResponse.status}`)
+          if (!cancelled) setGamesDashboardState({
+            status: 'success',
+            popularGames: Array.isArray(payloads[0].games) ? payloads[0].games.map(mapGamePayload) : [],
+            recentGames: Array.isArray(payloads[1].games) ? payloads[1].games.map(mapGamePayload) : [],
+            upcomingGames: Array.isArray(payloads[2].games) ? payloads[2].games.map(mapUpcomingGamePayload) : [],
+            error: '',
+          })
+        } catch (error) {
+          if (!cancelled) setGamesDashboardState({
+            status: 'error',
+            popularGames: [],
+            recentGames: [],
+            upcomingGames: [],
+            error: error instanceof Error ? error.message : 'Unable to load the games dashboard right now.',
+          })
+        }
+      }
+      loadGamesDashboard()
+      return () => { cancelled = true }
+    }
+
+    const gamesApiPaths = {
+      popular: '/api/games',
+      recent: '/api/games/recently-released',
+      upcoming: '/api/games/upcoming',
+    }
+    const activeTabLabel = activeGamesTab === 'recent' ? 'recent games' : activeGamesTab === 'upcoming' ? 'upcoming games' : 'popular games'
+
+    async function loadGames() {
+      setGamesState(createGameCollectionLoadingState(gamesPage))
+      try {
+        const response = await fetch(buildMoviesApiPath(gamesApiPaths[activeGamesTab], gamesPage, moviesPageSize))
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+        const mapGame = activeGamesTab === 'upcoming' ? mapUpcomingGamePayload : mapGamePayload
+        if (!cancelled) setGamesState({
+          status: 'success',
+          games: Array.isArray(payload.games) ? payload.games.map(mapGame) : [],
+          pagination: mapPaginationPayload(payload.pagination, gamesPage),
+          error: '',
+        })
+      } catch (error) {
+        if (!cancelled) setGamesState({
+          status: 'error',
+          games: [],
+          pagination: createPaginationState(gamesPage),
+          error: error instanceof Error ? error.message : `Unable to load ${activeTabLabel} right now.`,
+        })
+      }
+    }
+
+    loadGames()
+    return () => { cancelled = true }
+  }, [activeGamesTab, activeView, gamesPage])
 
   useEffect(() => {
     if (currentRoute.kind !== routeKinds.bookDetail) {
@@ -3286,7 +3459,7 @@ function App() {
         <Brand />
 
         <nav className="sidebar-nav" aria-label="Primary">
-          {navItems.map(({ label, icon: Icon, view }) => (
+          {navItems.filter(({ view }) => isPrimaryViewEnabled(view, enabledSections)).map(({ label, icon: Icon, view }) => (
             <button
               key={label}
               type="button"
@@ -3380,6 +3553,9 @@ function App() {
                 onRunJob={handleRunAdminJob}
                 onSaveFilelistSettings={handleSaveFilelistSettings}
                 onClearFilelistSettings={handleClearFilelistSettings}
+                onSaveIgdbSettings={handleSaveIgdbSettings}
+                onClearIgdbSettings={handleClearIgdbSettings}
+                onSaveEnabledSections={handleSaveEnabledSections}
               />
             ) : currentScreen === appScreens.account ? (
               <AccountScreen
@@ -3390,6 +3566,7 @@ function App() {
               />
             ) : currentRoute.kind === routeKinds.search ? (
               <SearchResultsPage
+                booksEnabled={enabledSections.includes('books')}
                 query={currentRoute.query}
                 searchResultsState={searchResultsState}
                 tmdbSearchState={tmdbSearchState}
@@ -3520,8 +3697,19 @@ function App() {
                 onToggleBookWatchlist={handleToggleBookInWatchlist}
                 onToggleBookRead={handleToggleBookRead}
               />
+            ) : activeView === primaryViews.games ? (
+              <GamesScreen
+                activeTab={activeGamesTab}
+                dashboardState={gamesDashboardState}
+                favoriteGames={favoriteGames}
+                gamesState={gamesState}
+                onPageChange={setGamesPage}
+                onTabChange={(tab) => { setActiveGamesTab(tab); setGamesPage(1) }}
+                onToggleFavorite={handleToggleGameFavorite}
+              />
             ) : activeView === primaryViews.watchlist ? (
               <WatchlistScreen
+                booksEnabled={enabledSections.includes('books')}
                 activeTab={activeWatchlistTab}
                 availability={watchlistAvailability}
                 sort={watchlistSort}
@@ -3708,7 +3896,7 @@ function App() {
             )}
 
             {currentScreen === appScreens.dashboard ? (
-              <MobileNav activeView={activeView} setActiveView={handleMovieViewSelection} />
+              <MobileNav activeView={activeView} enabledSections={enabledSections} setActiveView={handleMovieViewSelection} />
             ) : null}
           </>
         )}
@@ -4019,6 +4207,7 @@ function AlertInbox({ alertsState, onOpenAlert, onOpenAlerts, onOpenLogin, onRes
 
 function SearchResultsPage({
   activeSearchSource,
+  booksEnabled,
   favoriteActorIds,
   googleBooksSearchState,
   onOpenBook,
@@ -4057,7 +4246,7 @@ function SearchResultsPage({
   const sourceTabs = [
     { id: 'watchvault', label: 'WatchVault', state: searchResultsState },
     { id: 'tmdb', label: 'TMDB', state: tmdbSearchState },
-    { id: 'books', label: 'Google Books', state: googleBooksSearchState },
+    ...(booksEnabled ? [{ id: 'books', label: 'Google Books', state: googleBooksSearchState }] : []),
   ]
   const activeSourceState = sourceTabs.find((source) => source.id === activeSearchSource)?.state ?? searchResultsState
   const isLoading = activeSourceState.status === 'loading' || activeSourceState.status === 'idle'
@@ -4067,15 +4256,16 @@ function SearchResultsPage({
   const showingGoogleBooksResults = activeSearchSource === 'books'
   const titleMovies = showingTmdbResults ? tmdbSearchState.movies : searchResultsState.movies
   const titleShows = showingTmdbResults ? tmdbSearchState.shows : searchResultsState.shows
-  const titleBooks = showingGoogleBooksResults ? googleBooksSearchState.books : searchResultsState.books
-  const localClusters = showingWatchVaultResults ? buildAmbiguousSearchClusters(searchResultsState) : []
+  const titleBooks = booksEnabled ? (showingGoogleBooksResults ? googleBooksSearchState.books : searchResultsState.books) : []
+  const localSearchResults = booksEnabled ? searchResultsState : { ...searchResultsState, books: [] }
+  const localClusters = showingWatchVaultResults ? buildAmbiguousSearchClusters(localSearchResults) : []
   const clusteredMovieIds = new Set(localClusters.flatMap((cluster) => cluster.items.filter((item) => item.kind === 'movie').map((item) => item.id)))
   const clusteredShowIds = new Set(localClusters.flatMap((cluster) => cluster.items.filter((item) => item.kind === 'tv').map((item) => item.id)))
   const clusteredBookIds = new Set(localClusters.flatMap((cluster) => cluster.items.filter((item) => item.kind === 'book').map((item) => item.id)))
   const visibleMovies = showingWatchVaultResults ? titleMovies.filter((item) => !clusteredMovieIds.has(item.id)) : titleMovies
   const visibleShows = showingWatchVaultResults ? titleShows.filter((item) => !clusteredShowIds.has(item.id)) : titleShows
   const visibleBooks = showingWatchVaultResults ? titleBooks.filter((item) => !clusteredBookIds.has(item.id)) : titleBooks
-  const hasNoLocalMatches = showingWatchVaultResults && !isLoading && !hasError && !searchResultsState.movies.length && !searchResultsState.shows.length && !searchResultsState.books.length && !searchResultsState.actors.length
+  const hasNoLocalMatches = showingWatchVaultResults && !isLoading && !hasError && !searchResultsState.movies.length && !searchResultsState.shows.length && !titleBooks.length && !searchResultsState.actors.length
 
   return (
     <section className="search-results-page">
@@ -4131,7 +4321,7 @@ function SearchResultsPage({
           </div>
         </SearchResultGroup> : null}
 
-        {!hasNoLocalMatches && !showingTmdbResults ? <SearchResultGroup title="Books" isLoading={isLoading} error={hasError ? activeSourceState.error : ''} items={visibleBooks} emptyMessage={showingGoogleBooksResults ? 'No Google Books matched this search.' : 'No locally stored books matched this search.'}>
+        {booksEnabled && !hasNoLocalMatches && !showingTmdbResults ? <SearchResultGroup title="Books" isLoading={isLoading} error={hasError ? activeSourceState.error : ''} items={visibleBooks} emptyMessage={showingGoogleBooksResults ? 'No Google Books matched this search.' : 'No locally stored books matched this search.'}>
           <div className="movie-card-grid popular-movies-catalog">
             {visibleBooks.map((book) => <BookCard key={book.id} book={book} matchQuery={query} onOpenBook={showingGoogleBooksResults ? onOpenGoogleBook : onOpenBook} disabled={googleBooksSearchState.persistingBookId === book.id} />)}
           </div>
@@ -4701,10 +4891,19 @@ function LoginScreen({ authError, authStatus, onCancel, onSubmit }) {
   )
 }
 
-function AdminScreen({ adminOverviewState, adminRunState, onBack, onRunJob, onSaveFilelistSettings, onClearFilelistSettings }) {
+function AdminScreen({ adminOverviewState, adminRunState, onBack, onRunJob, onSaveFilelistSettings, onClearFilelistSettings, onSaveIgdbSettings, onClearIgdbSettings, onSaveEnabledSections }) {
   const [filelistUsername, setFilelistUsername] = useState('')
   const [filelistPasskey, setFilelistPasskey] = useState('')
   const [filelistState, setFilelistState] = useState({ status: 'idle', error: '' })
+  const [igdbClientId, setIgdbClientId] = useState('')
+  const [igdbPrivateKey, setIgdbPrivateKey] = useState('')
+  const [igdbState, setIgdbState] = useState({ status: 'idle', error: '' })
+  const [sectionState, setSectionState] = useState({ status: 'idle', error: '' })
+  const [selectedSections, setSelectedSections] = useState(() => normalizeEnabledSections(adminOverviewState.sections?.enabled))
+
+  useEffect(() => {
+    setSelectedSections(normalizeEnabledSections(adminOverviewState.sections?.enabled))
+  }, [adminOverviewState.sections?.enabled])
 
   async function handleFilelistSave(event) {
     event.preventDefault()
@@ -4724,6 +4923,42 @@ function AdminScreen({ adminOverviewState, adminRunState, onBack, onRunJob, onSa
       setFilelistPasskey('')
       setFilelistState({ status: 'success', error: '' })
     } catch (error) { setFilelistState({ status: 'error', error: error instanceof Error ? error.message : 'Unable to clear Filelist settings.' }) }
+  }
+
+  async function handleIgdbSave(event) {
+    event.preventDefault()
+    setIgdbState({ status: 'loading', error: '' })
+    try {
+      await onSaveIgdbSettings({ clientId: igdbClientId, privateKey: igdbPrivateKey })
+      setIgdbPrivateKey('')
+      setIgdbState({ status: 'success', error: '' })
+    } catch (error) { setIgdbState({ status: 'error', error: error instanceof Error ? error.message : 'Unable to save IGDB settings.' }) }
+  }
+
+  async function handleIgdbClear() {
+    setIgdbState({ status: 'loading', error: '' })
+    try {
+      await onClearIgdbSettings()
+      setIgdbClientId('')
+      setIgdbPrivateKey('')
+      setIgdbState({ status: 'success', error: '' })
+    } catch (error) { setIgdbState({ status: 'error', error: error instanceof Error ? error.message : 'Unable to clear IGDB settings.' }) }
+  }
+
+  async function handleSectionChange(section) {
+    const nextSections = selectedSections.includes(section)
+      ? selectedSections.filter((selectedSection) => selectedSection !== section)
+      : [...selectedSections, section]
+    setSelectedSections(nextSections)
+    setSectionState({ status: 'loading', error: '' })
+    try {
+      const savedSections = await onSaveEnabledSections(nextSections)
+      setSelectedSections(savedSections)
+      setSectionState({ status: 'success', error: '' })
+    } catch (error) {
+      setSelectedSections(normalizeEnabledSections(adminOverviewState.sections?.enabled))
+      setSectionState({ status: 'error', error: error instanceof Error ? error.message : 'Unable to save section preferences.' })
+    }
   }
 
   return (
@@ -4750,6 +4985,11 @@ function AdminScreen({ adminOverviewState, adminRunState, onBack, onRunJob, onSa
           <span>Total Books Stored</span>
           <strong>{adminOverviewState.status === 'success' ? formatAdminTotal(adminOverviewState.totalBooks) : '--'}</strong>
           <p>Imported books currently available in the local database.</p>
+        </article>
+        <article className="admin-summary-card">
+          <span>Total Games Stored</span>
+          <strong>{adminOverviewState.status === 'success' ? formatAdminTotal(adminOverviewState.totalGames) : '--'}</strong>
+          <p>Imported IGDB games currently available in the local database.</p>
         </article>
         <article className="admin-summary-card">
           <span>Total TV Shows Stored</span>
@@ -4824,6 +5064,26 @@ function AdminScreen({ adminOverviewState, adminRunState, onBack, onRunJob, onSa
         ) : null}
       </section>
 
+      <section className="content-section admin-content-section section-preferences-section">
+        <div className="section-header"><div><h2>Visible sections</h2><span>Choose which primary sections appear in your navigation. Movies and TV Shows are always available.</span></div></div>
+        <fieldset className="section-preferences-control" disabled={sectionState.status === 'loading'}>
+          <legend>Enabled sections</legend>
+          <div className="section-preferences-options">
+            {[['movies', 'Movies'], ['tv', 'TV Shows'], ['books', 'Books'], ['calendar', 'Calendar']].map(([section, label]) => {
+              const required = requiredEnabledSections.includes(section)
+              const selected = selectedSections.includes(section)
+              return <label key={section} className={`section-preference-option${selected ? ' selected' : ''}${required ? ' required' : ''}`}>
+                <input type="checkbox" checked={selected} disabled={required} onChange={() => handleSectionChange(section)} />
+                <span>{label}</span>
+                {required ? <small>Required</small> : null}
+              </label>
+            })}
+          </div>
+        </fieldset>
+        {sectionState.status === 'success' ? <p className="filelist-settings-success" role="status">Section preferences saved.</p> : null}
+        {sectionState.status === 'error' ? <p className="filelist-settings-error" role="alert">{sectionState.error}</p> : null}
+      </section>
+
       <section className="content-section admin-content-section filelist-settings-section">
         <div className="section-header"><div><h2>Filelist</h2><span>{adminOverviewState.filelist?.configured ? 'Your encrypted credentials are saved.' : 'Configure your credentials to search from movie pages.'}</span></div></div>
         <form className="filelist-settings-form" onSubmit={handleFilelistSave}>
@@ -4833,6 +5093,17 @@ function AdminScreen({ adminOverviewState, adminRunState, onBack, onRunJob, onSa
         </form>
         {filelistState.status === 'success' ? <p className="filelist-settings-success" role="status">Filelist settings saved.</p> : null}
         {filelistState.status === 'error' ? <p className="filelist-settings-error" role="alert">{filelistState.error}</p> : null}
+      </section>
+
+      <section className="content-section admin-content-section filelist-settings-section">
+        <div className="section-header"><div><h2>IGDB API</h2><span>{adminOverviewState.igdb?.configured ? 'Encrypted app-wide IGDB credentials are saved.' : 'Add app-wide credentials for future IGDB-powered game data.'}</span></div></div>
+        <form className="filelist-settings-form" onSubmit={handleIgdbSave}>
+          <label>IGDB client ID<input value={igdbClientId} onChange={(event) => setIgdbClientId(event.target.value)} required placeholder={adminOverviewState.igdb?.configured ? 'Saved — enter to replace' : 'Client ID'} /></label>
+          <label>IGDB private key<input type="password" value={igdbPrivateKey} onChange={(event) => setIgdbPrivateKey(event.target.value)} required placeholder={adminOverviewState.igdb?.configured ? 'Saved — enter to replace' : 'Private key'} /></label>
+          <div className="filelist-settings-actions"><button type="submit" className="primary-button" disabled={igdbState.status === 'loading'}>{igdbState.status === 'loading' ? 'Saving...' : adminOverviewState.igdb?.configured ? 'Replace credentials' : 'Save credentials'}</button>{adminOverviewState.igdb?.configured ? <button type="button" className="secondary-button" disabled={igdbState.status === 'loading'} onClick={handleIgdbClear}>Clear credentials</button> : null}</div>
+        </form>
+        {igdbState.status === 'success' ? <p className="filelist-settings-success" role="status">IGDB settings saved.</p> : null}
+        {igdbState.status === 'error' ? <p className="filelist-settings-error" role="alert">{igdbState.error}</p> : null}
       </section>
     </section>
   )
@@ -5280,6 +5551,83 @@ function BooksScreen({ booksState, onPageChange, onOpenBook }) {
       </ContentSection>
     </section>
   )
+}
+
+const gameTabs = [
+  { id: 'all', label: 'All Games' },
+  { id: 'popular', label: 'Popular' },
+  { id: 'recent', label: 'Recent' },
+  { id: 'upcoming', label: 'Upcoming' },
+  { id: 'favorites', label: 'Favorites' },
+]
+
+function GamesScreen({ activeTab, dashboardState, favoriteGames, gamesState, onTabChange, onPageChange, onToggleFavorite }) {
+  const activeTabLabel = gameTabs.find((tab) => tab.id === activeTab)?.label || 'Popular'
+  const favoriteGameIds = new Set(favoriteGames.map((game) => game.id))
+
+  return (
+    <section className="games-page">
+      <header className="games-heading">
+        <h1>Games</h1>
+        <p>Play, compete, and discover movie &amp; TV inspired games.</p>
+      </header>
+
+      <div className="games-tabs" role="tablist" aria-label="Game collections">
+        {gameTabs.map((tab) => <button key={tab.id} type="button" role="tab" aria-selected={activeTab === tab.id} className={activeTab === tab.id ? 'active' : ''} onClick={() => onTabChange(tab.id)}>{tab.label}</button>)}
+      </div>
+
+      <div className="games-layout">
+        <div className="games-main">
+          {activeTab === 'all' ? <GamesDashboard dashboardState={dashboardState} favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} /> : activeTab === 'favorites' ? <section className="games-catalog">
+            <div className="games-shelf-heading"><h2>Favorite Games</h2></div>
+            {favoriteGames.length ? <GameCardsGrid className="games-catalog-grid" games={favoriteGames} label="Favorite" favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} /> : <SectionMessage message="No favorite games yet. Use the heart on a game to add it here." />}
+          </section> : <section className="games-catalog">
+            <div className="games-shelf-heading"><h2>{activeTabLabel} Games</h2></div>
+            {gamesState.status === 'loading' || gamesState.status === 'idle' ? <SectionMessage message={`Loading ${activeTabLabel.toLowerCase()} games from your local database...`} /> : null}
+            {gamesState.status === 'error' ? <SectionMessage message={`Could not load ${activeTabLabel.toLowerCase()} games. ${gamesState.error}`} tone="error" /> : null}
+            {gamesState.status === 'success' && gamesState.games.length === 0 ? <SectionMessage message={`No ${activeTabLabel.toLowerCase()} games are available in the local database yet.`} /> : null}
+            {gamesState.status === 'success' && gamesState.games.length ? <><GameCardsGrid className="games-catalog-grid" games={gamesState.games} label={activeTabLabel} favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} /><PaginationControls pagination={gamesState.pagination} onPageChange={onPageChange} /></> : null}
+          </section>}
+        </div>
+
+        <aside className="games-sidebar">
+          <section className="games-side-card"><h2>Your Game Activity</h2><GameMetric icon={<GamepadIcon />} label="Games Played" value="48" detail="+12 this week" /><GameMetric icon="♨" label="Current Streak" value="7" detail="Best: 15 days" /><GameMetric icon="◎" label="Accuracy" value="86%" detail="+6% vs last week" /><GameMetric icon={<TrophyIcon />} label="Total XP" value="2,450 XP" detail="Level 12 · Film Buff" /></section>
+          <section className="games-side-card games-friends-card"><div className="games-shelf-heading"><h2>Friends Playing</h2><button type="button">See All</button></div>{['Mia — Movie Trivia', 'Liam — TV Show Trivia', 'Noah — Guess the Character', 'Emma — Poster Puzzle'].map((friend, index) => <div className="games-friend" key={friend}><span>{friend[0]}</span><p><b>{friend.split(' — ')[0]}</b><small>{friend.split(' — ')[1]}</small></p><i className={index === 1 ? 'playing' : ''}>{index === 1 ? 'In Game' : 'Online'}</i></div>)}<button type="button" className="games-invite-button"><UserIcon /> Invite Friends</button></section>
+          <section className="games-side-card games-leaderboard"><div className="games-shelf-heading"><h2>Leaderboard</h2><button type="button">This Week⌄</button></div>{['Alex Morgan', 'Mia Lee', 'Liam Carter', 'Noah Brooks', 'Emma Davis'].map((name, index) => <div key={name}><span>{index + 1}</span><b>{name}</b><em>{[12480, 9870, 7650, 6240, 5300][index].toLocaleString()} XP</em></div>)}</section>
+        </aside>
+      </div>
+    </section>
+  )
+}
+
+function GamesDashboard({ dashboardState, favoriteGameIds, onToggleFavorite }) {
+  const featuredGame = dashboardState.popularGames[0]
+  if (dashboardState.status === 'loading' || dashboardState.status === 'idle') return <SectionMessage message="Loading games from your local database..." />
+  if (dashboardState.status === 'error') return <SectionMessage message={`Could not load the games dashboard. ${dashboardState.error}`} tone="error" />
+  if (!featuredGame) return <SectionMessage message="No games are available in the local database yet." />
+  return <><article className="games-featured-card"><div className="games-featured-copy"><span className="games-kicker">Featured game</span><h2>{featuredGame.title}</h2><p style={{ display: '-webkit-box', overflow: 'hidden', WebkitBoxOrient: 'vertical', WebkitLineClamp: 4 }}>{featuredGame.summary}</p><div className="games-featured-meta"><span><StarIcon /> {featuredGame.rating}</span><span>◉ {featuredGame.playersLabel}</span></div><div className="games-featured-actions"><button type="button" className="games-play-button"><PlayIcon /> Play Now</button><button type="button" className="games-favorite-button" onClick={() => onToggleFavorite(featuredGame)}><HeartIcon /> {favoriteGameIds.has(featuredGame.id) ? 'Remove Favorite' : 'Add to Favorites'}</button></div></div><GameArt game={featuredGame} featured /></article><GamesShelf title="Popular Right Now" games={dashboardState.popularGames} label="Popular" favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} />{dashboardState.recentGames.length ? <GamesShelf title="Recently Released" games={dashboardState.recentGames} label="Recent" favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} /> : null}{dashboardState.upcomingGames.length ? <GamesShelf title="Upcoming Games" games={dashboardState.upcomingGames} label="Upcoming" favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} /> : null}<div className="games-bottom-grid"><article className="games-daily-challenge"><span className="games-challenge-icon">★</span><div><small>Daily Challenge</small><h2>Name That Movie</h2><p>Identify the movie from a single screenshot.</p><b>✦ +100 XP</b></div><span className="games-progress">0 / 10</span></article><article className="games-achievements"><div className="games-shelf-heading"><h2>Achievements</h2><button type="button">View All</button></div><div><GameBadge label="Trivia Master" icon="✦" /><GameBadge label="Streak Keeper" icon="◆" /><GameBadge label="Movie Buff" icon="◈" /><GameBadge label="Puzzle Pro" icon="✚" /></div></article></div></>
+}
+
+function GamesShelf({ title, games, label, favoriteGameIds, onToggleFavorite }) {
+  return <section className="games-shelf"><div className="games-shelf-heading"><h2>{title}</h2></div><GameCardsGrid className="games-card-grid" games={games} label={label} favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} /></section>
+}
+
+function GameCardsGrid({ className, games, label, favoriteGameIds, onToggleFavorite }) {
+  return <div className={className}>{games.map((game) => <article className={`games-card games-art-${game.art || 'trivia'}`} key={game.id || game.title}><button type="button" className={`games-favorite-toggle${favoriteGameIds.has(game.id) ? ' active' : ''}`} onClick={() => onToggleFavorite(game)} aria-label={favoriteGameIds.has(game.id) ? `Remove ${game.title} from favorites` : `Add ${game.title} to favorites`}><HeartIcon /></button><GameArt game={game} showLabel /><h3>{game.title}</h3><small>{game.playersLabel || game.meta}</small><div><span><StarIcon /> {game.rating}</span><em>{label}</em></div></article>)}</div>
+}
+
+function GameArt({ game, featured = false, showLabel = true }) {
+  const fallbackLabel = game.art === 'television' ? 'TV SHOW\nTRIVIA' : game.art === 'character' ? 'GUESS THE\nCHARACTER' : game.art === 'poster' ? 'POSTER\nPUZZLE' : game.art === 'quote' ? 'QUOTE\nMATCH' : game.art === 'choice' ? 'THIS OR\nTHAT' : game.title
+  const className = featured ? 'games-neon-art' : 'games-card-art'
+  return <div className={`${className}${game.coverUrl ? ' has-cover' : ''}`} style={game.coverUrl ? { backgroundImage: `linear-gradient(rgba(12, 10, 28, .2), rgba(12, 10, 28, .6)), url(${game.coverUrl})`, backgroundPosition: 'center', backgroundRepeat: 'no-repeat', backgroundSize: 'cover' } : undefined} aria-hidden="true">{showLabel ? <span>{fallbackLabel}</span> : null}{featured ? <i>✦</i> : null}</div>
+}
+
+function GameMetric({ icon, label, value, detail }) {
+  return <div className="games-metric"><span>{typeof icon === 'string' ? icon : icon}</span><p>{label}<b>{value}</b><small>{detail}</small></p></div>
+}
+
+function GameBadge({ label, icon }) {
+  return <span className="games-badge"><i>{icon}</i><b>{label}</b><small>{label === 'Trivia Master' ? 'Win 10 games' : label === 'Streak Keeper' ? '7 day streak' : label === 'Movie Buff' ? 'Play 25 games' : 'Complete 50 puzzles'}</small></span>
 }
 
 function BooksGrid({ booksState, onOpenBook }) {
@@ -5792,6 +6140,7 @@ function WatchTogetherInProgressShowRow({ show, onOpen }) {
 
 function WatchlistScreen({
   activeTab,
+  booksEnabled,
   availability,
   sort,
   isSignedIn,
@@ -5816,10 +6165,11 @@ function WatchlistScreen({
   onSetPriority,
 }) {
   const [watchlistQuery, setWatchlistQuery] = useState('')
-  const allItems = [...watchlistState.movies, ...tvWatchlistShows, ...watchlistState.books]
+  const visibleTab = !booksEnabled && activeTab === 'Books' ? 'All' : activeTab
+  const allItems = [...watchlistState.movies, ...tvWatchlistShows, ...(booksEnabled ? watchlistState.books : [])]
   const filteredItems = getFilteredWatchlistItems({
     items: allItems,
-    activeTab,
+    activeTab: visibleTab,
     availability,
     sort,
   }).filter((item) => `${item.title} ${item.meta} ${item.categoriesLabel || ''}`.toLocaleLowerCase().includes(watchlistQuery.trim().toLocaleLowerCase()))
@@ -5869,7 +6219,7 @@ function WatchlistScreen({
             { label: 'Total', value: String(allItems.length), caption: 'In Watchlist' },
             { label: 'Movies', value: String(watchlistState.movies.length), caption: 'Titles' },
             { label: 'TV Shows', value: String(tvWatchlistShows.length), caption: 'Series' },
-            { label: 'Books', value: String(watchlistState.books.length), caption: 'Titles' },
+            ...(booksEnabled ? [{ label: 'Books', value: String(watchlistState.books.length), caption: 'Titles' }] : []),
             { label: 'Actors', value: String(favoriteActorsState.actors.length), caption: 'Favorites' },
             { label: 'Authors', value: String(favoriteAuthorsState.authors.length), caption: 'Favorites' },
           ].map((item) => (
@@ -5883,11 +6233,11 @@ function WatchlistScreen({
       </div>
 
       <div className="watchlist-tabs" role="tablist" aria-label="Watchlist categories">
-        {watchlistTabs.map((tab) => (
+        {watchlistTabs.filter((tab) => booksEnabled || tab !== 'Books').map((tab) => (
           <button
             key={tab}
             type="button"
-            className={`watchlist-pill${tab === activeTab ? ' active' : ''}`}
+            className={`watchlist-pill${tab === visibleTab ? ' active' : ''}`}
             onClick={() => onTabChange(tab)}
           >
             {tab}
@@ -5895,37 +6245,37 @@ function WatchlistScreen({
         ))}
       </div>
 
-      {activeTab !== 'Actors' && activeTab !== 'Authors' ? <div className="watchlist-toolbar" aria-label="Watchlist controls">
+      {visibleTab !== 'Actors' && visibleTab !== 'Authors' ? <div className="watchlist-toolbar" aria-label="Watchlist controls">
         <label className="watchlist-search"><SearchIcon /><span className="sr-only">Search watchlist</span><input value={watchlistQuery} onChange={(event) => setWatchlistQuery(event.target.value)} placeholder="Search your watchlist" /></label>
         <label className="watchlist-select"><span>Availability</span><select value={availability} onChange={(event) => onViewChange({ availability: event.target.value })}><option value="all">All availability</option><option value="streaming">Streaming now</option><option value="upcoming">Upcoming</option></select></label>
         <label className="watchlist-select"><span>Sort</span><select value={sort} onChange={(event) => onViewChange({ sort: event.target.value })}><option value="recently-added">Recently added</option><option value="priority">Priority</option><option value="release-date">Release date</option><option value="rating">Rating</option><option value="runtime-or-pages">Runtime / pages</option><option value="alphabetical">Alphabetical</option></select></label>
       </div> : null}
 
-      {activeTab === 'Actors' ? (
+      {visibleTab === 'Actors' ? (
         <div className="favorite-actors-grid">
           {favoriteActorsState.actors.map((actor) => <FavoriteActorCard key={actor.id} actor={actor} onOpenPerson={onOpenPerson} />)}
         </div>
-      ) : activeTab === 'Authors' ? (
+      ) : visibleTab === 'Authors' ? (
         <div className="favorite-actors-grid">
           {favoriteAuthorsState.authors.map((author) => <FavoriteAuthorCard key={author.id} author={author} onOpenAuthor={onOpenAuthor} />)}
         </div>
       ) : (
-        activeTab === 'All' && availability === 'all' && !watchlistQuery.trim() ? <div className="watchlist-groups">{watchlistGroups.filter((group) => group.items.length > 0).map((group) => <section key={group.title} className="watchlist-group"><div className="watchlist-group-heading"><div><h2>{group.title}</h2><p>{group.detail}</p></div><span>{group.items.length}</span></div><div className="watchlist-grid-mobile">{group.items.map(renderWatchlistCard)}</div></section>)}</div> : <div className="watchlist-grid-mobile">{filteredItems.map(renderWatchlistCard)}</div>
+        visibleTab === 'All' && availability === 'all' && !watchlistQuery.trim() ? <div className="watchlist-groups">{watchlistGroups.filter((group) => group.items.length > 0).map((group) => <section key={group.title} className="watchlist-group"><div className="watchlist-group-heading"><div><h2>{group.title}</h2><p>{group.detail}</p></div><span>{group.items.length}</span></div><div className="watchlist-grid-mobile">{group.items.map(renderWatchlistCard)}</div></section>)}</div> : <div className="watchlist-grid-mobile">{filteredItems.map(renderWatchlistCard)}</div>
       )}
 
       {watchlistState.status === 'loading' ? <SectionMessage message="Loading your watchlist..." /> : null}
       {watchlistState.status === 'error' ? <SectionMessage message={watchlistState.error} tone="error" /> : null}
-      {activeTab === 'Actors' && favoriteActorsState.status === 'loading' ? <SectionMessage message="Loading favorite actors..." /> : null}
-      {activeTab === 'Actors' && favoriteActorsState.status === 'error' ? <SectionMessage message={favoriteActorsState.error} tone="error" /> : null}
-      {activeTab === 'Authors' && favoriteAuthorsState.status === 'loading' ? <SectionMessage message="Loading favorite authors..." /> : null}
-      {activeTab === 'Authors' && favoriteAuthorsState.status === 'error' ? <SectionMessage message={favoriteAuthorsState.error} tone="error" /> : null}
-      {activeTab === 'Actors' && favoriteActorsState.status !== 'loading' && favoriteActorsState.status !== 'error' && favoriteActorsState.actors.length === 0
+      {visibleTab === 'Actors' && favoriteActorsState.status === 'loading' ? <SectionMessage message="Loading favorite actors..." /> : null}
+      {visibleTab === 'Actors' && favoriteActorsState.status === 'error' ? <SectionMessage message={favoriteActorsState.error} tone="error" /> : null}
+      {visibleTab === 'Authors' && favoriteAuthorsState.status === 'loading' ? <SectionMessage message="Loading favorite authors..." /> : null}
+      {visibleTab === 'Authors' && favoriteAuthorsState.status === 'error' ? <SectionMessage message={favoriteAuthorsState.error} tone="error" /> : null}
+      {visibleTab === 'Actors' && favoriteActorsState.status !== 'loading' && favoriteActorsState.status !== 'error' && favoriteActorsState.actors.length === 0
         ? <SectionMessage message="Favorite actors will appear here." />
         : null}
-      {activeTab === 'Authors' && favoriteAuthorsState.status !== 'loading' && favoriteAuthorsState.status !== 'error' && favoriteAuthorsState.authors.length === 0
+      {visibleTab === 'Authors' && favoriteAuthorsState.status !== 'loading' && favoriteAuthorsState.status !== 'error' && favoriteAuthorsState.authors.length === 0
         ? <SectionMessage message="Favorite authors will appear here." />
         : null}
-      {activeTab !== 'Actors' && activeTab !== 'Authors' && watchlistState.status !== 'loading' && watchlistState.status !== 'error' && filteredItems.length === 0
+      {visibleTab !== 'Actors' && visibleTab !== 'Authors' && watchlistState.status !== 'loading' && watchlistState.status !== 'error' && filteredItems.length === 0
         ? <SectionMessage message="No watchlist titles match this section yet." />
         : null}
     </section>
@@ -7612,10 +7962,10 @@ function StatsTitleRow({ item, onOpenMovie, onOpenTvShow }) {
   return <button type="button" className="stats-title-row" onClick={() => item.mediaType === 'tv' ? onOpenTvShow(item) : onOpenMovie(item)} aria-label={`Open ${item.title}`}><div className={`stats-title-art${item.posterUrl ? ' has-image' : ''}`} style={item.posterUrl ? { backgroundImage: `url(${item.posterUrl})` } : undefined} /><p><b>{item.title}</b><small>{kind}</small></p><span><StarIcon />{item.score.toFixed(1)}</span></button>
 }
 
-function MobileNav({ activeView, setActiveView }) {
+function MobileNav({ activeView, enabledSections, setActiveView }) {
   return (
     <nav className="mobile-nav mobile-only" aria-label="Bottom navigation">
-      {mobileNavItems.map(({ label, icon: Icon, view }) => (
+      {mobileNavItems.filter(({ view }) => isPrimaryViewEnabled(view, enabledSections)).map(({ label, icon: Icon, view }) => (
         <button
           key={label}
           type="button"
@@ -8408,6 +8758,16 @@ function buildAuthHeaders(user) {
   }
 }
 
+function normalizeEnabledSections(sections) {
+  const selected = Array.isArray(sections) ? sections : defaultEnabledSections
+  return defaultEnabledSections.filter((section) => requiredEnabledSections.includes(section) || selected.includes(section))
+}
+
+function isPrimaryViewEnabled(view, enabledSections) {
+  const section = sectionByPrimaryView[view]
+  return !section || enabledSections.includes(section)
+}
+
 function formatAlertTime(value) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return ''
@@ -8754,6 +9114,28 @@ function mapMovieRowToCard(movie) {
   }
 }
 
+function mapGamePayload(game) {
+  const rating = Number.isFinite(game.rating) ? game.rating : Number.isFinite(game.aggregated_rating) ? game.aggregated_rating : null
+  return {
+    id: game.igdb_id,
+    title: game.title || 'Untitled',
+    summary: game.summary || 'Description not available yet.',
+    coverUrl: game.cover_image_url || null,
+    rating: rating === null ? 'N/A' : rating.toFixed(1),
+    playersLabel: Number.isFinite(game.steam_peak_players) ? formatGamePlayerCount(game.steam_peak_players) : '',
+    meta: game.release_date ? `Released ${formatGameReleaseDate(game.release_date)}` : 'Release date unavailable',
+    rank: Number.isInteger(game.import_rank) ? game.import_rank : null,
+  }
+}
+
+function mapUpcomingGamePayload(game) {
+  const mappedGame = mapGamePayload(game)
+  return {
+    ...mappedGame,
+    meta: game.release_date ? `Releases ${formatGameReleaseDate(game.release_date)}` : 'Release date unavailable',
+  }
+}
+
 function mapBookRowToCard(book) {
   const authors = Array.isArray(book.authors) ? book.authors.filter(Boolean) : []
   const categories = Array.isArray(book.categories) ? book.categories.filter(Boolean).slice(0, 1) : []
@@ -8987,6 +9369,37 @@ function createMovieCollectionState({ includeFeaturedMovie = false } = {}) {
     ...(includeFeaturedMovie ? { featuredMovie: null } : {}),
     error: '',
   }
+}
+
+function createGameCollectionState() {
+  return { status: 'idle', games: [], pagination: createPaginationState(), error: '' }
+}
+
+function createGameCollectionLoadingState(page = 1) {
+  return { status: 'loading', games: [], pagination: createPaginationState(page), error: '' }
+}
+
+function createGamesDashboardState() {
+  return { status: 'idle', popularGames: [], recentGames: [], upcomingGames: [], error: '' }
+}
+
+function createGamesDashboardLoadingState() {
+  return { status: 'loading', popularGames: [], recentGames: [], upcomingGames: [], error: '' }
+}
+
+function readStoredGameFavorites() {
+  if (typeof window === 'undefined') return []
+  try {
+    const storedFavorites = JSON.parse(window.localStorage.getItem('watchvault-game-favorites') || '[]')
+    return Array.isArray(storedFavorites) ? storedFavorites.filter((game) => game?.id) : []
+  } catch {
+    return []
+  }
+}
+
+function storeGameFavorites(games) {
+  if (typeof window === 'undefined') return
+  window.localStorage.setItem('watchvault-game-favorites', JSON.stringify(games))
 }
 
 function createBookCollectionState() {
@@ -9711,6 +10124,17 @@ function formatAdminTotal(value) {
   return new Intl.NumberFormat().format(value)
 }
 
+function formatGamePlayerCount(value) {
+  if (!Number.isFinite(value) || value < 0) return 'Player count unavailable'
+  return `24h Steam peak: ${new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(value)}`
+}
+
+function formatGameReleaseDate(value) {
+  const parsed = new Date(`${value}T00:00:00.000Z`)
+  if (Number.isNaN(parsed.getTime())) return value
+  return new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).format(parsed)
+}
+
 function formatAdminBytes(value) {
   if (typeof value !== 'number' || Number.isNaN(value) || value < 0) {
     return '--'
@@ -9794,6 +10218,14 @@ function BookmarkIcon() {
       <path d="M7 5.5h10a1 1 0 0 1 1 1v13l-6-3-6 3v-13a1 1 0 0 1 1-1Z" />
     </IconBase>
   )
+}
+
+function GamepadIcon() {
+  return <IconBase><path d="M7.1 9h9.8a3.6 3.6 0 0 1 3.4 4.8l-1 2.9a2.1 2.1 0 0 1-3.4.8l-1.7-1.6h-4.4l-1.7 1.6a2.1 2.1 0 0 1-3.4-.8l-1-2.9A3.6 3.6 0 0 1 7.1 9Z" /><path d="M8 12v3M6.5 13.5h3M16.7 12.7h.01M18.5 14.4h.01" /></IconBase>
+}
+
+function HeartIcon() {
+  return <IconBase><path d="M20 8.8c0 5.3-8 10-8 10s-8-4.7-8-10a4.2 4.2 0 0 1 7.3-2.9L12 6.7l.7-.8A4.2 4.2 0 0 1 20 8.8Z" /></IconBase>
 }
 
 function CalendarIcon() {

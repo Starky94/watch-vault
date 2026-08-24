@@ -90,6 +90,60 @@ services:
       api:
         condition: service_healthy
 
+  importer-games:
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    restart: unless-stopped
+    command: ["./docker/api/importer-loop.sh"]
+    env_file:
+      - ${APP_ENV_FILE:-.env}
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@db:5432/watchvault}
+      IMPORT_COMMAND: ${IMPORT_GAMES_COMMAND:-npm run import:games}
+      IMPORT_INTERVAL_SECONDS: ${IMPORT_GAMES_INTERVAL_SECONDS:-86400}
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+
+  importer-games-recently-released:
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    restart: unless-stopped
+    command: ["./docker/api/importer-loop.sh"]
+    env_file:
+      - ${APP_ENV_FILE:-.env}
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@db:5432/watchvault}
+      IMPORT_COMMAND: ${IMPORT_GAMES_RECENTLY_RELEASED_COMMAND:-npm run import:games-recently-released}
+      IMPORT_INTERVAL_SECONDS: ${IMPORT_GAMES_RECENTLY_RELEASED_INTERVAL_SECONDS:-86400}
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+
+  importer-games-upcoming:
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    restart: unless-stopped
+    command: ["./docker/api/importer-loop.sh"]
+    env_file:
+      - ${APP_ENV_FILE:-.env}
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@db:5432/watchvault}
+      IMPORT_COMMAND: ${IMPORT_GAMES_UPCOMING_COMMAND:-npm run import:games-upcoming}
+      IMPORT_INTERVAL_SECONDS: ${IMPORT_GAMES_UPCOMING_INTERVAL_SECONDS:-86400}
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+
   importer-books:
     build:
       context: .

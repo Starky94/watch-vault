@@ -22,7 +22,7 @@ Services:
 - API (through reverse proxy): `http://localhost:8080/api/health`
 - Postgres: internal `db:5432`
 
-The popular importer runs automatically every 10 minutes, the Now Playing plus Upcoming importers each run once every 24 hours, and the Google Books importer runs hourly.
+The popular movie and TV importers run automatically every 10 minutes; Now Playing, Upcoming, popular games, recently released games, and upcoming games run every 24 hours; and the Google Books importer runs hourly. Configure the IGDB Client ID and Client Secret in Admin before the games importers can run.
 
 Use this mode when you want the production-style static web image. Frontend changes require rebuilding the `web` image.
 
@@ -105,6 +105,9 @@ docker compose down
 - `npm run import:tv-popular` runs a one-off TMDB Popular TV import.
 - `npm run import:tv-airing-today` runs a one-off TMDB Airing Today TV import for shows first aired in the last 30 days.
 - `npm run import:tv-on-the-air` runs a one-off TMDB On The Air TV import for shows first airing in the next 30 days.
+- `npm run import:games` imports 30 popular games from IGDB, ranked by Steam 24-hour peak players.
+- `npm run import:games-recently-released` imports up to 30 games released in the last 30 days, ranked by IGDB Visits.
+- `npm run import:games-upcoming` imports up to 30 games releasing in the next 30 days, sorted by release date then IGDB Visits.
 - `npm run dev:stack` starts frontend and backend together outside Docker.
 - `npm test` runs the backend unit tests.
 
@@ -116,3 +119,4 @@ docker compose down
 - `GET /api/books/:bookId` returns a stored book's full metadata.
 - `GET /api/movies/recently-released` returns recently released movies from the local DB.
 - `GET /api/movies/upcoming` returns upcoming movies releasing in the next 30 days from the local DB.
+- `GET /api/games/upcoming` returns upcoming games releasing in the next 30 days from the local DB.

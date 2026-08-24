@@ -27,6 +27,8 @@ export function loadConfig(options = {}) {
     tmdbBaseUrl: env.TMDB_BASE_URL || 'https://api.themoviedb.org/3',
     googleBooksApiKey: env.GOOGLE_BOOKS_API_KEY,
     googleBooksBaseUrl: env.GOOGLE_BOOKS_BASE_URL || 'https://www.googleapis.com/books/v1',
+    igdbBaseUrl: env.IGDB_BASE_URL || 'https://api.igdb.com/v4',
+    twitchTokenUrl: env.TWITCH_TOKEN_URL || 'https://id.twitch.tv/oauth2/token',
     filelistEncryptionKey: env.FILELIST_ENCRYPTION_KEY || deriveFilelistEncryptionKey(env.DATABASE_URL),
   }
 

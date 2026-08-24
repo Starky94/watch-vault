@@ -2124,6 +2124,68 @@ export async function listMovies(pool, options = {}) {
   return result.rows
 }
 
+export async function listPopularGames(pool, options = {}) {
+  const limit = Number.isInteger(options.limit) ? Math.max(1, options.limit) : 6
+  const page = Number.isInteger(options.page) ? Math.max(1, options.page) : 1
+  const offset = (page - 1) * limit
+  const result = await pool.query(
+    `
+      SELECT
+        igdb_id, title, summary, cover_image_url, release_date, rating, rating_count,
+        aggregated_rating, aggregated_rating_count, steam_peak_players, platforms, genres,
+        igdb_url, import_rank, imported_at
+      FROM games
+      ORDER BY steam_peak_players DESC, igdb_id ASC
+      LIMIT $1
+      OFFSET $2
+    `,
+    [limit, offset]
+  )
+
+  return result.rows
+}
+
+export async function listRecentlyReleasedGames(pool, options = {}) {
+  const limit = Number.isInteger(options.limit) ? Math.max(1, options.limit) : 6
+  const page = Number.isInteger(options.page) ? Math.max(1, options.page) : 1
+  const offset = (page - 1) * limit
+  const result = await pool.query(
+    `
+      SELECT
+        igdb_id, title, summary, cover_image_url, release_date, rating, rating_count,
+        aggregated_rating, aggregated_rating_count, popularity_score, import_rank, imported_at
+      FROM recently_released_games
+      ORDER BY popularity_score DESC, igdb_id ASC
+      LIMIT $1
+      OFFSET $2
+    `,
+    [limit, offset]
+  )
+
+  return result.rows
+}
+
+export async function listUpcomingGames(pool, options = {}) {
+  const limit = Number.isInteger(options.limit) ? Math.max(1, options.limit) : 6
+  const page = Number.isInteger(options.page) ? Math.max(1, options.page) : 1
+  const offset = (page - 1) * limit
+  const result = await pool.query(
+    `
+      SELECT
+        igdb_id, title, summary, cover_image_url, release_date, rating, rating_count,
+        aggregated_rating, aggregated_rating_count, popularity_score, platforms, genres,
+        igdb_url, import_rank, imported_at
+      FROM upcoming_games
+      ORDER BY popularity_score DESC, igdb_id ASC
+      LIMIT $1
+      OFFSET $2
+    `,
+    [limit, offset]
+  )
+
+  return result.rows
+}
+
 export async function searchMovies(pool, query, limit = 30) {
   const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 30
 
@@ -2864,6 +2926,50 @@ export async function findUserByUsername(pool, username) {
   return result.rows[0] ?? null
 }
 
+const defaultEnabledSections = ['movies', 'tv', 'books', 'calendar']
+const requiredEnabledSections = ['movies', 'tv']
+
+export async function ensureUserSectionPreferencesTable(pool) {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_section_preferences (
+      user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      enabled_sections TEXT[] NOT NULL DEFAULT ARRAY['movies', 'tv', 'books', 'calendar']::TEXT[],
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CHECK (enabled_sections <@ ARRAY['movies', 'tv', 'books', 'calendar']::TEXT[]),
+      CHECK (ARRAY['movies', 'tv']::TEXT[] <@ enabled_sections)
+    )
+  `)
+  await pool.query(`
+    INSERT INTO user_section_preferences (user_id)
+    SELECT id FROM users
+    ON CONFLICT (user_id) DO NOTHING
+  `)
+}
+
+export async function getUserEnabledSections(pool, userId) {
+  const result = await pool.query(
+    'SELECT enabled_sections FROM user_section_preferences WHERE user_id = $1 LIMIT 1',
+    [userId]
+  )
+  const enabledSections = result.rows[0]?.enabled_sections
+  return Array.isArray(enabledSections) ? enabledSections : defaultEnabledSections
+}
+
+export async function saveUserEnabledSections(pool, { userId, enabledSections }) {
+  if (!Array.isArray(enabledSections) || enabledSections.some((section) => !defaultEnabledSections.includes(section))) {
+    throw new Error('Enabled sections must contain only movies, tv, books, and calendar.')
+  }
+
+  const normalizedSections = defaultEnabledSections.filter((section) => requiredEnabledSections.includes(section) || enabledSections.includes(section))
+  await pool.query(
+    `INSERT INTO user_section_preferences (user_id, enabled_sections, updated_at)
+     VALUES ($1, $2::TEXT[], NOW())
+     ON CONFLICT (user_id) DO UPDATE SET enabled_sections = EXCLUDED.enabled_sections, updated_at = NOW()`,
+    [userId, normalizedSections]
+  )
+  return normalizedSections
+}
+
 export async function ensureFilelistTables(pool) {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS filelist_credentials (
@@ -2905,6 +3011,260 @@ export async function saveFilelistCredentials(pool, { userId, encryptedUsername,
 
 export async function deleteFilelistCredentials(pool, userId) {
   await pool.query('DELETE FROM filelist_credentials WHERE user_id = $1', [userId])
+}
+
+export async function ensureIgdbCredentialsTable(pool) {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS igdb_credentials (
+      user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      encrypted_client_id TEXT NOT NULL,
+      encrypted_private_key TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS igdb_api_credentials (
+      id BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id),
+      encrypted_client_id TEXT NOT NULL,
+      encrypted_private_key TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `)
+  await pool.query(`
+    INSERT INTO igdb_api_credentials (id, encrypted_client_id, encrypted_private_key, created_at, updated_at)
+    SELECT TRUE, encrypted_client_id, encrypted_private_key, created_at, updated_at
+    FROM igdb_credentials
+    ORDER BY updated_at DESC
+    LIMIT 1
+    ON CONFLICT (id) DO NOTHING
+  `)
+}
+
+export async function getIgdbCredentials(pool) {
+  const result = await pool.query(
+    'SELECT encrypted_client_id, encrypted_private_key FROM igdb_api_credentials WHERE id = TRUE LIMIT 1'
+  )
+  return result.rows[0] ?? null
+}
+
+export async function getIgdbCredentialStatus(pool) {
+  const result = await pool.query('SELECT updated_at FROM igdb_api_credentials WHERE id = TRUE LIMIT 1')
+  return result.rows[0] ?? null
+}
+
+export async function ensureGamesTable(pool) {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS games (
+      id BIGSERIAL PRIMARY KEY,
+      igdb_id INTEGER NOT NULL UNIQUE,
+      title TEXT NOT NULL,
+      summary TEXT,
+      cover_image_url TEXT,
+      release_date DATE,
+      rating DOUBLE PRECISION,
+      rating_count INTEGER,
+      aggregated_rating DOUBLE PRECISION,
+      aggregated_rating_count INTEGER,
+      steam_peak_players DOUBLE PRECISION NOT NULL,
+      platforms TEXT[] NOT NULL DEFAULT '{}',
+      genres TEXT[] NOT NULL DEFAULT '{}',
+      igdb_url TEXT,
+      import_rank INTEGER NOT NULL,
+      imported_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `)
+  await pool.query('CREATE INDEX IF NOT EXISTS games_import_order_idx ON games (import_rank ASC, igdb_id ASC)')
+}
+
+export async function ensureRecentlyReleasedGamesTable(pool) {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS recently_released_games (
+      id BIGSERIAL PRIMARY KEY,
+      igdb_id INTEGER NOT NULL UNIQUE,
+      title TEXT NOT NULL,
+      summary TEXT,
+      cover_image_url TEXT,
+      release_date DATE NOT NULL,
+      rating DOUBLE PRECISION,
+      rating_count INTEGER,
+      aggregated_rating DOUBLE PRECISION,
+      aggregated_rating_count INTEGER,
+      popularity_score DOUBLE PRECISION NOT NULL,
+      import_rank INTEGER NOT NULL,
+      imported_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `)
+  await pool.query('CREATE INDEX IF NOT EXISTS recently_released_games_rank_idx ON recently_released_games (import_rank ASC, igdb_id ASC)')
+}
+
+export async function replaceRecentlyReleasedGames(pool, games) {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    let insertedCount = 0
+    let updatedCount = 0
+
+    for (const game of games) {
+      const result = await client.query(
+        `INSERT INTO recently_released_games (
+          igdb_id, title, summary, cover_image_url, release_date, rating, rating_count,
+          aggregated_rating, aggregated_rating_count, popularity_score, import_rank, imported_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
+        ON CONFLICT (igdb_id) DO UPDATE SET
+          title = EXCLUDED.title, summary = EXCLUDED.summary, cover_image_url = EXCLUDED.cover_image_url,
+          release_date = EXCLUDED.release_date, rating = EXCLUDED.rating, rating_count = EXCLUDED.rating_count,
+          aggregated_rating = EXCLUDED.aggregated_rating, aggregated_rating_count = EXCLUDED.aggregated_rating_count,
+          popularity_score = EXCLUDED.popularity_score, import_rank = EXCLUDED.import_rank, imported_at = NOW()
+        RETURNING (xmax = 0) AS inserted`,
+        [
+          game.igdbId, game.title, game.summary, game.coverImageUrl, game.releaseDate, game.rating,
+          game.ratingCount, game.aggregatedRating, game.aggregatedRatingCount, game.popularityScore, game.importRank,
+        ]
+      )
+      if (result.rows[0]?.inserted) insertedCount += 1
+      else updatedCount += 1
+    }
+
+    const importedIds = games.map((game) => game.igdbId)
+    if (importedIds.length) {
+      await client.query('DELETE FROM recently_released_games WHERE NOT (igdb_id = ANY($1::INTEGER[]))', [importedIds])
+    } else {
+      await client.query('DELETE FROM recently_released_games')
+    }
+    await client.query('COMMIT')
+    return { insertedCount, updatedCount }
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally {
+    client.release()
+  }
+}
+
+export async function ensureUpcomingGamesTable(pool) {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS upcoming_games (
+      id BIGSERIAL PRIMARY KEY,
+      igdb_id INTEGER NOT NULL UNIQUE,
+      title TEXT NOT NULL,
+      summary TEXT,
+      cover_image_url TEXT,
+      release_date DATE NOT NULL,
+      rating DOUBLE PRECISION,
+      rating_count INTEGER,
+      aggregated_rating DOUBLE PRECISION,
+      aggregated_rating_count INTEGER,
+      popularity_score DOUBLE PRECISION NOT NULL,
+      platforms TEXT[] NOT NULL DEFAULT '{}',
+      genres TEXT[] NOT NULL DEFAULT '{}',
+      igdb_url TEXT,
+      import_rank INTEGER NOT NULL,
+      imported_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `)
+  await pool.query('CREATE INDEX IF NOT EXISTS upcoming_games_rank_idx ON upcoming_games (import_rank ASC, igdb_id ASC)')
+}
+
+export async function replaceUpcomingGames(pool, games) {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    let insertedCount = 0
+    let updatedCount = 0
+
+    for (const game of games) {
+      const result = await client.query(
+        `INSERT INTO upcoming_games (
+          igdb_id, title, summary, cover_image_url, release_date, rating, rating_count,
+          aggregated_rating, aggregated_rating_count, popularity_score, platforms, genres,
+          igdb_url, import_rank, imported_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::TEXT[], $12::TEXT[], $13, $14, NOW())
+        ON CONFLICT (igdb_id) DO UPDATE SET
+          title = EXCLUDED.title, summary = EXCLUDED.summary, cover_image_url = EXCLUDED.cover_image_url,
+          release_date = EXCLUDED.release_date, rating = EXCLUDED.rating, rating_count = EXCLUDED.rating_count,
+          aggregated_rating = EXCLUDED.aggregated_rating, aggregated_rating_count = EXCLUDED.aggregated_rating_count,
+          popularity_score = EXCLUDED.popularity_score, platforms = EXCLUDED.platforms, genres = EXCLUDED.genres,
+          igdb_url = EXCLUDED.igdb_url, import_rank = EXCLUDED.import_rank, imported_at = NOW()
+        RETURNING (xmax = 0) AS inserted`,
+        [
+          game.igdbId, game.title, game.summary, game.coverImageUrl, game.releaseDate, game.rating,
+          game.ratingCount, game.aggregatedRating, game.aggregatedRatingCount, game.popularityScore,
+          game.platforms, game.genres, game.igdbUrl, game.importRank,
+        ]
+      )
+      if (result.rows[0]?.inserted) insertedCount += 1
+      else updatedCount += 1
+    }
+
+    const importedIds = games.map((game) => game.igdbId)
+    if (importedIds.length) {
+      await client.query('DELETE FROM upcoming_games WHERE NOT (igdb_id = ANY($1::INTEGER[]))', [importedIds])
+    } else {
+      await client.query('DELETE FROM upcoming_games')
+    }
+    await client.query('COMMIT')
+    return { insertedCount, updatedCount }
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally {
+    client.release()
+  }
+}
+
+export async function upsertGames(pool, games) {
+  if (games.length === 0) return { insertedCount: 0, updatedCount: 0 }
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    let insertedCount = 0
+    let updatedCount = 0
+    for (const game of games) {
+      const result = await client.query(
+        `INSERT INTO games (
+          igdb_id, title, summary, cover_image_url, release_date, rating, rating_count,
+          aggregated_rating, aggregated_rating_count, steam_peak_players, platforms, genres,
+          igdb_url, import_rank, imported_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::TEXT[], $12::TEXT[], $13, $14, NOW())
+        ON CONFLICT (igdb_id) DO UPDATE SET
+          title = EXCLUDED.title, summary = EXCLUDED.summary, cover_image_url = EXCLUDED.cover_image_url,
+          release_date = EXCLUDED.release_date, rating = EXCLUDED.rating, rating_count = EXCLUDED.rating_count,
+          aggregated_rating = EXCLUDED.aggregated_rating, aggregated_rating_count = EXCLUDED.aggregated_rating_count,
+          steam_peak_players = EXCLUDED.steam_peak_players, platforms = EXCLUDED.platforms, genres = EXCLUDED.genres,
+          igdb_url = EXCLUDED.igdb_url, import_rank = EXCLUDED.import_rank, imported_at = NOW()
+        RETURNING (xmax = 0) AS inserted`,
+        [
+          game.igdbId, game.title, game.summary, game.coverImageUrl, game.releaseDate, game.rating,
+          game.ratingCount, game.aggregatedRating, game.aggregatedRatingCount, game.steamPeakPlayers,
+          game.platforms, game.genres, game.igdbUrl, game.importRank,
+        ]
+      )
+      if (result.rows[0]?.inserted) insertedCount += 1
+      else updatedCount += 1
+    }
+    await client.query('COMMIT')
+    return { insertedCount, updatedCount }
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally {
+    client.release()
+  }
+}
+
+export async function saveIgdbCredentials(pool, { encryptedClientId, encryptedPrivateKey }) {
+  await pool.query(
+    `INSERT INTO igdb_api_credentials (id, encrypted_client_id, encrypted_private_key, created_at, updated_at)
+     VALUES (TRUE, $1, $2, NOW(), NOW())
+     ON CONFLICT (id) DO UPDATE SET encrypted_client_id = EXCLUDED.encrypted_client_id, encrypted_private_key = EXCLUDED.encrypted_private_key, updated_at = NOW()`,
+    [encryptedClientId, encryptedPrivateKey]
+  )
+}
+
+export async function deleteIgdbCredentials(pool) {
+  await pool.query('DELETE FROM igdb_api_credentials WHERE id = TRUE')
 }
 
 export async function reserveFilelistRequest(pool, userId) {
@@ -5517,6 +5877,27 @@ export async function countBooks(pool) {
   return result.rows[0]?.book_count ?? 0
 }
 
+export async function countGames(pool) {
+  let result
+  try {
+    result = await pool.query(`
+      SELECT COUNT(DISTINCT igdb_id)::INTEGER AS game_count
+      FROM (
+        SELECT igdb_id FROM games
+        UNION ALL
+        SELECT igdb_id FROM recently_released_games
+        UNION ALL
+        SELECT igdb_id FROM upcoming_games
+      ) AS imported_games
+    `)
+  } catch (error) {
+    if (error?.code !== '42P01') throw error
+    result = await pool.query('SELECT COUNT(*)::INTEGER AS game_count FROM games')
+  }
+
+  return result.rows[0]?.game_count ?? 0
+}
+
 export async function countActors(pool) {
   const result = await pool.query(`
     SELECT COUNT(*)::INTEGER AS actor_count
@@ -5532,7 +5913,7 @@ export async function countStoredDataBytes(pool) {
       SUM(pg_total_relation_size(to_regclass(table_name))),
       0
     )::BIGINT AS stored_data_bytes
-    FROM UNNEST(ARRAY['movies', 'books', 'genres', 'cast_members', 'movie_cast', 'users', 'watchlist_items', 'watched_movies']) AS table_name
+    FROM UNNEST(ARRAY['movies', 'books', 'games', 'genres', 'cast_members', 'movie_cast', 'users', 'watchlist_items', 'watched_movies']) AS table_name
     WHERE to_regclass(table_name) IS NOT NULL
   `)
 
