@@ -27,12 +27,13 @@ const navItems = [
   { label: 'Watch Together', icon: UserIcon, view: primaryViews.watchTogether },
 ]
 
-const defaultEnabledSections = ['movies', 'tv', 'books', 'calendar']
+const defaultEnabledSections = ['movies', 'tv', 'books', 'games', 'calendar']
 const requiredEnabledSections = ['movies', 'tv']
 const sectionByPrimaryView = {
   [primaryViews.movies]: 'movies',
   [primaryViews.tvShows]: 'tv',
   [primaryViews.books]: 'books',
+  [primaryViews.games]: 'games',
   [primaryViews.calendar]: 'calendar',
 }
 
@@ -5069,7 +5070,7 @@ function AdminScreen({ adminOverviewState, adminRunState, onBack, onRunJob, onSa
         <fieldset className="section-preferences-control" disabled={sectionState.status === 'loading'}>
           <legend>Enabled sections</legend>
           <div className="section-preferences-options">
-            {[['movies', 'Movies'], ['tv', 'TV Shows'], ['books', 'Books'], ['calendar', 'Calendar']].map(([section, label]) => {
+            {[['movies', 'Movies'], ['tv', 'TV Shows'], ['books', 'Books'], ['games', 'Games'], ['calendar', 'Calendar']].map(([section, label]) => {
               const required = requiredEnabledSections.includes(section)
               const selected = selectedSections.includes(section)
               return <label key={section} className={`section-preference-option${selected ? ' selected' : ''}${required ? ' required' : ''}`}>

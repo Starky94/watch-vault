@@ -1391,8 +1391,8 @@ export async function createApp(pool, options = {}) {
       const user = await getAuthenticatedUser(pool, request)
       if (!user) return response.status(401).json({ error: 'Authentication required' })
       const enabledSections = request.body?.enabledSections
-      if (!Array.isArray(enabledSections) || enabledSections.some((section) => typeof section !== 'string' || !['movies', 'tv', 'books', 'calendar'].includes(section))) {
-        return response.status(400).json({ error: 'Enabled sections must contain only movies, tv, books, and calendar.' })
+      if (!Array.isArray(enabledSections) || enabledSections.some((section) => typeof section !== 'string' || !['movies', 'tv', 'books', 'games', 'calendar'].includes(section))) {
+        return response.status(400).json({ error: 'Enabled sections must contain only movies, tv, books, games, and calendar.' })
       }
       response.json({ enabled: await saveUserEnabledSections(pool, { userId: user.id, enabledSections }) })
     } catch (error) { next(error) }

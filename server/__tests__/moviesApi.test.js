@@ -49,6 +49,8 @@ function isSchemaSetupQuery(sql) {
     sql.includes('ALTER TABLE tv_shows')
     || sql.includes('ALTER TABLE users')
     || sql.includes('CREATE TABLE IF NOT EXISTS user_section_preferences')
+    || sql.includes('ALTER TABLE user_section_preferences')
+    || sql.includes('UPDATE user_section_preferences')
     || sql.includes('INSERT INTO user_section_preferences (user_id)')
     || sql.includes('CREATE TABLE IF NOT EXISTS user_alerts')
     || sql.includes('ALTER TABLE user_alerts')
@@ -3518,7 +3520,7 @@ test('user section preferences default to all sections and keep Movies and TV en
     },
   }
 
-  assert.deepEqual(await getUserEnabledSections(pool, 17), ['movies', 'tv', 'books', 'calendar'])
+  assert.deepEqual(await getUserEnabledSections(pool, 17), ['movies', 'tv', 'books', 'games', 'calendar'])
   assert.deepEqual(await saveUserEnabledSections(pool, { userId: 17, enabledSections: ['books'] }), ['movies', 'tv', 'books'])
   assert.deepEqual(calls.at(-1).params, [17, ['movies', 'tv', 'books']])
   await assert.rejects(
@@ -3528,7 +3530,7 @@ test('user section preferences default to all sections and keep Movies and TV en
 })
 
 test('section preference APIs require authentication and validate updates', async () => {
-  let savedSections = ['movies', 'tv', 'books', 'calendar']
+  let savedSections = ['movies', 'tv', 'books', 'games', 'calendar']
   const pool = {
     async query(sql, params) {
       if (isSchemaSetupQuery(sql)) return { rowCount: null, rows: [] }
@@ -3560,10 +3562,10 @@ test('section preference APIs require authentication and validate updates', asyn
     const update = await fetch(`${baseUrl}/api/admin/preferences/sections`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', 'x-watchvault-username': 'florin' },
-      body: JSON.stringify({ enabledSections: ['calendar'] }),
+      body: JSON.stringify({ enabledSections: ['games', 'calendar'] }),
     })
     assert.equal(update.status, 200)
-    assert.deepEqual((await update.json()).enabled, ['movies', 'tv', 'calendar'])
+    assert.deepEqual((await update.json()).enabled, ['movies', 'tv', 'games', 'calendar'])
   } finally {
     await closeServer(server)
   }

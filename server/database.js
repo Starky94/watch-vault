@@ -2926,19 +2926,23 @@ export async function findUserByUsername(pool, username) {
   return result.rows[0] ?? null
 }
 
-const defaultEnabledSections = ['movies', 'tv', 'books', 'calendar']
+const defaultEnabledSections = ['movies', 'tv', 'books', 'games', 'calendar']
 const requiredEnabledSections = ['movies', 'tv']
 
 export async function ensureUserSectionPreferencesTable(pool) {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS user_section_preferences (
       user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-      enabled_sections TEXT[] NOT NULL DEFAULT ARRAY['movies', 'tv', 'books', 'calendar']::TEXT[],
+      enabled_sections TEXT[] NOT NULL DEFAULT ARRAY['movies', 'tv', 'books', 'games', 'calendar']::TEXT[],
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      CHECK (enabled_sections <@ ARRAY['movies', 'tv', 'books', 'calendar']::TEXT[]),
+      CHECK (enabled_sections <@ ARRAY['movies', 'tv', 'books', 'games', 'calendar']::TEXT[]),
       CHECK (ARRAY['movies', 'tv']::TEXT[] <@ enabled_sections)
     )
   `)
+  await pool.query("ALTER TABLE user_section_preferences ALTER COLUMN enabled_sections SET DEFAULT ARRAY['movies', 'tv', 'books', 'games', 'calendar']::TEXT[]")
+  await pool.query('ALTER TABLE user_section_preferences DROP CONSTRAINT IF EXISTS user_section_preferences_enabled_sections_check')
+  await pool.query("ALTER TABLE user_section_preferences ADD CONSTRAINT user_section_preferences_enabled_sections_check CHECK (enabled_sections <@ ARRAY['movies', 'tv', 'books', 'games', 'calendar']::TEXT[])")
+  await pool.query("UPDATE user_section_preferences SET enabled_sections = array_append(enabled_sections, 'games') WHERE NOT ('games' = ANY(enabled_sections))")
   await pool.query(`
     INSERT INTO user_section_preferences (user_id)
     SELECT id FROM users
@@ -2957,7 +2961,7 @@ export async function getUserEnabledSections(pool, userId) {
 
 export async function saveUserEnabledSections(pool, { userId, enabledSections }) {
   if (!Array.isArray(enabledSections) || enabledSections.some((section) => !defaultEnabledSections.includes(section))) {
-    throw new Error('Enabled sections must contain only movies, tv, books, and calendar.')
+    throw new Error('Enabled sections must contain only movies, tv, books, games, and calendar.')
   }
 
   const normalizedSections = defaultEnabledSections.filter((section) => requiredEnabledSections.includes(section) || enabledSections.includes(section))
