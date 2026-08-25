@@ -37,6 +37,13 @@ import {
   deleteFilelistCredentials,
   ensureIgdbCredentialsTable,
   ensureGamesTable,
+  ensureGameTrackingTables,
+  getGameTimeToBeat,
+  getGameTrackingForUser,
+  upsertGameTrackingForUser,
+  addGameSessionForUser,
+  getGameAchievementsForUser,
+  evaluateGameAchievementsForUser,
   getIgdbCredentials,
   getIgdbCredentialStatus,
   saveIgdbCredentials,
@@ -82,6 +89,7 @@ import {
   listMovieSummariesByTmdbIds,
   searchActors,
   searchBooks,
+  searchGames,
   searchMovies,
   searchTvShows,
   listWatchlistMoviesForUser,
@@ -95,6 +103,15 @@ import {
   listPopularGames,
   listRecentlyReleasedGames,
   listUpcomingGames,
+  listPlayedGamesForUser,
+  listSimilarGames,
+  getGameByIgdbId,
+  getGameCommunityRating,
+  getGamePersonalState,
+  addGameToPlayedForUser,
+  removeGameFromPlayedForUser,
+  upsertGameRatingForUser,
+  upsertGameTimeToBeat,
   listMovieKeywordSuggestions,
   listDiscoverExcludedTmdbIdsForUser,
   listBooks,
@@ -135,12 +152,55 @@ import {
 import { adminJobs, findAdminJob, listAdminJobs } from './adminJobs.js'
 import { discoverTitles, fetchMovieReviews, fetchMovieVideos, fetchPersonCombinedCredits, fetchPersonDetails, fetchTvReviews, searchMovies as searchTmdbMovies, searchPeople, searchTvShows as searchTmdbTvShows } from './tmdbClient.js'
 import { hydrateMovieByTmdbId } from './movieImportService.js'
+import { hydrateGameByIgdbId } from './gameImportService.js'
 import { hydrateTvShowByTmdbId } from './tvImportService.js'
 import { normalizeBook, sanitizeBookDescription } from './bookImportService.js'
 import { fetchBookById, fetchRelatedBooksByCategory, searchBooksByTitle } from './googleBooksClient.js'
 import { buildFilelistSearchUrl, buildFilelistTvEpisodeQuery, decryptFilelistValue, encryptFilelistValue, mapFilelistResults } from './filelist.js'
+import { fetchIgdbAccessToken, igdbRequest } from './igdbClient.js'
 
 const bookReadingFormats = new Set(['physical', 'ebook', 'audiobook'])
+const gameStatuses = new Set(['played', 'backlog', 'playing', 'dropped', 'completed'])
+const gameDifficulties = new Set(['easy', 'normal', 'hard', 'highest'])
+const gameModes = new Set(['solo', 'coop', 'versus'])
+const gameLocations = new Set(['local', 'online'])
+const gameMetadataKeys = new Set(['detective', 'narrative_adventure', 'builder', 'tactics', 'roguelike_run', 'indie', 'all_genres', 'no_assists', 'no_damage_boss', 'one_life', 'all_platform_trophies', 'platinum', 'all_collectibles', 'all_side_quests', 'all_optional_objectives', 'secret_ending', 'returned_from_abandoned', 'second_chance', 'oldest_library_game', 'coop', 'four_player_completion', 'local_coop', 'outside_comfort_zone', 'random_pick', 'recommendation', 'full_saga', 'console_generations', 'side_content_majority', 'no_main_progress_10h', 'strategy_session_4h', 'customization', 'map_complete', 'bad_ending', 'good_ending', 'credits', 'completion_after_50_deaths', 'comeback_90_days', 'touch_grass', 'two_am_boss', 'random_three_streak', 'plot_twist', 'five_starts_before_completion', 'rerated_up', 'completed_initially_low', 'wishlist_high_rating', 'no_guide', 'birthday'])
+const gameMetadataNumberKeys = new Set(['ending_count', 'death_count', 'screenshot_count', 'character_sidequests', 'guide_interactions', 'developer_countries'])
+
+function normalizeGameMetadata(value) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  const tags = source.tags && typeof source.tags === 'object' && !Array.isArray(source.tags) ? source.tags : source
+  const normalizedTags = {}
+  for (const key of gameMetadataKeys) if (tags[key] === true) normalizedTags[key] = true
+  for (const key of gameMetadataNumberKeys) if (Number.isInteger(tags[key]) && tags[key] >= 0 && tags[key] <= 100000) normalizedTags[key] = tags[key]
+  const moods = Array.isArray(source.moods) ? [...new Set(source.moods.filter((item) => typeof item === 'string' && item.trim()).map((item) => item.trim().slice(0, 40)))].slice(0, 20) : []
+  return { tags: normalizedTags, ...(moods.length ? { moods } : {}) }
+}
+
+function parseGameTrackingPayload(body = {}) {
+  const status = typeof body.status === 'string' ? body.status : 'played'
+  if (!gameStatuses.has(status)) return null
+  const parseDate = (value) => value === null || value === undefined || value === '' ? null : Number.isFinite(new Date(value).getTime()) ? new Date(value).toISOString() : undefined
+  const libraryAddedAt = parseDate(body.libraryAddedAt); const startedAt = parseDate(body.startedAt); let completedAt = parseDate(body.completedAt)
+  if ([libraryAddedAt, startedAt, completedAt].includes(undefined)) return null
+  if (status === 'completed' && !completedAt) completedAt = new Date().toISOString()
+  const integer = (value, minimum, maximum) => value === null || value === undefined || value === '' ? null : Number.isInteger(value) && value >= minimum && value <= maximum ? value : undefined
+  const completionPercent = integer(body.completionPercent, 0, 100); const playtimeMinutes = integer(body.playtimeMinutes, 0, 10000000); const difficultyRating = integer(body.difficultyRating, 1, 5)
+  if ([completionPercent, playtimeMinutes, difficultyRating].includes(undefined)) return null
+  const platform = typeof body.platform === 'string' && body.platform.trim() ? body.platform.trim().slice(0, 80) : null
+  const difficulty = typeof body.difficulty === 'string' && body.difficulty.trim() ? body.difficulty.trim().toLowerCase() : null
+  if (difficulty && !gameDifficulties.has(difficulty)) return null
+  const review = typeof body.review === 'string' ? body.review.trim().slice(0, 10000) : null
+  return { status, libraryAddedAt, startedAt, completedAt, platform, difficulty, difficultyRating, completionPercent, playtimeMinutes, review, metadata: normalizeGameMetadata(body.metadata) }
+}
+
+function parseGameSessionPayload(body = {}) {
+  const durationMinutes = Number(body.durationMinutes); const mode = typeof body.mode === 'string' ? body.mode : 'solo'; const location = body.location === null || body.location === undefined || body.location === '' ? null : body.location
+  if (!Number.isInteger(durationMinutes) || durationMinutes < 1 || durationMinutes > 10080 || !gameModes.has(mode) || (location && !gameLocations.has(location))) return null
+  const occurredAt = body.occurredAt === undefined || body.occurredAt === null || body.occurredAt === '' ? new Date().toISOString() : Number.isFinite(new Date(body.occurredAt).getTime()) ? new Date(body.occurredAt).toISOString() : null
+  if (!occurredAt) return null
+  return { occurredAt, durationMinutes, mode, location, coplayer: typeof body.coplayer === 'string' && body.coplayer.trim() ? body.coplayer.trim().slice(0, 80) : null, metadata: normalizeGameMetadata(body.metadata) }
+}
 
 function sanitizeStoredBookDescription(book) {
   return book ? { ...book, description: sanitizeBookDescription(book.description) } : book
@@ -150,6 +210,7 @@ export async function createApp(pool, options = {}) {
   const {
     jobs = adminJobs,
     hydrateMovie = hydrateMovieByTmdbId,
+    hydrateGame = hydrateGameByIgdbId,
     hydrateTvShow = hydrateTvShowByTmdbId,
     fetchImpl = fetch,
     loadRuntimeConfig = () =>
@@ -167,6 +228,56 @@ export async function createApp(pool, options = {}) {
   async function hydrateMissingTvShow(showId) {
     const config = loadRuntimeConfig()
     await hydrateTvShow(pool, { token: config.tmdbBearerToken, baseUrl: config.tmdbBaseUrl, tvShowId: showId, importRank: 1 })
+  }
+
+  async function hydrateMissingGame(gameId) {
+    await ensureIgdbCredentialsTable(pool)
+    const credentials = await getIgdbCredentials(pool)
+    if (!credentials) return null
+    const config = loadRuntimeConfig()
+    return hydrateGame(pool, {
+      fetchImpl,
+      clientId: decryptFilelistValue(credentials.encrypted_client_id, config.filelistEncryptionKey),
+      clientSecret: decryptFilelistValue(credentials.encrypted_private_key, config.filelistEncryptionKey),
+      baseUrl: config.igdbBaseUrl,
+      tokenUrl: config.twitchTokenUrl,
+      gameId,
+      importRank: 1,
+    })
+  }
+
+  async function getGameTimeToBeatWithFallback(gameId) {
+    try {
+      const cached = await getGameTimeToBeat(pool, gameId)
+      if (cached) return mapGameTimeToBeat(cached)
+
+      await ensureIgdbCredentialsTable(pool)
+      const credentials = await getIgdbCredentials(pool)
+      if (!credentials) return null
+
+      const config = loadRuntimeConfig()
+      const clientId = decryptFilelistValue(credentials.encrypted_client_id, config.filelistEncryptionKey)
+      const clientSecret = decryptFilelistValue(credentials.encrypted_private_key, config.filelistEncryptionKey)
+      const accessToken = await fetchIgdbAccessToken(fetchImpl, { clientId, clientSecret, tokenUrl: config.twitchTokenUrl })
+      const values = await igdbRequest(fetchImpl, {
+        clientId,
+        accessToken,
+        baseUrl: config.igdbBaseUrl,
+        path: 'game_time_to_beats',
+        body: `fields game_id,hastily,normally,completely; where game_id = ${gameId}; limit 1;`,
+      })
+      const value = Array.isArray(values) ? values.find((entry) => Number(entry?.game_id) === gameId) : null
+      if (!value) return null
+      const saved = await upsertGameTimeToBeat(pool, {
+        gameId,
+        hastily: normalizeGameTimeToBeatSeconds(value.hastily),
+        normally: normalizeGameTimeToBeatSeconds(value.normally),
+        completely: normalizeGameTimeToBeatSeconds(value.completely),
+      })
+      return mapGameTimeToBeat(saved ?? value)
+    } catch {
+      return null
+    }
   }
 
   await ensureMoviesTable(pool)
@@ -228,14 +339,15 @@ export async function createApp(pool, options = {}) {
     }
 
     try {
-      const [movies, shows, actors, books] = await Promise.all([
+      const [movies, shows, actors, books, games] = await Promise.all([
         searchMovies(pool, query),
         searchTvShows(pool, query),
         searchActors(pool, query),
         searchBooks(pool, query),
+        searchGames(pool, query),
       ])
 
-      response.json({ query, movies, shows, actors, books })
+      response.json({ query, movies, shows, actors, books, games })
     } catch (error) {
       next(error)
     }
@@ -309,6 +421,31 @@ export async function createApp(pool, options = {}) {
     } catch (error) {
       next(error)
     }
+  })
+
+  app.get('/api/search/igdb', async (request, response, next) => {
+    const query = typeof request.query.q === 'string' ? request.query.q.trim() : ''
+    if (!query) return response.status(400).json({ error: 'q is required' })
+
+    try {
+      await ensureIgdbCredentialsTable(pool)
+      const credentials = await getIgdbCredentials(pool)
+      if (!credentials) return response.status(409).json({ error: 'IGDB credentials have not been configured in Admin settings.' })
+
+      const config = loadRuntimeConfig()
+      const clientId = decryptFilelistValue(credentials.encrypted_client_id, config.filelistEncryptionKey)
+      const clientSecret = decryptFilelistValue(credentials.encrypted_private_key, config.filelistEncryptionKey)
+      const accessToken = await fetchIgdbAccessToken(fetchImpl, { clientId, clientSecret, tokenUrl: config.twitchTokenUrl })
+      const escapedQuery = query.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+      const games = await igdbRequest(fetchImpl, {
+        clientId,
+        accessToken,
+        baseUrl: config.igdbBaseUrl,
+        path: 'games',
+        body: `search "${escapedQuery}"; fields id,name,summary,first_release_date,rating,aggregated_rating,cover.image_id; limit 20;`,
+      })
+      response.json({ query, games: (Array.isArray(games) ? games : []).slice(0, 20).map(mapIgdbGameSearchResult) })
+    } catch (error) { next(error) }
   })
 
   app.get('/api/discover/actors', async (request, response, next) => {
@@ -1573,6 +1710,206 @@ export async function createApp(pool, options = {}) {
     }
   })
 
+  app.get('/api/games/played', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const games = await listPlayedGamesForUser(pool, user.username)
+      response.json({ count: games.length, games: games.map(mapPlayedGame) })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/game-achievements', async (request, response, next) => {
+    try {
+      await ensureGameTrackingTables(pool)
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const achievements = await getGameAchievementsForUser(pool, user.username)
+      response.json({ count: achievements.length, achievements })
+    } catch (error) { next(error) }
+  })
+
+  app.get('/api/games/:gameId/tracking', async (request, response, next) => {
+    const gameId = Number.parseInt(request.params.gameId, 10)
+    if (!Number.isInteger(gameId)) return response.status(400).json({ error: `Invalid game id: ${request.params.gameId}` })
+    try {
+      await ensureGameTrackingTables(pool)
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const tracking = await getGameTrackingForUser(pool, { username: user.username, gameId })
+      response.json({ tracking: mapGameTracking(tracking) })
+    } catch (error) { next(error) }
+  })
+
+  app.put('/api/games/:gameId/tracking', async (request, response, next) => {
+    const gameId = Number.parseInt(request.params.gameId, 10); const tracking = parseGameTrackingPayload(request.body)
+    if (!Number.isInteger(gameId)) return response.status(400).json({ error: `Invalid game id: ${request.params.gameId}` })
+    if (!tracking) return response.status(400).json({ error: 'Invalid game tracking details.' })
+    try {
+      await ensureGameTrackingTables(pool)
+      if (!await getGameByIgdbId(pool, gameId)) return response.status(404).json({ error: `Game ${gameId} was not found in the local database` })
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const saved = await upsertGameTrackingForUser(pool, { username: user.username, gameId, tracking })
+      if (saved.status !== 'ok') return response.status(401).json({ error: 'Authentication required' })
+      const newlyUnlockedAchievements = await evaluateGameAchievementsForUser(pool, user.username)
+      response.json({ tracking: mapGameTracking(saved.tracking), newlyUnlockedAchievements })
+    } catch (error) { next(error) }
+  })
+
+  app.post('/api/games/:gameId/sessions', async (request, response, next) => {
+    const gameId = Number.parseInt(request.params.gameId, 10); const session = parseGameSessionPayload(request.body)
+    if (!Number.isInteger(gameId)) return response.status(400).json({ error: `Invalid game id: ${request.params.gameId}` })
+    if (!session) return response.status(400).json({ error: 'Invalid game session details.' })
+    try {
+      await ensureGameTrackingTables(pool)
+      if (!await getGameByIgdbId(pool, gameId)) return response.status(404).json({ error: `Game ${gameId} was not found in the local database` })
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const saved = await addGameSessionForUser(pool, { username: user.username, gameId, session })
+      if (saved.status !== 'ok') return response.status(401).json({ error: 'Authentication required' })
+      const newlyUnlockedAchievements = await evaluateGameAchievementsForUser(pool, user.username)
+      response.status(201).json({ sessionId: saved.id, newlyUnlockedAchievements })
+    } catch (error) { next(error) }
+  })
+
+  app.get('/api/games/:gameId', async (request, response, next) => {
+    const gameId = Number.parseInt(request.params.gameId, 10)
+    if (!Number.isInteger(gameId)) return response.status(400).json({ error: `Invalid game id: ${request.params.gameId}` })
+    try {
+      await ensureGameTrackingTables(pool)
+      let game = await getGameByIgdbId(pool, gameId)
+      if (!game) {
+        await hydrateMissingGame(gameId)
+        game = await getGameByIgdbId(pool, gameId)
+      }
+      if (!game) return response.status(404).json({ error: `Game ${gameId} was not found in the local database` })
+      const user = await getAuthenticatedUser(pool, request)
+      const [communityRating, personal, timeToBeat, tracking] = await Promise.all([
+        getGameCommunityRating(pool, { gameId, username: user?.username ?? null }),
+        getGamePersonalState(pool, { gameId, username: user?.username ?? null }),
+        getGameTimeToBeatWithFallback(gameId),
+        user ? getGameTrackingForUser(pool, { username: user.username, gameId }) : Promise.resolve(null),
+      ])
+      response.json({ game: mapGameDetail(game, communityRating, personal, timeToBeat, tracking) })
+    } catch (error) { next(error) }
+  })
+
+  app.get('/api/games/:gameId/trailer', async (request, response, next) => {
+    const gameId = Number(request.params.gameId)
+    if (!Number.isInteger(gameId) || gameId < 1) return response.status(400).json({ error: `Invalid game id: ${request.params.gameId}` })
+
+    try {
+      await ensureIgdbCredentialsTable(pool)
+      const credentials = await getIgdbCredentials(pool)
+      if (!credentials) return response.status(409).json({ error: 'IGDB credentials have not been configured in Admin settings.' })
+
+      const config = loadRuntimeConfig()
+      const clientId = decryptFilelistValue(credentials.encrypted_client_id, config.filelistEncryptionKey)
+      const clientSecret = decryptFilelistValue(credentials.encrypted_private_key, config.filelistEncryptionKey)
+      const accessToken = await fetchIgdbAccessToken(fetchImpl, { clientId, clientSecret, tokenUrl: config.twitchTokenUrl })
+      const videos = await igdbRequest(fetchImpl, {
+        clientId,
+        accessToken,
+        baseUrl: config.igdbBaseUrl,
+        path: 'game_videos',
+        body: `fields name,video_id; where game = ${gameId}; limit 10;`,
+      })
+      const trailer = selectPlayableGameTrailer(videos)
+      if (!trailer) return response.status(404).json({ error: 'No playable YouTube trailer is available for this game.' })
+
+      response.json({ trailer })
+    } catch (error) { next(error) }
+  })
+
+  app.get('/api/games/:gameId/similar', async (request, response, next) => {
+    const gameId = Number.parseInt(request.params.gameId, 10)
+    if (!Number.isInteger(gameId)) return response.status(400).json({ error: `Invalid game id: ${request.params.gameId}` })
+    try {
+      let game = await getGameByIgdbId(pool, gameId)
+      if (!game) {
+        await hydrateMissingGame(gameId)
+        game = await getGameByIgdbId(pool, gameId)
+      }
+      if (!game) return response.status(404).json({ error: `Game ${gameId} was not found in the local database` })
+
+      let games = []
+      let source = 'local'
+      try {
+        await ensureIgdbCredentialsTable(pool)
+        const credentials = await getIgdbCredentials(pool)
+        if (credentials) {
+          const config = loadRuntimeConfig()
+          const clientId = decryptFilelistValue(credentials.encrypted_client_id, config.filelistEncryptionKey)
+          const clientSecret = decryptFilelistValue(credentials.encrypted_private_key, config.filelistEncryptionKey)
+          const accessToken = await fetchIgdbAccessToken(fetchImpl, { clientId, clientSecret, tokenUrl: config.twitchTokenUrl })
+          const requestIgdb = (path, body) => igdbRequest(fetchImpl, { clientId, accessToken, baseUrl: config.igdbBaseUrl, path, body })
+          const sourceGames = await requestIgdb('games', `fields similar_games; where id = ${gameId}; limit 1;`)
+          const relatedIds = [...new Set((sourceGames[0]?.similar_games || []).map(Number).filter(Number.isInteger).filter((id) => id !== gameId))].slice(0, 10)
+          if (relatedIds.length) {
+            const relatedGames = await requestIgdb('games', `fields id,name,cover.image_id,first_release_date,rating,aggregated_rating,genres.name; where id = (${relatedIds.join(',')}); limit ${relatedIds.length};`)
+            const byId = new Map(relatedGames.map((relatedGame) => [Number(relatedGame.id), mapIgdbGameRecommendation(relatedGame)]))
+            games = relatedIds.map((id) => byId.get(id)).filter(Boolean).slice(0, 10)
+            if (games.length) source = 'igdb'
+          }
+        }
+      } catch {
+        games = []
+      }
+
+      if (!games.length) {
+        games = (await listSimilarGames(pool, { gameId, genres: Array.isArray(game.genres) ? game.genres : [], limit: 10 })).map(mapLocalGameRecommendation)
+      }
+      response.json({ count: games.length, source, games })
+    } catch (error) { next(error) }
+  })
+
+  app.post('/api/games/:gameId/played', async (request, response, next) => {
+    const gameId = Number.parseInt(request.params.gameId, 10)
+    if (!Number.isInteger(gameId)) return response.status(400).json({ error: `Invalid game id: ${request.params.gameId}` })
+    try {
+      await ensureGameTrackingTables(pool)
+      if (!await getGameByIgdbId(pool, gameId)) return response.status(404).json({ error: `Game ${gameId} was not found in the local database` })
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const result = await addGameToPlayedForUser(pool, { username: user.username, gameId })
+      if (result.status === 'missing_user') return response.status(401).json({ error: 'Authentication required' })
+      response.status(200).json({ played: true, playedAt: result.createdAt })
+    } catch (error) { next(error) }
+  })
+
+  app.delete('/api/games/:gameId/played', async (request, response, next) => {
+    const gameId = Number.parseInt(request.params.gameId, 10)
+    if (!Number.isInteger(gameId)) return response.status(400).json({ error: `Invalid game id: ${request.params.gameId}` })
+    try {
+      if (!await getGameByIgdbId(pool, gameId)) return response.status(404).json({ error: `Game ${gameId} was not found in the local database` })
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const result = await removeGameFromPlayedForUser(pool, { username: user.username, gameId })
+      if (result.status === 'missing_user') return response.status(401).json({ error: 'Authentication required' })
+      response.json({ played: false })
+    } catch (error) { next(error) }
+  })
+
+  app.put('/api/games/:gameId/rating', async (request, response, next) => {
+    const gameId = Number.parseInt(request.params.gameId, 10)
+    const score = typeof request.body?.score === 'number' ? request.body.score : Number.NaN
+    if (!Number.isInteger(gameId)) return response.status(400).json({ error: `Invalid game id: ${request.params.gameId}` })
+    if (!isValidMovieRating(score)) return response.status(400).json({ error: 'score must be between 1 and 5 in 0.5 increments' })
+    try {
+      if (!await getGameByIgdbId(pool, gameId)) return response.status(404).json({ error: `Game ${gameId} was not found in the local database` })
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const saved = await upsertGameRatingForUser(pool, { username: user.username, gameId, score })
+      if (saved.status === 'missing_user') return response.status(401).json({ error: 'Authentication required' })
+      const communityRating = await getGameCommunityRating(pool, { gameId, username: user.username })
+      const newlyUnlockedAchievements = await evaluateGameAchievementsForUser(pool, user.username)
+      response.json({ communityRating: mapCommunityRating(communityRating), newlyUnlockedAchievements })
+    } catch (error) { next(error) }
+  })
+
   app.get('/api/books', async (request, response, next) => {
     try {
       const pagination = readPaginationQuery(request, { defaultLimit: 30 })
@@ -2252,6 +2589,20 @@ function mapTmdbMovieSearchResult(movie) {
   }
 }
 
+function mapIgdbGameSearchResult(game) {
+  const coverImageId = typeof game?.cover?.image_id === 'string' ? game.cover.image_id : null
+  const rating = Number.isFinite(game?.rating) ? game.rating : Number.isFinite(game?.aggregated_rating) ? game.aggregated_rating : null
+  return {
+    id: Number(game?.id),
+    title: typeof game?.name === 'string' && game.name.trim() ? game.name.trim() : 'Untitled',
+    summary: typeof game?.summary === 'string' ? game.summary : 'Description not available yet.',
+    coverUrl: coverImageId ? `https://images.igdb.com/igdb/image/upload/t_cover_big/${coverImageId}.jpg` : null,
+    rating: rating === null ? 'N/A' : rating.toFixed(1),
+    playersLabel: '',
+    meta: Number.isFinite(game?.first_release_date) ? `Released ${new Date(game.first_release_date * 1000).getUTCFullYear()}` : 'Release date unavailable',
+  }
+}
+
 function mapMovieSearchSuggestion(movie) {
   return {
     kind: 'movie', id: movie.tmdb_id, label: movie.title || 'Untitled', meta: movie.release_date ? `Movie · ${formatMovieYear(movie.release_date)}` : 'Movie', imageUrl: resolvePosterPath(movie.poster_path), popularity: Number(movie.popularity) || 0,
@@ -2464,6 +2815,17 @@ function selectPlayableMovieTrailer(videos) {
   }
 }
 
+function selectPlayableGameTrailer(videos) {
+  if (!Array.isArray(videos)) return null
+  const selected = videos.find((video) => typeof video?.video_id === 'string' && video.video_id.trim())
+  if (!selected) return null
+  return {
+    provider: 'YouTube',
+    key: selected.video_id.trim(),
+    name: typeof selected.name === 'string' && selected.name.trim() ? selected.name.trim() : 'Game trailer',
+  }
+}
+
 function mapMovieDetail(movie, reviews = [], communityRating = null, hasReleaseReminder = false) {
   return {
     id: movie.tmdb_id,
@@ -2507,6 +2869,92 @@ function mapCommunityRating(communityRating) {
     average: typeof communityRating?.average === 'number' ? communityRating.average : null,
     voteCount: Number.isInteger(communityRating?.voteCount) ? communityRating.voteCount : 0,
     yourScore: typeof communityRating?.yourScore === 'number' ? communityRating.yourScore : null,
+  }
+}
+
+function normalizeGameTimeToBeatSeconds(value) {
+  const seconds = Number(value)
+  return Number.isInteger(seconds) && seconds >= 0 ? seconds : null
+}
+
+function mapGameTimeToBeat(timeToBeat) {
+  if (!timeToBeat) return null
+  return {
+    mainStory: normalizeGameTimeToBeatSeconds(timeToBeat.hastily),
+    mainAndExtras: normalizeGameTimeToBeatSeconds(timeToBeat.normally),
+    completionist: normalizeGameTimeToBeatSeconds(timeToBeat.completely),
+  }
+}
+
+function mapGameTracking(tracking) {
+  if (!tracking) return null
+  return {
+    status: tracking.status, libraryAddedAt: tracking.library_added_at ?? tracking.libraryAddedAt ?? null,
+    startedAt: tracking.started_at ?? tracking.startedAt ?? null, completedAt: tracking.completed_at ?? tracking.completedAt ?? null,
+    platform: tracking.platform ?? null, difficulty: tracking.difficulty ?? null,
+    difficultyRating: tracking.difficulty_rating ?? tracking.difficultyRating ?? null,
+    completionPercent: tracking.completion_percent ?? tracking.completionPercent ?? null,
+    playtimeMinutes: Number(tracking.playtime_minutes ?? tracking.playtimeMinutes ?? 0), review: tracking.review ?? null,
+    metadata: tracking.completion_metadata ?? tracking.metadata ?? { tags: {} },
+  }
+}
+
+function mapGameDetail(game, communityRating, personal, timeToBeat = null, tracking = null) {
+  return {
+    id: Number(game.igdb_id),
+    title: game.title || 'Untitled',
+    summary: game.summary || 'Description not available yet.',
+    coverUrl: game.cover_image_url || null,
+    releaseDate: game.release_date || null,
+    rating: game.rating === null || game.rating === undefined ? null : Number(game.rating),
+    ratingCount: Number(game.rating_count ?? 0),
+    aggregatedRating: game.aggregated_rating === null || game.aggregated_rating === undefined ? null : Number(game.aggregated_rating),
+    aggregatedRatingCount: Number(game.aggregated_rating_count ?? 0),
+    steamPeakPlayers: game.steam_peak_players === null || game.steam_peak_players === undefined ? null : Number(game.steam_peak_players),
+    platforms: Array.isArray(game.platforms) ? game.platforms : [],
+    genres: Array.isArray(game.genres) ? game.genres : [],
+    igdbUrl: game.igdb_url || null,
+    timeToBeat,
+    communityRating: mapCommunityRating(communityRating),
+    played: Boolean(personal?.played),
+    ...(tracking ? { tracking: mapGameTracking(tracking) } : {}),
+  }
+}
+
+function mapPlayedGame(game) {
+  return {
+    id: Number(game.igdb_id),
+    title: game.title || 'Untitled',
+    coverUrl: game.cover_image_url || null,
+    releaseDate: game.release_date || null,
+    rating: game.rating === null || game.rating === undefined
+      ? (game.aggregated_rating === null || game.aggregated_rating === undefined ? null : Number(game.aggregated_rating))
+      : Number(game.rating),
+    steamPeakPlayers: game.steam_peak_players === null || game.steam_peak_players === undefined ? null : Number(game.steam_peak_players),
+    playedAt: game.played_at || null,
+  }
+}
+
+function mapLocalGameRecommendation(game) {
+  return {
+    id: Number(game.igdb_id),
+    title: game.title || 'Untitled',
+    coverUrl: game.cover_image_url || null,
+    releaseDate: game.release_date || null,
+    rating: game.rating === null || game.rating === undefined ? (game.aggregated_rating === null || game.aggregated_rating === undefined ? null : Number(game.aggregated_rating)) : Number(game.rating),
+    genres: Array.isArray(game.genres) ? game.genres : [],
+  }
+}
+
+function mapIgdbGameRecommendation(game) {
+  const coverImageId = typeof game?.cover?.image_id === 'string' ? game.cover.image_id : null
+  return {
+    id: Number(game.id),
+    title: typeof game.name === 'string' && game.name.trim() ? game.name.trim() : 'Untitled',
+    coverUrl: coverImageId ? `https://images.igdb.com/igdb/image/upload/t_cover_big/${coverImageId}.jpg` : null,
+    releaseDate: Number.isFinite(game.first_release_date) ? new Date(game.first_release_date * 1000).toISOString().slice(0, 10) : null,
+    rating: Number.isFinite(game.rating) ? game.rating : Number.isFinite(game.aggregated_rating) ? game.aggregated_rating : null,
+    genres: Array.isArray(game.genres) ? game.genres.map((genre) => genre?.name).filter(Boolean) : [],
   }
 }
 

@@ -4,7 +4,7 @@ import { fetchIgdbAccessToken, igdbRequest } from './igdbClient.js'
 const steamPeakPlayersName = '24hr Peak Players'
 const igdbVisitsName = 'Visits'
 const igdbPageSize = 500
-const gameFields = 'id,name,summary,first_release_date,rating,rating_count,aggregated_rating,aggregated_rating_count,cover.image_id,genres.name,platforms.name,url'
+const gameFields = 'id,name,summary,first_release_date,rating,rating_count,aggregated_rating,aggregated_rating_count,cover.image_id,genres.name,platforms.name,involved_companies.company.name,involved_companies.developer,involved_companies.publisher,franchise.name,collection.name,url'
 
 function textNames(values) {
   return Array.isArray(values) ? values.map((value) => typeof value?.name === 'string' ? value.name.trim() : '').filter(Boolean) : []
@@ -12,6 +12,8 @@ function textNames(values) {
 
 export function normalizeGame(game, { steamPeakPlayers, importRank }) {
   const coverImageId = typeof game?.cover?.image_id === 'string' ? game.cover.image_id : null
+  const companies = Array.isArray(game?.involved_companies) ? game.involved_companies : []
+  const companyNames = (property) => [...new Set(companies.filter((company) => company?.[property]).map((company) => typeof company?.company?.name === 'string' ? company.company.name.trim() : '').filter(Boolean))]
   return {
     igdbId: Number(game.id),
     title: typeof game.name === 'string' && game.name.trim() ? game.name.trim() : 'Untitled',
@@ -26,6 +28,9 @@ export function normalizeGame(game, { steamPeakPlayers, importRank }) {
     platforms: textNames(game.platforms),
     genres: textNames(game.genres),
     igdbUrl: typeof game.url === 'string' ? game.url : null,
+    ...(companyNames('developer').length ? { developerNames: companyNames('developer') } : {}),
+    ...(companyNames('publisher').length ? { publisherNames: companyNames('publisher') } : {}),
+    ...((typeof game?.franchise?.name === 'string' && game.franchise.name.trim()) || (typeof game?.collection?.name === 'string' && game.collection.name.trim()) ? { seriesName: typeof game?.franchise?.name === 'string' && game.franchise.name.trim() ? game.franchise.name.trim() : game.collection.name.trim() } : {}),
     importRank,
   }
 }
@@ -43,6 +48,28 @@ export function normalizeUpcomingGame(game, { popularityScore, importRank }) {
     ...normalizeGame(game, { steamPeakPlayers: 0, importRank }),
     popularityScore: Number(popularityScore),
   }
+}
+
+export async function hydrateGameByIgdbId(pool, options) {
+  const { fetchImpl = fetch, clientId, clientSecret, baseUrl, tokenUrl, gameId, importRank = 1 } = options
+  if (!clientId || !clientSecret) throw new Error('IGDB client ID and client secret are required')
+  if (!Number.isInteger(gameId)) throw new Error('A valid IGDB game ID is required')
+
+  const accessToken = await fetchIgdbAccessToken(fetchImpl, { clientId, clientSecret, tokenUrl })
+  const games = await igdbRequest(fetchImpl, {
+    clientId,
+    accessToken,
+    baseUrl,
+    path: 'games',
+    body: `fields ${gameFields}; where id = ${gameId}; limit 1;`,
+  })
+  const game = Array.isArray(games) ? games[0] : null
+  if (!game || Number(game.id) !== gameId) return null
+
+  const normalizedGame = normalizeGame(game, { steamPeakPlayers: 0, importRank })
+  await ensureGamesTable(pool)
+  await upsertGames(pool, [normalizedGame])
+  return normalizedGame
 }
 
 export async function importPopularGames(pool, options) {

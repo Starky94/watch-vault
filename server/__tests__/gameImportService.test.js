@@ -1,8 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { importPopularGames, importRecentlyReleasedGames, importUpcomingGames, normalizeGame } from '../gameImportService.js'
+import { hydrateGameByIgdbId, importPopularGames, importRecentlyReleasedGames, importUpcomingGames, normalizeGame } from '../gameImportService.js'
 import { getIgdbRateLimitConfig, igdbRequest, resetIgdbRateLimiterForTests } from '../igdbClient.js'
-import { countGames, ensureGamesTable, ensureRecentlyReleasedGamesTable, ensureUpcomingGamesTable, listPopularGames, listRecentlyReleasedGames, listUpcomingGames, upsertGames } from '../database.js'
+import { countGames, ensureGamesTable, ensureRecentlyReleasedGamesTable, ensureUpcomingGamesTable, getGameTimeToBeat, listPlayedGamesForUser, listPopularGames, listRecentlyReleasedGames, listUpcomingGames, upsertGameTimeToBeat, upsertGames } from '../database.js'
 import { adminJobs } from '../adminJobs.js'
 
 function jsonResponse(payload) {
@@ -21,6 +21,48 @@ test('normalizeGame maps display-ready IGDB metadata', () => {
     aggregatedRatingCount: 4, steamPeakPlayers: 12345, platforms: ['PC'], genres: ['RPG'],
     igdbUrl: 'https://igdb.com/games/example', importRank: 2,
   })
+})
+
+test('hydrateGameByIgdbId stores a missing game with its IGDB details', async () => {
+  resetIgdbRateLimiterForTests()
+  const writes = []
+  const pool = {
+    async query() { return { rows: [] } },
+    async connect() {
+      return {
+        async query(sql, values) {
+          if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [] }
+          writes.push(values)
+          return { rows: [{ inserted: true }] }
+        },
+        release() {},
+      }
+    },
+  }
+  const game = await hydrateGameByIgdbId(pool, {
+    clientId: 'client', clientSecret: 'secret', baseUrl: 'https://example.test/v4', tokenUrl: 'https://example.test/token', gameId: 42,
+    fetchImpl: async (url) => String(url).includes('/token')
+      ? jsonResponse({ access_token: 'token' })
+      : jsonResponse([{ id: 42, name: 'Saved Game', summary: 'Stored details', first_release_date: 1704067200, cover: { image_id: 'cover' }, genres: [{ name: 'RPG' }], platforms: [{ name: 'PC' }] }]),
+  })
+  assert.deepEqual(game, { igdbId: 42, title: 'Saved Game', summary: 'Stored details', coverImageUrl: 'https://images.igdb.com/igdb/image/upload/t_cover_big/cover.jpg', releaseDate: '2024-01-01', rating: null, ratingCount: null, aggregatedRating: null, aggregatedRatingCount: null, steamPeakPlayers: 0, platforms: ['PC'], genres: ['RPG'], igdbUrl: null, importRank: 1 })
+  assert.equal(writes.length, 1)
+})
+
+test('game time-to-beat cache reads and upserts IGDB durations', async () => {
+  const queries = []
+  const pool = {
+    async query(sql, values) {
+      queries.push({ sql, values })
+      if (sql.includes('SELECT game_igdb_id')) return { rows: [{ game_igdb_id: 7, hastily: 1800, normally: 3600, completely: 7200 }] }
+      return { rows: [{ game_igdb_id: 7, hastily: 1800, normally: 3600, completely: 7200 }] }
+    },
+  }
+  assert.deepEqual(await getGameTimeToBeat(pool, 7), { game_igdb_id: 7, hastily: 1800, normally: 3600, completely: 7200 })
+  assert.deepEqual(await upsertGameTimeToBeat(pool, { gameId: 7, hastily: 1800, normally: 3600, completely: 7200 }), { game_igdb_id: 7, hastily: 1800, normally: 3600, completely: 7200 })
+  assert.deepEqual(queries[0].values, [7])
+  assert.deepEqual(queries[1].values, [7, 1800, 3600, 7200])
+  assert.match(queries[1].sql, /ON CONFLICT \(game_igdb_id\) DO UPDATE/i)
 })
 
 test('IGDB client spaces burst requests to at most four per second', async () => {
@@ -170,6 +212,7 @@ test('game schema and upsert use unique IGDB IDs and update repeated games', asy
   const schemaQueries = []
   await ensureGamesTable({ query: async (sql) => { schemaQueries.push(sql); return { rows: [] } } })
   assert.match(schemaQueries[0], /igdb_id INTEGER NOT NULL UNIQUE/i)
+  assert.ok(schemaQueries.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS game_time_to_beats')))
 
   let calls = 0
   const result = await upsertGames({ connect: async () => ({
@@ -243,4 +286,18 @@ test('upcoming games use a separate ranked table', async () => {
   assert.match(sql, /FROM upcoming_games/i)
   assert.match(sql, /ORDER BY popularity_score DESC, igdb_id ASC/i)
   assert.match(sql, /OFFSET \$2/i)
+})
+
+test('played game history resolves all game catalogs without duplicate games', async () => {
+  let sql = ''
+  let params = []
+  const rows = [{ igdb_id: 2, title: 'Played Game', played_at: '2026-08-25T10:00:00.000Z' }]
+  const result = await listPlayedGamesForUser({ query: async (query, values) => { sql = query; params = values; return { rows } } }, 'florind')
+  assert.deepEqual(result, rows)
+  assert.deepEqual(params, ['florind'])
+  assert.match(sql, /FROM games/i)
+  assert.match(sql, /FROM recently_released_games/i)
+  assert.match(sql, /FROM upcoming_games/i)
+  assert.match(sql, /SELECT DISTINCT ON \(igdb_id\)/i)
+  assert.match(sql, /ORDER BY played_games\.created_at DESC/i)
 })

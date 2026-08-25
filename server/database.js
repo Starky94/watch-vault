@@ -1,6 +1,7 @@
 import pg from 'pg'
 import { ACHIEVEMENTS } from './achievements.js'
 import { BOOK_ACHIEVEMENTS } from './bookAchievements.js'
+import { GAME_ACHIEVEMENTS } from './gameAchievements.js'
 import { WATCH_TOGETHER_ACHIEVEMENTS, WATCH_TOGETHER_AUTOMATIC_GENRE_RULES, WATCH_TOGETHER_MANUAL_ACHIEVEMENT_IDS } from './watchTogetherAchievements.js'
 
 const { Pool } = pg
@@ -2186,6 +2187,47 @@ export async function listUpcomingGames(pool, options = {}) {
   return result.rows
 }
 
+export async function searchGames(pool, query, limit = 30) {
+  const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 30
+  const result = await pool.query(
+    `
+      WITH matching_games AS (
+        SELECT igdb_id, title, summary, cover_image_url, release_date, rating, rating_count,
+          aggregated_rating, aggregated_rating_count, steam_peak_players, platforms, genres,
+          igdb_url, import_rank, imported_at, 3 AS source_priority
+        FROM games
+        WHERE POSITION(LOWER($1) IN LOWER(title)) > 0
+        UNION ALL
+        SELECT igdb_id, title, summary, cover_image_url, release_date, rating, rating_count,
+          aggregated_rating, aggregated_rating_count, popularity_score AS steam_peak_players,
+          '{}'::TEXT[] AS platforms, '{}'::TEXT[] AS genres, NULL::TEXT AS igdb_url,
+          import_rank, imported_at, 2 AS source_priority
+        FROM recently_released_games
+        WHERE POSITION(LOWER($1) IN LOWER(title)) > 0
+        UNION ALL
+        SELECT igdb_id, title, summary, cover_image_url, release_date, rating, rating_count,
+          aggregated_rating, aggregated_rating_count, popularity_score AS steam_peak_players,
+          platforms, genres, igdb_url, import_rank, imported_at, 1 AS source_priority
+        FROM upcoming_games
+        WHERE POSITION(LOWER($1) IN LOWER(title)) > 0
+      ), ranked_games AS (
+        SELECT *, ROW_NUMBER() OVER (PARTITION BY igdb_id ORDER BY source_priority DESC) AS source_rank
+        FROM matching_games
+      )
+      SELECT igdb_id, title, summary, cover_image_url, release_date, rating, rating_count,
+        aggregated_rating, aggregated_rating_count, steam_peak_players, platforms, genres,
+        igdb_url, import_rank, imported_at
+      FROM ranked_games
+      WHERE source_rank = 1
+      ORDER BY steam_peak_players DESC NULLS LAST, COALESCE(aggregated_rating, rating) DESC NULLS LAST,
+        import_rank ASC, title ASC, igdb_id ASC
+      LIMIT $2
+    `,
+    [query, normalizedLimit]
+  )
+  return result.rows
+}
+
 export async function searchMovies(pool, query, limit = 30) {
   const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 30
 
@@ -3075,11 +3117,340 @@ export async function ensureGamesTable(pool) {
       platforms TEXT[] NOT NULL DEFAULT '{}',
       genres TEXT[] NOT NULL DEFAULT '{}',
       igdb_url TEXT,
+      developer_names TEXT[] NOT NULL DEFAULT '{}',
+      publisher_names TEXT[] NOT NULL DEFAULT '{}',
+      series_name TEXT,
       import_rank INTEGER NOT NULL,
       imported_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
+    );
+  ALTER TABLE games ADD COLUMN IF NOT EXISTS developer_names TEXT[] NOT NULL DEFAULT '{}';
+  ALTER TABLE games ADD COLUMN IF NOT EXISTS publisher_names TEXT[] NOT NULL DEFAULT '{}';
+  ALTER TABLE games ADD COLUMN IF NOT EXISTS series_name TEXT;
   `)
   await pool.query('CREATE INDEX IF NOT EXISTS games_import_order_idx ON games (import_rank ASC, igdb_id ASC)')
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS played_games (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      game_igdb_id INTEGER NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (user_id, game_igdb_id)
+    )
+  `)
+  await pool.query('CREATE INDEX IF NOT EXISTS played_games_game_idx ON played_games (game_igdb_id)')
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS game_ratings (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      game_igdb_id INTEGER NOT NULL,
+      score NUMERIC(2, 1) NOT NULL CHECK (score >= 1.0 AND score <= 5.0 AND MOD(score * 2, 1) = 0),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (user_id, game_igdb_id)
+    )
+  `)
+  await pool.query('CREATE INDEX IF NOT EXISTS game_ratings_game_idx ON game_ratings (game_igdb_id)')
+  await ensureGameTimeToBeatsTable(pool)
+  await ensureRecentlyReleasedGamesTable(pool)
+  await ensureUpcomingGamesTable(pool)
+}
+
+export async function ensureGameTrackingTables(pool) {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS game_tracking_entries (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      game_igdb_id INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'played' CHECK (status IN ('played','backlog','playing','dropped','completed')),
+      library_added_at TIMESTAMPTZ, started_at TIMESTAMPTZ, completed_at TIMESTAMPTZ,
+      platform TEXT, difficulty TEXT, difficulty_rating INTEGER CHECK (difficulty_rating IS NULL OR difficulty_rating BETWEEN 1 AND 5),
+      completion_percent INTEGER CHECK (completion_percent IS NULL OR completion_percent BETWEEN 0 AND 100),
+      playtime_minutes INTEGER NOT NULL DEFAULT 0 CHECK (playtime_minutes >= 0),
+      review TEXT, completion_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (user_id, game_igdb_id)
+    )
+  `)
+  await pool.query(`CREATE TABLE IF NOT EXISTS game_sessions (
+    id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    game_igdb_id INTEGER NOT NULL, occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), duration_minutes INTEGER NOT NULL CHECK (duration_minutes > 0),
+    mode TEXT NOT NULL DEFAULT 'solo' CHECK (mode IN ('solo','coop','versus')),
+    location TEXT CHECK (location IN ('local','online')), coplayer TEXT,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`)
+  await pool.query(`CREATE TABLE IF NOT EXISTS game_rating_history (
+    id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    game_igdb_id INTEGER NOT NULL, score NUMERIC(2,1) NOT NULL, recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`)
+  await pool.query(`CREATE TABLE IF NOT EXISTS user_game_achievement_unlocks (
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, achievement_id TEXT NOT NULL,
+    unlocked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (user_id, achievement_id)
+  )`)
+  await pool.query('CREATE INDEX IF NOT EXISTS game_tracking_entries_user_status_idx ON game_tracking_entries(user_id,status)')
+  await pool.query('CREATE INDEX IF NOT EXISTS game_sessions_user_time_idx ON game_sessions(user_id,occurred_at)')
+}
+
+const metadataValue = (metadata, key) => {
+  const value = metadata?.tags?.[key] ?? metadata?.[key]
+  if (value === true) return 1
+  return Number.isFinite(Number(value)) ? Number(value) : 0
+}
+const maxCount = (values) => Math.max(0, ...values)
+const dateKey = (value) => value ? new Date(value).toISOString().slice(0, 10) : null
+const monthKey = (value) => value ? new Date(value).toISOString().slice(0, 7) : null
+const weekKey = (value) => { const date = new Date(value); const day = (date.getUTCDay() + 6) % 7; date.setUTCDate(date.getUTCDate() - day); return date.toISOString().slice(0, 10) }
+const bestConsecutive = (keys, increment) => { const sorted = [...new Set(keys.filter(Boolean))].sort(); let best = 0; let current = 0; let prior = null; for (const key of sorted) { const value = new Date(`${key}T00:00:00Z`).getTime(); current = prior !== null && value - prior === increment ? current + 1 : 1; best = Math.max(best, current); prior = value } return best }
+
+export function buildGameAchievementValues({ entries = [], sessions = [], ratings = [], ratingHistory = [], now = new Date() }) {
+  const completed = entries.filter((entry) => entry.status === 'completed' && entry.completed_at)
+  const values = { completed_games: completed.length, library_count: entries.length, rating_count: ratings.length, review_count: entries.filter((entry) => String(entry.review || '').trim()).length }
+  const completedGenres = new Map(), platforms = new Set(), series = new Map(), developers = new Map(), publishers = new Map(), decades = new Set(), moods = new Set()
+  const bump = (map, key) => { if (key) map.set(key, (map.get(key) || 0) + 1) }
+  for (const entry of completed) {
+    for (const genre of entry.genres || []) bump(completedGenres, genre)
+    if (entry.platform) platforms.add(entry.platform)
+    bump(series, entry.series_name); for (const developer of entry.developer_names || []) bump(developers, developer); for (const publisher of entry.publisher_names || []) bump(publishers, publisher)
+    if (entry.release_date) decades.add(Math.floor(new Date(entry.release_date).getUTCFullYear() / 10) * 10)
+    for (const mood of entry.completion_metadata?.moods || []) moods.add(String(mood))
+  }
+  for (const [genre, count] of completedGenres) values[`genre:${genre}`] = count
+  values.genre_diversity = completedGenres.size; values.genre_max = maxCount([...completedGenres.values()]); values.platform_diversity = platforms.size; values.series_max = maxCount([...series.values()]); values.developer_max = maxCount([...developers.values()]); values.publisher_max = maxCount([...publishers.values()]); values.decade_diversity = decades.size; values.mood_diversity = moods.size
+  values.full_completions = completed.filter((entry) => Number(entry.completion_percent) >= 100).length; values.completion_percent = maxCount(completed.map((entry) => Number(entry.completion_percent) || 0)); values.difficulty_rating = maxCount(completed.map((entry) => Number(entry.difficulty_rating) || 0)); values.hard_completions = completed.filter((entry) => ['hard','highest'].includes(String(entry.difficulty || '').toLowerCase())).length
+  for (const difficulty of ['easy','normal','hard','highest']) values[`difficulty:${difficulty}`] = completed.filter((entry) => String(entry.difficulty || '').toLowerCase() === difficulty).length
+  values.total_playtime = entries.reduce((sum, entry) => sum + (Number(entry.playtime_minutes) || 0), 0); values.per_game_playtime = maxCount(entries.map((entry) => Number(entry.playtime_minutes) || 0)); values.completion_playtime_high = maxCount(completed.map((entry) => Number(entry.playtime_minutes) || 0)); values.completion_playtime_low = completed.some((entry) => Number(entry.playtime_minutes) > 0 && Number(entry.playtime_minutes) < 300) ? 300 : 0
+  values.backlog_completions = completed.filter((entry) => entry.library_added_at && new Date(entry.library_added_at) < new Date(entry.completed_at)).length; values.backlog_age = maxCount(completed.map((entry) => entry.library_added_at ? Math.floor((new Date(entry.completed_at) - new Date(entry.library_added_at)) / 86400000) : 0)); values.zero_backlog = entries.length > 0 && !entries.some((entry) => entry.status === 'backlog') ? 1 : 0
+  values.coop_completions = completed.filter((entry) => metadataValue(entry.completion_metadata, 'coop')).length
+  const datedSessions = sessions.filter((session) => session.occurred_at); values.session_duration_high = maxCount(datedSessions.map((session) => Number(session.duration_minutes) || 0)); values.session_duration_low = datedSessions.some((session) => Number(session.duration_minutes) < 45) ? 45 : 0; values.short_sessions = datedSessions.filter((session) => Number(session.duration_minutes) < 30).length; values.coop_sessions = datedSessions.filter((session) => session.mode === 'coop').length; values.versus_sessions = datedSessions.filter((session) => session.mode === 'versus').length; values.multiplayer_games = new Set(datedSessions.filter((session) => session.mode !== 'solo').map((session) => session.game_igdb_id)).size; values.multiplayer_days = new Set(datedSessions.filter((session) => session.mode !== 'solo').map((session) => dateKey(session.occurred_at))).size
+  const coplayers = new Map(); for (const session of datedSessions) if (session.coplayer) bump(coplayers, String(session.coplayer).trim().toLowerCase()); values.same_coplayer_sessions = maxCount([...coplayers.values()])
+  values.daily_streak = bestConsecutive(datedSessions.map((session) => dateKey(session.occurred_at)), 86400000); values.weekly_streak = bestConsecutive(datedSessions.map((session) => weekKey(session.occurred_at)), 604800000)
+  values.perfect_rating = ratings.some((rating) => Number(rating.score) >= 5) ? 1 : 0; values.hot_take = ratings.some((rating) => Number(rating.score) <= 2.5 && Number(rating.rating ?? rating.aggregated_rating) >= 80) ? 1 : 0; values.hidden_gem = ratings.some((rating) => Number(rating.score) >= 4.5 && Number(rating.rating_count ?? 0) > 0 && Number(rating.rating_count) <= 100) ? 1 : 0; values.completed_low_rating = ratings.some((rating) => Number(rating.score) <= 1 && completed.some((entry) => Number(entry.game_igdb_id) === Number(rating.game_igdb_id))) ? 1 : 0
+  values.speed_demon = completed.some((entry) => Number(entry.playtime_minutes) > 0 && Number(entry.normally) > 0 && Number(entry.playtime_minutes) * 60 < Number(entry.normally)) ? 1 : 0; values.retro_game = completed.some((entry) => entry.release_date && new Date(entry.release_date).getUTCFullYear() <= now.getUTCFullYear() - 15) ? 1 : 0
+  const ratingRuns = new Map(); for (const rating of ratingHistory) { const id = Number(rating.game_igdb_id); const scores = ratingRuns.get(id) || []; scores.push(Number(rating.score)); ratingRuns.set(id, scores) }; values['tag:rerated_up'] = Math.max(values['tag:rerated_up'] || 0, ...[...ratingRuns.values()].map((scores) => scores.length > 1 && Math.max(...scores) - Math.min(...scores) >= 1 ? 1 : 0))
+  const completionMonths = completed.map((entry) => monthKey(entry.completed_at)); values.month_completions = maxCount(Object.values(completionMonths.reduce((counts, key) => (counts[key] = (counts[key] || 0) + 1, counts), {}))); values.year_completions = maxCount(Object.values(completed.reduce((counts, entry) => { const key = new Date(entry.completed_at).getUTCFullYear(); counts[key] = (counts[key] || 0) + 1; return counts }, {}))); values.year_month_coverage = maxCount(Object.values(completed.reduce((counts, entry) => { const key = new Date(entry.completed_at).getUTCFullYear(); counts[key] = counts[key] || new Set(); counts[key].add(monthKey(entry.completed_at)); return counts }, {})).map((set) => set.size)); values.weekend_completions = maxCount(Object.values(completed.reduce((counts, entry) => { const date = new Date(entry.completed_at); if ([0,6].includes(date.getUTCDay())) { const key = weekKey(entry.completed_at); counts[key] = (counts[key] || 0) + 1 } return counts }, {}))); values.completion_month = 0
+  for (let month = 1; month <= 12; month += 1) values[`completion_month:${month}`] = completed.filter((entry) => new Date(entry.completed_at).getUTCMonth() + 1 === month).length
+  values.horror_october = completed.filter((entry) => new Date(entry.completed_at).getUTCMonth() === 9 && (entry.genres || []).some((genre) => /horror/i.test(genre))).length; values.summer_adventure = completed.filter((entry) => [5,6,7].includes(new Date(entry.completed_at).getUTCMonth()) && (entry.genres || []).some((genre) => /adventure/i.test(genre))).length; values.coop_december = completed.filter((entry) => new Date(entry.completed_at).getUTCMonth() === 11 && metadataValue(entry.completion_metadata, 'coop')).length
+  for (const record of [...entries.map((entry) => entry.completion_metadata), ...sessions.map((session) => session.metadata)]) { for (const key of Object.keys(record?.tags || record || {})) values[`tag:${key}`] = (values[`tag:${key}`] || 0) + metadataValue(record, key) }
+  return values
+}
+
+export async function getGameTrackingForUser(pool, { username, gameId }) {
+  const result = await pool.query(`SELECT status,library_added_at,started_at,completed_at,platform,difficulty,difficulty_rating,completion_percent,playtime_minutes,review,completion_metadata FROM game_tracking_entries WHERE user_id=(SELECT id FROM users WHERE username=$1) AND game_igdb_id=$2`, [username, gameId])
+  return result.rows[0] ?? null
+}
+
+export async function upsertGameTrackingForUser(pool, { username, gameId, tracking }) {
+  const result = await pool.query(`WITH selected_user AS (SELECT id FROM users WHERE username=$1 LIMIT 1), saved AS (INSERT INTO game_tracking_entries (user_id,game_igdb_id,status,library_added_at,started_at,completed_at,platform,difficulty,difficulty_rating,completion_percent,playtime_minutes,review,completion_metadata) SELECT id,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb FROM selected_user ON CONFLICT (user_id,game_igdb_id) DO UPDATE SET status=EXCLUDED.status,library_added_at=COALESCE(EXCLUDED.library_added_at,game_tracking_entries.library_added_at),started_at=COALESCE(EXCLUDED.started_at,game_tracking_entries.started_at),completed_at=COALESCE(EXCLUDED.completed_at,game_tracking_entries.completed_at),platform=EXCLUDED.platform,difficulty=EXCLUDED.difficulty,difficulty_rating=EXCLUDED.difficulty_rating,completion_percent=EXCLUDED.completion_percent,playtime_minutes=EXCLUDED.playtime_minutes,review=EXCLUDED.review,completion_metadata=EXCLUDED.completion_metadata,updated_at=NOW() RETURNING *) SELECT EXISTS(SELECT 1 FROM selected_user) AS has_user,(SELECT row_to_json(saved) FROM saved) AS tracking`, [username,gameId,tracking.status,tracking.libraryAddedAt,tracking.startedAt,tracking.completedAt,tracking.platform,tracking.difficulty,tracking.difficultyRating,tracking.completionPercent,tracking.playtimeMinutes,tracking.review,JSON.stringify(tracking.metadata || {})])
+  const row = result.rows[0] ?? {}; return row.has_user ? { status: 'ok', tracking: row.tracking } : { status: 'missing_user' }
+}
+
+export async function addGameSessionForUser(pool, { username, gameId, session }) {
+  const result = await pool.query(`WITH selected_user AS (SELECT id FROM users WHERE username=$1 LIMIT 1), saved AS (INSERT INTO game_sessions (user_id,game_igdb_id,occurred_at,duration_minutes,mode,location,coplayer,metadata) SELECT id,$2,$3,$4,$5,$6,$7,$8::jsonb FROM selected_user RETURNING id) SELECT EXISTS(SELECT 1 FROM selected_user) AS has_user,(SELECT id FROM saved) AS id`, [username,gameId,session.occurredAt,session.durationMinutes,session.mode,session.location,session.coplayer,JSON.stringify(session.metadata || {})])
+  return result.rows[0]?.has_user ? { status: 'ok', id: result.rows[0].id } : { status: 'missing_user' }
+}
+
+export async function getGameAchievementsForUser(pool, username) {
+  const [entriesResult, sessionsResult, ratingsResult, ratingHistoryResult, unlocksResult] = await Promise.all([
+    pool.query(`SELECT e.*,g.release_date,g.genres,g.developer_names,g.publisher_names,g.series_name,t.normally FROM game_tracking_entries e LEFT JOIN games g ON g.igdb_id=e.game_igdb_id LEFT JOIN game_time_to_beats t ON t.game_igdb_id=e.game_igdb_id WHERE e.user_id=(SELECT id FROM users WHERE username=$1)`, [username]),
+    pool.query(`SELECT * FROM game_sessions WHERE user_id=(SELECT id FROM users WHERE username=$1)`, [username]),
+    pool.query(`SELECT r.*,g.rating,g.rating_count,g.aggregated_rating FROM game_ratings r LEFT JOIN games g ON g.igdb_id=r.game_igdb_id WHERE r.user_id=(SELECT id FROM users WHERE username=$1)`, [username]),
+    pool.query(`SELECT * FROM game_rating_history WHERE user_id=(SELECT id FROM users WHERE username=$1)`, [username]),
+    pool.query(`SELECT achievement_id,unlocked_at FROM user_game_achievement_unlocks WHERE user_id=(SELECT id FROM users WHERE username=$1)`, [username]),
+  ])
+  const values = buildGameAchievementValues({ entries: entriesResult.rows, sessions: sessionsResult.rows, ratings: ratingsResult.rows, ratingHistory: ratingHistoryResult.rows }); const unlocked = new Map(unlocksResult.rows.map((row) => [row.achievement_id,row.unlocked_at]))
+  return GAME_ACHIEVEMENTS.map((achievement) => { const current = Number(values[achievement.rule] || 0); const unlockedAt = unlocked.get(achievement.id) || null; return { ...achievement, progress: { current: Math.min(current, achievement.target), target: achievement.target, complete: current >= achievement.target }, unlocked: Boolean(unlockedAt), unlockedAt } })
+}
+
+export async function evaluateGameAchievementsForUser(pool, username) {
+  const achievements = await getGameAchievementsForUser(pool, username); const newly = achievements.filter((item) => item.progress.complete && !item.unlocked); if (!newly.length) return []
+  const result = await pool.query(`INSERT INTO user_game_achievement_unlocks (user_id,achievement_id) SELECT (SELECT id FROM users WHERE username=$1),unnest($2::text[]) ON CONFLICT DO NOTHING RETURNING achievement_id,unlocked_at`, [username,newly.map((item) => item.id)]); const dates = new Map(result.rows.map((row) => [row.achievement_id,row.unlocked_at])); return newly.filter((item) => dates.has(item.id)).map((item) => ({ ...item, unlocked: true, unlockedAt: dates.get(item.id) }))
+}
+
+export async function ensureGameTimeToBeatsTable(pool) {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS game_time_to_beats (
+      game_igdb_id INTEGER PRIMARY KEY,
+      hastily INTEGER,
+      normally INTEGER,
+      completely INTEGER,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `)
+}
+
+export async function getGameTimeToBeat(pool, gameId) {
+  const result = await pool.query(
+    `SELECT game_igdb_id, hastily, normally, completely
+     FROM game_time_to_beats
+     WHERE game_igdb_id = $1`,
+    [gameId]
+  )
+  return result.rows[0] ?? null
+}
+
+export async function upsertGameTimeToBeat(pool, { gameId, hastily = null, normally = null, completely = null }) {
+  const result = await pool.query(
+    `INSERT INTO game_time_to_beats (game_igdb_id, hastily, normally, completely, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, NOW(), NOW())
+     ON CONFLICT (game_igdb_id) DO UPDATE SET
+       hastily = EXCLUDED.hastily,
+       normally = EXCLUDED.normally,
+       completely = EXCLUDED.completely,
+       updated_at = NOW()
+     RETURNING game_igdb_id, hastily, normally, completely`,
+    [gameId, hastily, normally, completely]
+  )
+  return result.rows[0] ?? null
+}
+
+export async function getGameByIgdbId(pool, igdbId) {
+  const result = await pool.query(`
+    WITH game_candidates AS (
+      SELECT igdb_id, title, summary, cover_image_url, release_date, rating, rating_count,
+        aggregated_rating, aggregated_rating_count, steam_peak_players, platforms, genres, igdb_url, import_rank, imported_at, 3 AS source_priority
+      FROM games WHERE igdb_id = $1
+      UNION ALL
+      SELECT igdb_id, title, summary, cover_image_url, release_date, rating, rating_count,
+        aggregated_rating, aggregated_rating_count, popularity_score AS steam_peak_players, '{}'::TEXT[] AS platforms, '{}'::TEXT[] AS genres, NULL::TEXT AS igdb_url, import_rank, imported_at, 2 AS source_priority
+      FROM recently_released_games WHERE igdb_id = $1
+      UNION ALL
+      SELECT igdb_id, title, summary, cover_image_url, release_date, rating, rating_count,
+        aggregated_rating, aggregated_rating_count, popularity_score AS steam_peak_players, platforms, genres, igdb_url, import_rank, imported_at, 1 AS source_priority
+      FROM upcoming_games WHERE igdb_id = $1
+    )
+    SELECT * FROM game_candidates
+    ORDER BY source_priority DESC
+    LIMIT 1
+  `, [igdbId])
+  return result.rows[0] ?? null
+}
+
+export async function listSimilarGames(pool, { gameId, genres = [], limit = 10 }) {
+  const normalizedGenres = [...new Set(genres.filter((genre) => typeof genre === 'string' && genre.trim()).map((genre) => genre.trim()))]
+  if (!normalizedGenres.length) return []
+  const result = await pool.query(`
+    SELECT
+      igdb_id, title, summary, cover_image_url, release_date, rating, rating_count,
+      aggregated_rating, aggregated_rating_count, steam_peak_players, platforms, genres,
+      igdb_url, import_rank, imported_at,
+      CARDINALITY(ARRAY(SELECT UNNEST(genres) INTERSECT SELECT UNNEST($2::TEXT[]))) AS shared_genre_count
+    FROM games
+    WHERE igdb_id <> $1
+      AND genres && $2::TEXT[]
+    ORDER BY shared_genre_count DESC, steam_peak_players DESC NULLS LAST, COALESCE(aggregated_rating, rating) DESC NULLS LAST, igdb_id ASC
+    LIMIT $3
+  `, [gameId, normalizedGenres, Math.max(1, Math.min(limit, 10))])
+  return result.rows
+}
+
+export async function getGameCommunityRating(pool, { gameId, username = null }) {
+  const result = await pool.query(`
+    WITH selected_user AS (SELECT id FROM users WHERE username = $2 LIMIT 1)
+    SELECT
+      AVG(game_ratings.score)::DOUBLE PRECISION AS average,
+      COUNT(game_ratings.id)::INTEGER AS vote_count,
+      (SELECT score::DOUBLE PRECISION FROM game_ratings WHERE game_igdb_id = $1 AND user_id IN (SELECT id FROM selected_user) LIMIT 1) AS your_score
+    FROM game_ratings
+    WHERE game_igdb_id = $1
+  `, [gameId, username])
+  const row = result.rows[0] ?? {}
+  return { average: row.average === null || row.average === undefined ? null : Number(row.average), voteCount: Number(row.vote_count ?? 0), yourScore: row.your_score === null || row.your_score === undefined ? null : Number(row.your_score) }
+}
+
+export async function getGamePersonalState(pool, { gameId, username }) {
+  if (!username) return { played: false }
+  const result = await pool.query(`
+    SELECT EXISTS(
+      SELECT 1 FROM played_games
+      JOIN users ON users.id = played_games.user_id
+      WHERE users.username = $1 AND played_games.game_igdb_id = $2
+    ) AS played
+  `, [username, gameId])
+  return { played: Boolean(result.rows[0]?.played) }
+}
+
+export async function addGameToPlayedForUser(pool, { username, gameId }) {
+  const result = await pool.query(`
+    WITH selected_user AS (SELECT id FROM users WHERE username = $1 LIMIT 1),
+    saved_game AS (
+      INSERT INTO played_games (user_id, game_igdb_id)
+      SELECT id, $2 FROM selected_user
+      ON CONFLICT (user_id, game_igdb_id) DO NOTHING
+      RETURNING created_at
+    )
+    SELECT EXISTS(SELECT 1 FROM selected_user) AS has_user, (SELECT created_at FROM saved_game) AS created_at
+  `, [username, gameId])
+  const row = result.rows[0] ?? {}
+  return row.has_user ? { status: 'ok', createdAt: row.created_at ?? null } : { status: 'missing_user' }
+}
+
+export async function removeGameFromPlayedForUser(pool, { username, gameId }) {
+  const result = await pool.query(`
+    WITH selected_user AS (SELECT id FROM users WHERE username = $1 LIMIT 1),
+    deleted_game AS (
+      DELETE FROM played_games WHERE user_id IN (SELECT id FROM selected_user) AND game_igdb_id = $2 RETURNING id
+    )
+    SELECT EXISTS(SELECT 1 FROM selected_user) AS has_user, EXISTS(SELECT 1 FROM deleted_game) AS removed
+  `, [username, gameId])
+  const row = result.rows[0] ?? {}
+  return row.has_user ? { status: 'ok', removed: Boolean(row.removed) } : { status: 'missing_user' }
+}
+
+export async function listPlayedGamesForUser(pool, username) {
+  const result = await pool.query(
+    `
+      WITH selected_user AS (
+        SELECT id FROM users WHERE username = $1 LIMIT 1
+      ), game_candidates AS (
+        SELECT igdb_id, title, summary, cover_image_url, release_date, rating, rating_count,
+          aggregated_rating, aggregated_rating_count, steam_peak_players, platforms, genres,
+          igdb_url, import_rank, imported_at, 3 AS source_priority
+        FROM games
+        UNION ALL
+        SELECT igdb_id, title, summary, cover_image_url, release_date, rating, rating_count,
+          aggregated_rating, aggregated_rating_count, popularity_score AS steam_peak_players,
+          '{}'::TEXT[] AS platforms, '{}'::TEXT[] AS genres, NULL::TEXT AS igdb_url,
+          import_rank, imported_at, 2 AS source_priority
+        FROM recently_released_games
+        UNION ALL
+        SELECT igdb_id, title, summary, cover_image_url, release_date, rating, rating_count,
+          aggregated_rating, aggregated_rating_count, popularity_score AS steam_peak_players,
+          platforms, genres, igdb_url, import_rank, imported_at, 1 AS source_priority
+        FROM upcoming_games
+      ), ranked_games AS (
+        SELECT DISTINCT ON (igdb_id) *
+        FROM game_candidates
+        ORDER BY igdb_id, source_priority DESC
+      )
+      SELECT ranked_games.*, played_games.created_at AS played_at
+      FROM played_games
+      JOIN selected_user ON selected_user.id = played_games.user_id
+      JOIN ranked_games ON ranked_games.igdb_id = played_games.game_igdb_id
+      ORDER BY played_games.created_at DESC, ranked_games.igdb_id ASC
+    `,
+    [username]
+  )
+  return result.rows
+}
+
+export async function upsertGameRatingForUser(pool, { username, gameId, score }) {
+  const result = await pool.query(`
+    WITH selected_user AS (SELECT id FROM users WHERE username = $1 LIMIT 1),
+    saved_rating AS (
+      INSERT INTO game_ratings (user_id, game_igdb_id, score, created_at, updated_at)
+      SELECT id, $2, $3, NOW(), NOW() FROM selected_user
+      ON CONFLICT (user_id, game_igdb_id) DO UPDATE SET score = EXCLUDED.score, updated_at = NOW()
+      RETURNING score
+    )
+    SELECT EXISTS(SELECT 1 FROM selected_user) AS has_user, (SELECT score::DOUBLE PRECISION FROM saved_rating) AS score
+  `, [username, gameId, score])
+  const row = result.rows[0] ?? {}
+  if (row.has_user && Number.isFinite(Number(row.score))) {
+    await pool.query(`INSERT INTO game_rating_history (user_id,game_igdb_id,score) SELECT id,$2,$3 FROM users WHERE username=$1`, [username, gameId, score])
+  }
+  return row.has_user ? { status: 'ok', score: Number(row.score) } : { status: 'missing_user' }
 }
 
 export async function ensureRecentlyReleasedGamesTable(pool) {
@@ -3229,20 +3600,21 @@ export async function upsertGames(pool, games) {
       const result = await client.query(
         `INSERT INTO games (
           igdb_id, title, summary, cover_image_url, release_date, rating, rating_count,
-          aggregated_rating, aggregated_rating_count, steam_peak_players, platforms, genres,
-          igdb_url, import_rank, imported_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::TEXT[], $12::TEXT[], $13, $14, NOW())
+        aggregated_rating, aggregated_rating_count, steam_peak_players, platforms, genres,
+          igdb_url, developer_names, publisher_names, series_name, import_rank, imported_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::TEXT[], $12::TEXT[], $13, $14::TEXT[], $15::TEXT[], $16, $17, NOW())
         ON CONFLICT (igdb_id) DO UPDATE SET
           title = EXCLUDED.title, summary = EXCLUDED.summary, cover_image_url = EXCLUDED.cover_image_url,
           release_date = EXCLUDED.release_date, rating = EXCLUDED.rating, rating_count = EXCLUDED.rating_count,
           aggregated_rating = EXCLUDED.aggregated_rating, aggregated_rating_count = EXCLUDED.aggregated_rating_count,
           steam_peak_players = EXCLUDED.steam_peak_players, platforms = EXCLUDED.platforms, genres = EXCLUDED.genres,
-          igdb_url = EXCLUDED.igdb_url, import_rank = EXCLUDED.import_rank, imported_at = NOW()
+          igdb_url = EXCLUDED.igdb_url, developer_names = EXCLUDED.developer_names, publisher_names = EXCLUDED.publisher_names,
+          series_name = EXCLUDED.series_name, import_rank = EXCLUDED.import_rank, imported_at = NOW()
         RETURNING (xmax = 0) AS inserted`,
         [
           game.igdbId, game.title, game.summary, game.coverImageUrl, game.releaseDate, game.rating,
           game.ratingCount, game.aggregatedRating, game.aggregatedRatingCount, game.steamPeakPlayers,
-          game.platforms, game.genres, game.igdbUrl, game.importRank,
+          game.platforms, game.genres, game.igdbUrl, game.developerNames || [], game.publisherNames || [], game.seriesName || null, game.importRank,
         ]
       )
       if (result.rows[0]?.inserted) insertedCount += 1

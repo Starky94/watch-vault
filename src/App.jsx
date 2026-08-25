@@ -38,6 +38,17 @@ const sectionByPrimaryView = {
 }
 
 const movieTabs = ['All Movies', 'Popular', 'Now Playing', 'Upcoming', 'Top Rated']
+const statsTabs = [
+  { label: 'Overview' },
+  { label: 'Movies', section: 'movies' },
+  { label: 'TV Shows', section: 'tv' },
+  { label: 'Games', section: 'games' },
+  { label: 'Books', section: 'books' },
+  { label: 'Book stats', section: 'books' },
+  { label: 'Book achievements', section: 'books' },
+  { label: 'Game achievements', section: 'games' },
+  { label: 'Achievements' },
+]
 const movieScreenModes = {
   overview: 'overview',
   popularList: 'popularList',
@@ -67,6 +78,7 @@ const routeKinds = {
   bookDetail: 'bookDetail',
   authorDetail: 'authorDetail',
   personDetail: 'personDetail',
+  gameDetail: 'gameDetail',
 }
 
 const authStorageKey = 'watchvault.auth.user'
@@ -187,6 +199,8 @@ function App() {
         ? primaryViews.books
       : readAppRoute().kind === routeKinds.authorDetail
         ? primaryViews.books
+      : readAppRoute().kind === routeKinds.gameDetail
+        ? primaryViews.games
       : readAppRoute().kind === routeKinds.movieDetail || readAppRoute().kind === routeKinds.personDetail || readAppRoute().kind === routeKinds.tvDetail
       ? primaryViews.movies
       : primaryViews.home
@@ -210,6 +224,7 @@ function App() {
     shows: [],
     actors: [],
     books: [],
+    games: [],
     error: '',
   })
   const [tmdbSearchState, setTmdbSearchState] = useState({
@@ -228,6 +243,9 @@ function App() {
   })
   const googleBooksSearchRequestId = useRef(0)
   const googleBooksSearchStartedQueryRef = useRef('')
+  const [igdbSearchState, setIgdbSearchState] = useState({ status: 'idle', games: [], error: '' })
+  const igdbSearchRequestId = useRef(0)
+  const igdbSearchStartedQueryRef = useRef('')
   const [activeSearchSource, setActiveSearchSource] = useState('watchvault')
   const [user, setUser] = useState(null)
   const [enabledSections, setEnabledSections] = useState(defaultEnabledSections)
@@ -263,6 +281,84 @@ function App() {
       return nextGames
     })
   }
+
+  function handleOpenGameDetail(game) {
+    const gameId = Number(game?.id)
+    if (!Number.isInteger(gameId)) return
+    setGameDetailState({ status: 'loading', game: mapGamePreviewToDetail(game), error: '' })
+    handleNavigateToPath(buildGameDetailPath(gameId), { kind: routeKinds.gameDetail, gameId }, primaryViews.games)
+  }
+
+  async function handleToggleGamePlayed(game) {
+    const gameId = Number(game?.id)
+    if (!Number.isInteger(gameId)) return false
+    if (!user) { handleOpenLogin(); return false }
+    const isPlayed = Boolean(gameDetailState.game?.played)
+    setGamePlayedActionState({ status: 'loading', gameId, error: '' })
+    try {
+      const response = await fetch(`/api/games/${gameId}/played`, { method: isPlayed ? 'DELETE' : 'POST', headers: buildAuthHeaders(user) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+      setGameDetailState((state) => Number(state.game?.id) === gameId ? { ...state, game: { ...state.game, played: payload.played } } : state)
+      setGamePlayedActionState({ status: 'success', gameId, error: '' })
+      void loadPlayedGamesForUser(user)
+      return true
+    } catch (error) {
+      setGamePlayedActionState({ status: 'error', gameId, error: error instanceof Error ? error.message : 'Unable to update played status right now.' })
+      return false
+    }
+  }
+
+  async function handleSubmitGameRating(game, score) {
+    const gameId = Number(game?.id)
+    if (!Number.isInteger(gameId)) return false
+    if (!user) { handleOpenLogin(); return false }
+    setGameRatingActionState({ status: 'loading', gameId, error: '' })
+    try {
+      const response = await fetch(`/api/games/${gameId}/rating`, { method: 'PUT', headers: { 'Content-Type': 'application/json', ...buildAuthHeaders(user) }, body: JSON.stringify({ score }) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+      const communityRating = mapCommunityRatingPayload(payload.communityRating)
+      setGameDetailState((state) => Number(state.game?.id) === gameId ? { ...state, game: { ...state.game, communityRating } } : state)
+      receiveAchievementUnlocks(payload.newlyUnlockedAchievements)
+      setGameRatingActionState({ status: 'success', gameId, error: '' })
+      return true
+    } catch (error) {
+      setGameRatingActionState({ status: 'error', gameId, error: error instanceof Error ? error.message : 'Unable to save your rating right now.' })
+      return false
+    }
+  }
+
+  async function handleSaveGameTracking(game, tracking) {
+    const gameId = Number(game?.id)
+    if (!Number.isInteger(gameId)) return false
+    if (!user) { handleOpenLogin(); return false }
+    setGameTrackingActionState({ status: 'loading', gameId, error: '' })
+    try {
+      const response = await fetch(`/api/games/${gameId}/tracking`, { method: 'PUT', headers: { 'Content-Type': 'application/json', ...buildAuthHeaders(user) }, body: JSON.stringify(tracking) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || 'Unable to save game tracking.')
+      setGameDetailState((state) => Number(state.game?.id) === gameId ? { ...state, game: { ...state.game, tracking: payload.tracking } } : state)
+      receiveAchievementUnlocks(payload.newlyUnlockedAchievements)
+      setGameTrackingActionState({ status: 'success', gameId, error: '' })
+      return true
+    } catch (error) { setGameTrackingActionState({ status: 'error', gameId, error: error instanceof Error ? error.message : 'Unable to save game tracking.' }); return false }
+  }
+
+  async function handleSaveGameSession(game, session) {
+    const gameId = Number(game?.id)
+    if (!Number.isInteger(gameId)) return false
+    if (!user) { handleOpenLogin(); return false }
+    setGameTrackingActionState({ status: 'loading', gameId, error: '' })
+    try {
+      const response = await fetch(`/api/games/${gameId}/sessions`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...buildAuthHeaders(user) }, body: JSON.stringify(session) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || 'Unable to save game session.')
+      receiveAchievementUnlocks(payload.newlyUnlockedAchievements)
+      setGameTrackingActionState({ status: 'success', gameId, error: '' })
+      return true
+    } catch (error) { setGameTrackingActionState({ status: 'error', gameId, error: error instanceof Error ? error.message : 'Unable to save game session.' }); return false }
+  }
   const [booksState, setBooksState] = useState(() => createBookCollectionState())
   const [recentMoviesState, setRecentMoviesState] = useState(() => createMovieCollectionState())
   const [upcomingMoviesState, setUpcomingMoviesState] = useState(() => createMovieCollectionState())
@@ -285,6 +381,8 @@ function App() {
     movie: null,
     error: '',
   })
+  const [gameDetailState, setGameDetailState] = useState({ status: currentRoute.kind === routeKinds.gameDetail ? 'idle' : 'hidden', game: null, error: '' })
+  const [similarGamesState, setSimilarGamesState] = useState({ status: 'idle', games: [], source: null, error: '' })
   const [bookDetailState, setBookDetailState] = useState({ status: currentRoute.kind === routeKinds.bookDetail ? 'idle' : 'hidden', book: null, error: '' })
   const [authorDetailState, setAuthorDetailState] = useState({ status: currentRoute.kind === routeKinds.authorDetail ? 'idle' : 'hidden', author: null, books: [], error: '' })
   const [relatedBooksState, setRelatedBooksState] = useState({ status: currentRoute.kind === routeKinds.bookDetail ? 'idle' : 'hidden', books: [], error: '', persistingBookId: null })
@@ -346,6 +444,7 @@ function App() {
     error: '',
   })
   const [readBooksState, setReadBooksState] = useState({ status: 'idle', books: [], error: '' })
+  const [playedGamesState, setPlayedGamesState] = useState({ status: 'idle', games: [], error: '' })
   const [bookReadActionState, setBookReadActionState] = useState({ status: 'idle', bookId: null, error: '' })
   const [bookReadingFormatDialogBook, setBookReadingFormatDialogBook] = useState(null)
   const [bookRatingActionState, setBookRatingActionState] = useState({ status: 'idle', bookId: null, error: '' })
@@ -364,6 +463,9 @@ function App() {
     movieId: null,
     error: '',
   })
+  const [gamePlayedActionState, setGamePlayedActionState] = useState({ status: 'idle', gameId: null, error: '' })
+  const [gameRatingActionState, setGameRatingActionState] = useState({ status: 'idle', gameId: null, error: '' })
+  const [gameTrackingActionState, setGameTrackingActionState] = useState({ status: 'idle', gameId: null, error: '' })
   const [movieReleaseReminderActionState, setMovieReleaseReminderActionState] = useState({ status: 'idle', movieId: null, error: '' })
   const [tvEpisodeRatingActionState, setTvEpisodeRatingActionState] = useState({ status: 'idle', episodeId: null, error: '' })
   const [movieStatsState, setMovieStatsState] = useState({
@@ -377,6 +479,7 @@ function App() {
   const [statsInsightsState, setStatsInsightsState] = useState({ status: 'idle', insights: emptyStatsInsights, error: '' })
   const [bookStatsState, setBookStatsState] = useState({ status: 'idle', stats: emptyBookStats, error: '' })
   const [bookAchievementsState, setBookAchievementsState] = useState({ status: 'idle', achievements: [], error: '' })
+  const [gameAchievementsState, setGameAchievementsState] = useState({ status: 'idle', achievements: [], error: '' })
   const [achievementsState, setAchievementsState] = useState({ status: 'idle', achievements: [], error: '' })
   const [achievementToast, setAchievementToast] = useState(null)
   const [continueWatchingState, setContinueWatchingState] = useState({ status: 'idle', shows: [], error: '' })
@@ -409,6 +512,8 @@ function App() {
             ? primaryViews.books
             : nextRoute.kind === routeKinds.authorDetail
               ? primaryViews.books
+            : nextRoute.kind === routeKinds.gameDetail
+              ? primaryViews.games
             : nextRoute.kind === routeKinds.movieDetail || nextRoute.kind === routeKinds.personDetail || nextRoute.kind === routeKinds.tvDetail
           ? primaryViews.movies
           : primaryViews.home
@@ -601,7 +706,7 @@ function App() {
     const query = nextQuery.trim()
 
     if (!query) {
-      setSearchError('Enter a movie, show, book, or actor to search.')
+      setSearchError('Enter a movie, show, book, game, or actor to search.')
       return false
     }
 
@@ -682,6 +787,28 @@ function App() {
     } catch (error) {
       if (requestId === googleBooksSearchRequestId.current) {
         setGoogleBooksSearchState({ status: 'error', books: [], error: error instanceof Error ? error.message : 'Unable to search Google Books right now.', persistingBookId: null })
+      }
+    }
+  }
+
+  async function handleSearchIgdb() {
+    const query = currentRoute.kind === routeKinds.search ? currentRoute.query : ''
+    if (!query || igdbSearchStartedQueryRef.current === query) return
+
+    igdbSearchStartedQueryRef.current = query
+    const requestId = ++igdbSearchRequestId.current
+    setIgdbSearchState({ status: 'loading', games: [], error: '' })
+
+    try {
+      const response = await fetch(`/api/search/igdb?q=${encodeURIComponent(query)}`)
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+      if (requestId === igdbSearchRequestId.current) {
+        setIgdbSearchState({ status: 'success', games: Array.isArray(payload.games) ? payload.games : [], error: '' })
+      }
+    } catch (error) {
+      if (requestId === igdbSearchRequestId.current) {
+        setIgdbSearchState({ status: 'error', games: [], error: error instanceof Error ? error.message : 'Unable to search IGDB right now.' })
       }
     }
   }
@@ -924,7 +1051,7 @@ function App() {
     }
 
     setActiveView(view)
-    if (currentRoute.kind === routeKinds.movieDetail || currentRoute.kind === routeKinds.personDetail || currentRoute.kind === routeKinds.tvDetail || currentRoute.kind === routeKinds.bookDetail || currentRoute.kind === routeKinds.authorDetail) {
+    if (currentRoute.kind === routeKinds.movieDetail || currentRoute.kind === routeKinds.gameDetail || currentRoute.kind === routeKinds.personDetail || currentRoute.kind === routeKinds.tvDetail || currentRoute.kind === routeKinds.bookDetail || currentRoute.kind === routeKinds.authorDetail) {
       handleNavigateToPath('/', { kind: routeKinds.home }, view)
     } else if (window.location.pathname !== '/') {
       window.history.pushState({}, '', '/')
@@ -1472,6 +1599,23 @@ function App() {
     }
   }
 
+  async function loadPlayedGamesForUser(nextUser) {
+    if (!nextUser?.username) {
+      setPlayedGamesState({ status: 'idle', games: [], error: '' })
+      return
+    }
+
+    setPlayedGamesState((state) => ({ ...state, status: 'loading', error: '' }))
+    try {
+      const response = await fetch('/api/games/played', { headers: buildAuthHeaders(nextUser) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+      setPlayedGamesState({ status: 'success', games: Array.isArray(payload.games) ? payload.games.map(mapPlayedGamePayload) : [], error: '' })
+    } catch (error) {
+      setPlayedGamesState({ status: 'error', games: [], error: error instanceof Error ? error.message : 'Unable to load played games right now.' })
+    }
+  }
+
   async function handleAddMovieToWatchlist(movie) {
     const normalizedMovieId = Number(movie?.id)
 
@@ -1895,6 +2039,7 @@ function App() {
 
   useEffect(() => {
     loadTvWatchedHistoryForUser(user)
+    loadPlayedGamesForUser(user)
   }, [user])
 
   useEffect(() => {
@@ -1974,6 +2119,17 @@ function App() {
       .catch((error) => { if (!cancelled) setBookAchievementsState({ status: 'error', achievements: [], error: error instanceof Error ? error.message : 'Unable to load book achievements.' }) })
     return () => { cancelled = true }
   }, [activeView, user, bookReadActionState.status, bookRatingActionState.status])
+
+  useEffect(() => {
+    if (activeView !== primaryViews.stats || !user?.username) return
+    let cancelled = false
+    setGameAchievementsState((state) => ({ ...state, status: 'loading', error: '' }))
+    fetch('/api/game-achievements', { headers: buildAuthHeaders(user) })
+      .then(async (response) => ({ response, payload: await response.json().catch(() => ({})) }))
+      .then(({ response, payload }) => { if (!response.ok) throw new Error(payload.error || 'Unable to load game achievements.'); if (!cancelled) setGameAchievementsState({ status: 'success', achievements: Array.isArray(payload.achievements) ? payload.achievements : [], error: '' }) })
+      .catch((error) => { if (!cancelled) setGameAchievementsState({ status: 'error', achievements: [], error: error instanceof Error ? error.message : 'Unable to load game achievements.' }) })
+    return () => { cancelled = true }
+  }, [activeView, user, gameRatingActionState.status])
 
   function receiveAchievementUnlocks(items) {
     if (!Array.isArray(items) || !items.length) return
@@ -2345,6 +2501,9 @@ function App() {
     googleBooksSearchRequestId.current += 1
     googleBooksSearchStartedQueryRef.current = ''
     setGoogleBooksSearchState({ status: 'idle', books: [], error: '', persistingBookId: null })
+    igdbSearchRequestId.current += 1
+    igdbSearchStartedQueryRef.current = ''
+    setIgdbSearchState({ status: 'idle', games: [], error: '' })
     setActiveSearchSource('watchvault')
 
     if (currentRoute.kind !== routeKinds.search || !currentRoute.query) {
@@ -2354,6 +2513,7 @@ function App() {
         shows: [],
         actors: [],
         books: [],
+        games: [],
         error: '',
       })
       return
@@ -2368,6 +2528,7 @@ function App() {
         shows: [],
         actors: [],
         books: [],
+        games: [],
         error: '',
       })
 
@@ -2386,6 +2547,7 @@ function App() {
             shows: Array.isArray(payload.shows) ? payload.shows.map(mapTvRowToCard) : [],
             actors: Array.isArray(payload.actors) ? payload.actors.map(mapSearchActorPayload) : [],
             books: Array.isArray(payload.books) ? payload.books.map(mapBookRowToCard) : [],
+            games: Array.isArray(payload.games) ? payload.games.map(mapGamePayload) : [],
             error: '',
           })
         }
@@ -2397,6 +2559,7 @@ function App() {
             shows: [],
             actors: [],
             books: [],
+            games: [],
             error: error instanceof Error ? error.message : 'Unable to search right now.',
           })
         }
@@ -2479,6 +2642,52 @@ function App() {
       cancelled = true
     }
   }, [currentRoute, user])
+
+  useEffect(() => {
+    if (currentRoute.kind !== routeKinds.gameDetail) {
+      setGameDetailState({ status: 'hidden', game: null, error: '' })
+      return
+    }
+    let cancelled = false
+    async function loadGameDetail() {
+      setGameDetailState({ status: 'loading', game: null, error: '' })
+      try {
+        const response = await fetch(`/api/games/${currentRoute.gameId}`, { headers: buildAuthHeaders(user) })
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+        if (!cancelled) setGameDetailState({ status: 'success', game: mapGameDetailPayload(payload.game), error: '' })
+      } catch (error) {
+        if (!cancelled) setGameDetailState({ status: 'error', game: null, error: error instanceof Error ? error.message : 'Unable to load the game detail right now.' })
+      }
+    }
+    loadGameDetail()
+    return () => { cancelled = true }
+  }, [currentRoute, user])
+
+  useEffect(() => {
+    if (currentRoute.kind !== routeKinds.gameDetail) {
+      setSimilarGamesState({ status: 'hidden', games: [], source: null, error: '' })
+      return
+    }
+    if (gameDetailState.status !== 'success' || Number(gameDetailState.game?.id) !== Number(currentRoute.gameId)) {
+      setSimilarGamesState({ status: 'idle', games: [], source: null, error: '' })
+      return
+    }
+    let cancelled = false
+    async function loadSimilarGames() {
+      setSimilarGamesState({ status: 'loading', games: [], source: null, error: '' })
+      try {
+        const response = await fetch(`/api/games/${currentRoute.gameId}/similar`)
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+        if (!cancelled) setSimilarGamesState({ status: 'success', games: Array.isArray(payload.games) ? payload.games.map(mapSimilarGamePayload) : [], source: payload.source || null, error: '' })
+      } catch (error) {
+        if (!cancelled) setSimilarGamesState({ status: 'error', games: [], source: null, error: error instanceof Error ? error.message : 'Unable to load similar games right now.' })
+      }
+    }
+    loadSimilarGames()
+    return () => { cancelled = true }
+  }, [currentRoute, gameDetailState.game?.id, gameDetailState.status])
 
   useEffect(() => {
     if (currentRoute.kind !== routeKinds.bookDetail) {
@@ -3568,21 +3777,27 @@ function App() {
             ) : currentRoute.kind === routeKinds.search ? (
               <SearchResultsPage
                 booksEnabled={enabledSections.includes('books')}
+                gamesEnabled={enabledSections.includes('games')}
                 query={currentRoute.query}
                 searchResultsState={searchResultsState}
                 tmdbSearchState={tmdbSearchState}
                 googleBooksSearchState={googleBooksSearchState}
+                igdbSearchState={igdbSearchState}
                 activeSearchSource={activeSearchSource}
                 onSelectSearchSource={(source) => {
                   setActiveSearchSource(source)
                   if (source === 'tmdb') void handleSearchTmdb()
                   if (source === 'books') void handleSearchGoogleBooks()
+                  if (source === 'igdb') void handleSearchIgdb()
                 }}
                 onOpenMovie={handleOpenMovieDetail}
                 onOpenTvShow={handleOpenTvDetail}
                 onOpenPerson={handleOpenPersonDetail}
                 onOpenBook={handleOpenBookDetail}
                 onOpenGoogleBook={handleOpenGoogleBookDetail}
+                onOpenGame={handleOpenGameDetail}
+                favoriteGameIds={new Set(favoriteGames.map((game) => game.id))}
+                onToggleGameFavorite={handleToggleGameFavorite}
                 watchedMovieIds={watchedMovieIds}
                 watchlistMovieIds={watchlistMovieIds}
                 watchedTvIds={tvWatchedIds}
@@ -3652,6 +3867,7 @@ function App() {
                 watchedState={watchedState}
                 readBooksState={readBooksState}
                 tvWatchedHistoryState={tvWatchedHistoryState}
+                playedGamesState={playedGamesState}
                 isSignedIn={Boolean(user)}
                 statsPeriod={statsPeriod}
                 tvStats={tvStatsState.stats}
@@ -3660,13 +3876,16 @@ function App() {
                 insightsState={statsInsightsState}
                 bookStatsState={bookStatsState}
                 bookAchievementsState={bookAchievementsState}
+                gameAchievementsState={gameAchievementsState}
                 achievementsState={achievementsState}
                 onOpenMovie={handleOpenMovieDetail}
                 onOpenPerson={handleOpenPersonDetail}
                 onOpenTvShow={handleOpenTvDetail}
+                onOpenGame={handleOpenGameDetail}
                 onOpenBook={handleOpenBookDetail}
                 achievements={achievementsState.achievements}
                 onOpenAchievements={() => setActiveView(primaryViews.achievements)}
+                enabledSections={enabledSections}
               />
             ) : activeView === primaryViews.home ? (
               <HomeScreen
@@ -3698,7 +3917,7 @@ function App() {
                 onToggleBookWatchlist={handleToggleBookInWatchlist}
                 onToggleBookRead={handleToggleBookRead}
               />
-            ) : activeView === primaryViews.games ? (
+            ) : activeView === primaryViews.games && currentRoute.kind !== routeKinds.gameDetail ? (
               <GamesScreen
                 activeTab={activeGamesTab}
                 dashboardState={gamesDashboardState}
@@ -3707,6 +3926,7 @@ function App() {
                 onPageChange={setGamesPage}
                 onTabChange={(tab) => { setActiveGamesTab(tab); setGamesPage(1) }}
                 onToggleFavorite={handleToggleGameFavorite}
+                onOpenGame={handleOpenGameDetail}
               />
             ) : activeView === primaryViews.watchlist ? (
               <WatchlistScreen
@@ -3858,6 +4078,24 @@ function App() {
                 watchedMovies={watchedState.movies}
                 watchlistActionState={watchlistActionState}
                 watchlistMovieIds={watchlistMovieIds}
+              />
+            ) : currentRoute.kind === routeKinds.gameDetail ? (
+              <GameDetailPage
+                state={gameDetailState}
+                similarGamesState={similarGamesState}
+                favoriteGameIds={new Set(favoriteGames.map((game) => game.id))}
+                onBack={() => handleMovieViewSelection(primaryViews.games)}
+                onToggleFavorite={handleToggleGameFavorite}
+                onTogglePlayed={handleToggleGamePlayed}
+                onSubmitRating={handleSubmitGameRating}
+                onSaveTracking={handleSaveGameTracking}
+                onSaveSession={handleSaveGameSession}
+                onOpenGame={handleOpenGameDetail}
+                onOpenLogin={handleOpenLogin}
+                isSignedIn={Boolean(user)}
+                playedActionState={gamePlayedActionState}
+                ratingActionState={gameRatingActionState}
+                trackingActionState={gameTrackingActionState}
               />
             ) : (
               <MoviesScreen
@@ -4209,9 +4447,13 @@ function AlertInbox({ alertsState, onOpenAlert, onOpenAlerts, onOpenLogin, onRes
 function SearchResultsPage({
   activeSearchSource,
   booksEnabled,
+  gamesEnabled,
   favoriteActorIds,
+  favoriteGameIds,
   googleBooksSearchState,
+  igdbSearchState,
   onOpenBook,
+  onOpenGame,
   onOpenGoogleBook,
   onOpenDiscover,
   onOpenMovie,
@@ -4220,6 +4462,7 @@ function SearchResultsPage({
   onSearchQuery,
   onOpenTvShow,
   onToggleFavoriteActor,
+  onToggleGameFavorite,
   onToggleMovieWatched,
   onToggleMovieWatchlist,
   onToggleTvWatched,
@@ -4238,7 +4481,7 @@ function SearchResultsPage({
         <div className="search-results-heading">
           <p className="eyebrow">Search</p>
           <h1>Find something to watch</h1>
-          <p>Enter a movie, show, book, or actor in the search field above.</p>
+          <p>Enter a movie, show, book, game, or actor in the search field above.</p>
         </div>
       </section>
     )
@@ -4248,6 +4491,7 @@ function SearchResultsPage({
     { id: 'watchvault', label: 'WatchVault', state: searchResultsState },
     { id: 'tmdb', label: 'TMDB', state: tmdbSearchState },
     ...(booksEnabled ? [{ id: 'books', label: 'Google Books', state: googleBooksSearchState }] : []),
+    ...(gamesEnabled ? [{ id: 'igdb', label: 'IGDB', state: igdbSearchState }] : []),
   ]
   const activeSourceState = sourceTabs.find((source) => source.id === activeSearchSource)?.state ?? searchResultsState
   const isLoading = activeSourceState.status === 'loading' || activeSourceState.status === 'idle'
@@ -4255,10 +4499,12 @@ function SearchResultsPage({
   const showingWatchVaultResults = activeSearchSource === 'watchvault'
   const showingTmdbResults = activeSearchSource === 'tmdb'
   const showingGoogleBooksResults = activeSearchSource === 'books'
+  const showingIgdbResults = activeSearchSource === 'igdb'
   const titleMovies = showingTmdbResults ? tmdbSearchState.movies : searchResultsState.movies
   const titleShows = showingTmdbResults ? tmdbSearchState.shows : searchResultsState.shows
   const titleBooks = booksEnabled ? (showingGoogleBooksResults ? googleBooksSearchState.books : searchResultsState.books) : []
-  const localSearchResults = booksEnabled ? searchResultsState : { ...searchResultsState, books: [] }
+  const titleGames = gamesEnabled ? (showingIgdbResults ? igdbSearchState.games : searchResultsState.games) : []
+  const localSearchResults = { ...searchResultsState, books: booksEnabled ? searchResultsState.books : [] }
   const localClusters = showingWatchVaultResults ? buildAmbiguousSearchClusters(localSearchResults) : []
   const clusteredMovieIds = new Set(localClusters.flatMap((cluster) => cluster.items.filter((item) => item.kind === 'movie').map((item) => item.id)))
   const clusteredShowIds = new Set(localClusters.flatMap((cluster) => cluster.items.filter((item) => item.kind === 'tv').map((item) => item.id)))
@@ -4266,7 +4512,7 @@ function SearchResultsPage({
   const visibleMovies = showingWatchVaultResults ? titleMovies.filter((item) => !clusteredMovieIds.has(item.id)) : titleMovies
   const visibleShows = showingWatchVaultResults ? titleShows.filter((item) => !clusteredShowIds.has(item.id)) : titleShows
   const visibleBooks = showingWatchVaultResults ? titleBooks.filter((item) => !clusteredBookIds.has(item.id)) : titleBooks
-  const hasNoLocalMatches = showingWatchVaultResults && !isLoading && !hasError && !searchResultsState.movies.length && !searchResultsState.shows.length && !titleBooks.length && !searchResultsState.actors.length
+  const hasNoLocalMatches = showingWatchVaultResults && !isLoading && !hasError && !searchResultsState.movies.length && !searchResultsState.shows.length && !titleBooks.length && !titleGames.length && !searchResultsState.actors.length
 
   return (
     <section className="search-results-page">
@@ -4306,7 +4552,7 @@ function SearchResultsPage({
 
       <div id={`search-source-panel-${activeSearchSource}`} role="tabpanel" aria-labelledby={`search-source-tab-${activeSearchSource}`}>
         {showingGoogleBooksResults && googleBooksSearchState.error ? <p className="search-source-error" role="alert">Could not save this Google Books title. {googleBooksSearchState.error}</p> : null}
-        {hasNoLocalMatches ? <LocalSearchEmptyState query={query} onOpenDiscover={onOpenDiscover} onSearchQuery={onSearchQuery} onSelectSource={onSelectSearchSource} /> : null}
+        {hasNoLocalMatches ? <LocalSearchEmptyState booksEnabled={booksEnabled} gamesEnabled={gamesEnabled} query={query} onOpenDiscover={onOpenDiscover} onSearchQuery={onSearchQuery} onSelectSource={onSelectSearchSource} /> : null}
         {showingWatchVaultResults && localClusters.length ? <SearchResultGroup title="Shared title matches" isLoading={false} error="" items={localClusters}>
           <div className="search-result-clusters">{localClusters.map((cluster) => <article className="search-result-cluster" key={cluster.key}><header><h3><HighlightedText text={cluster.title} query={query} /></h3><span>{cluster.items.length} formats</span></header><div className="search-result-cluster-items">{cluster.items.map((item) => item.kind === 'movie' ? <MovieCard key={`movie-${item.id}`} movie={item} matchQuery={query} onOpenMovie={onOpenMovie} isWatched={watchedMovieIds.has(Number(item.id))} isInWatchlist={watchlistMovieIds.has(Number(item.id))} onToggleWatchlist={onToggleMovieWatchlist} onToggleWatched={onToggleMovieWatched} /> : item.kind === 'tv' ? <TvShowPosterCard key={`tv-${item.id}`} show={item} matchQuery={query} onSelectShow={onOpenTvShow} isWatched={watchedTvIds.has(Number(item.id))} isInWatchlist={watchlistTvIds.has(Number(item.id))} onToggleWatchlist={onToggleTvWatchlist} onToggleWatched={onToggleTvWatched} /> : <BookCard key={`book-${item.id}`} book={item} matchQuery={query} onOpenBook={onOpenBook} />)}</div></article>)}</div>
         </SearchResultGroup> : null}
@@ -4328,6 +4574,10 @@ function SearchResultsPage({
           </div>
         </SearchResultGroup> : null}
 
+        {gamesEnabled && !hasNoLocalMatches && !showingTmdbResults && !showingGoogleBooksResults ? <SearchResultGroup title="Games" isLoading={isLoading} error={hasError ? activeSourceState.error : ''} items={titleGames} emptyMessage={showingIgdbResults ? 'No IGDB games matched this search.' : 'No locally stored games matched this search.'}>
+          <GameCardsGrid className="games-card-grid popular-movies-catalog" games={titleGames} label={showingIgdbResults ? 'IGDB' : 'Local'} favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleGameFavorite} onOpenGame={onOpenGame} />
+        </SearchResultGroup> : null}
+
         {showingWatchVaultResults && !hasNoLocalMatches ? <SearchResultGroup title="Actors" isLoading={isLoading} error={hasError ? activeSourceState.error : ''} items={searchResultsState.actors} emptyMessage="No actors matched this search.">
           <div className="favorite-actors-grid">
             {searchResultsState.actors.map((actor) => <FavoriteActorCard key={actor.id} actor={actor} matchQuery={query} onOpenPerson={onOpenPerson} isFavorite={favoriteActorIds.has(Number(actor.id))} onToggleFavorite={onToggleFavoriteActor} />)}
@@ -4338,7 +4588,7 @@ function SearchResultsPage({
   )
 }
 
-function LocalSearchEmptyState({ onOpenDiscover, onSearchQuery, onSelectSource, query }) {
+function LocalSearchEmptyState({ booksEnabled, gamesEnabled, onOpenDiscover, onSearchQuery, onSelectSource, query }) {
   const [state, setState] = useState({ status: 'loading', alternatives: [] })
 
   useEffect(() => {
@@ -4358,7 +4608,7 @@ function LocalSearchEmptyState({ onOpenDiscover, onSearchQuery, onSelectSource, 
       <h2>No local matches for “{query}”</h2>
       <p>Try a broader search across our external sources, or let Discover find something for you.</p>
       {state.status === 'success' && state.alternatives.length ? <div className="local-search-alternatives"><span>Did you mean</span>{state.alternatives.map((alternative) => <button key={alternative} type="button" onClick={() => onSearchQuery(alternative)}>{alternative}</button>)}</div> : null}
-      <div className="local-search-empty-actions"><button type="button" className="secondary-button" onClick={() => onSelectSource('tmdb')}>Search TMDB</button><button type="button" className="secondary-button" onClick={() => onSelectSource('books')}>Search Google Books</button><button type="button" className="primary-button" onClick={onOpenDiscover}>Open Discover</button></div>
+      <div className="local-search-empty-actions"><button type="button" className="secondary-button" onClick={() => onSelectSource('tmdb')}>Search TMDB</button>{booksEnabled ? <button type="button" className="secondary-button" onClick={() => onSelectSource('books')}>Search Google Books</button> : null}{gamesEnabled ? <button type="button" className="secondary-button" onClick={() => onSelectSource('igdb')}>Search IGDB</button> : null}<button type="button" className="primary-button" onClick={onOpenDiscover}>Open Discover</button></div>
     </div>
   </section>
 }
@@ -4628,6 +4878,10 @@ function HomeScreen({ user, onOpenMovie, onOpenPopularMovies, onOpenWatchlist, o
             <button type="button" className="primary-button" onClick={openTonightPick}>
               <PlayIcon />
               <span>{tonightPick ? 'Watch / details' : 'Find tonight’s pick'}</span>
+            </button>
+            <button type="button" className="secondary-button" onClick={onOpenDiscover}>
+              <SparklesIcon />
+              <span>Find a movie</span>
             </button>
             <button type="button" className="secondary-button" onClick={onOpenWatchlist}>
               <BookmarkIcon />
@@ -5562,7 +5816,7 @@ const gameTabs = [
   { id: 'favorites', label: 'Favorites' },
 ]
 
-function GamesScreen({ activeTab, dashboardState, favoriteGames, gamesState, onTabChange, onPageChange, onToggleFavorite }) {
+function GamesScreen({ activeTab, dashboardState, favoriteGames, gamesState, onTabChange, onPageChange, onToggleFavorite, onOpenGame }) {
   const activeTabLabel = gameTabs.find((tab) => tab.id === activeTab)?.label || 'Popular'
   const favoriteGameIds = new Set(favoriteGames.map((game) => game.id))
 
@@ -5579,15 +5833,15 @@ function GamesScreen({ activeTab, dashboardState, favoriteGames, gamesState, onT
 
       <div className="games-layout">
         <div className="games-main">
-          {activeTab === 'all' ? <GamesDashboard dashboardState={dashboardState} favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} /> : activeTab === 'favorites' ? <section className="games-catalog">
+          {activeTab === 'all' ? <GamesDashboard dashboardState={dashboardState} favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} /> : activeTab === 'favorites' ? <section className="games-catalog">
             <div className="games-shelf-heading"><h2>Favorite Games</h2></div>
-            {favoriteGames.length ? <GameCardsGrid className="games-catalog-grid" games={favoriteGames} label="Favorite" favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} /> : <SectionMessage message="No favorite games yet. Use the heart on a game to add it here." />}
+            {favoriteGames.length ? <GameCardsGrid className="games-catalog-grid" games={favoriteGames} label="Favorite" favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} /> : <SectionMessage message="No favorite games yet. Use the heart on a game to add it here." />}
           </section> : <section className="games-catalog">
             <div className="games-shelf-heading"><h2>{activeTabLabel} Games</h2></div>
             {gamesState.status === 'loading' || gamesState.status === 'idle' ? <SectionMessage message={`Loading ${activeTabLabel.toLowerCase()} games from your local database...`} /> : null}
             {gamesState.status === 'error' ? <SectionMessage message={`Could not load ${activeTabLabel.toLowerCase()} games. ${gamesState.error}`} tone="error" /> : null}
             {gamesState.status === 'success' && gamesState.games.length === 0 ? <SectionMessage message={`No ${activeTabLabel.toLowerCase()} games are available in the local database yet.`} /> : null}
-            {gamesState.status === 'success' && gamesState.games.length ? <><GameCardsGrid className="games-catalog-grid" games={gamesState.games} label={activeTabLabel} favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} /><PaginationControls pagination={gamesState.pagination} onPageChange={onPageChange} /></> : null}
+            {gamesState.status === 'success' && gamesState.games.length ? <><GameCardsGrid className="games-catalog-grid" games={gamesState.games} label={activeTabLabel} favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} /><PaginationControls pagination={gamesState.pagination} onPageChange={onPageChange} /></> : null}
           </section>}
         </div>
 
@@ -5601,20 +5855,20 @@ function GamesScreen({ activeTab, dashboardState, favoriteGames, gamesState, onT
   )
 }
 
-function GamesDashboard({ dashboardState, favoriteGameIds, onToggleFavorite }) {
+function GamesDashboard({ dashboardState, favoriteGameIds, onToggleFavorite, onOpenGame }) {
   const featuredGame = dashboardState.popularGames[0]
   if (dashboardState.status === 'loading' || dashboardState.status === 'idle') return <SectionMessage message="Loading games from your local database..." />
   if (dashboardState.status === 'error') return <SectionMessage message={`Could not load the games dashboard. ${dashboardState.error}`} tone="error" />
   if (!featuredGame) return <SectionMessage message="No games are available in the local database yet." />
-  return <><article className="games-featured-card"><div className="games-featured-copy"><span className="games-kicker">Featured game</span><h2>{featuredGame.title}</h2><p style={{ display: '-webkit-box', overflow: 'hidden', WebkitBoxOrient: 'vertical', WebkitLineClamp: 4 }}>{featuredGame.summary}</p><div className="games-featured-meta"><span><StarIcon /> {featuredGame.rating}</span><span>◉ {featuredGame.playersLabel}</span></div><div className="games-featured-actions"><button type="button" className="games-play-button"><PlayIcon /> Play Now</button><button type="button" className="games-favorite-button" onClick={() => onToggleFavorite(featuredGame)}><HeartIcon /> {favoriteGameIds.has(featuredGame.id) ? 'Remove Favorite' : 'Add to Favorites'}</button></div></div><GameArt game={featuredGame} featured /></article><GamesShelf title="Popular Right Now" games={dashboardState.popularGames} label="Popular" favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} />{dashboardState.recentGames.length ? <GamesShelf title="Recently Released" games={dashboardState.recentGames} label="Recent" favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} /> : null}{dashboardState.upcomingGames.length ? <GamesShelf title="Upcoming Games" games={dashboardState.upcomingGames} label="Upcoming" favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} /> : null}<div className="games-bottom-grid"><article className="games-daily-challenge"><span className="games-challenge-icon">★</span><div><small>Daily Challenge</small><h2>Name That Movie</h2><p>Identify the movie from a single screenshot.</p><b>✦ +100 XP</b></div><span className="games-progress">0 / 10</span></article><article className="games-achievements"><div className="games-shelf-heading"><h2>Achievements</h2><button type="button">View All</button></div><div><GameBadge label="Trivia Master" icon="✦" /><GameBadge label="Streak Keeper" icon="◆" /><GameBadge label="Movie Buff" icon="◈" /><GameBadge label="Puzzle Pro" icon="✚" /></div></article></div></>
+  return <><article className="games-featured-card"><div className="games-featured-copy"><span className="games-kicker">Featured game</span><h2>{featuredGame.title}</h2><p style={{ display: '-webkit-box', overflow: 'hidden', WebkitBoxOrient: 'vertical', WebkitLineClamp: 4 }}>{featuredGame.summary}</p><div className="games-featured-meta"><span><StarIcon /> {featuredGame.rating}</span><span>◉ {featuredGame.playersLabel}</span></div><div className="games-featured-actions"><button type="button" className="games-play-button" onClick={() => onOpenGame(featuredGame)}><PlayIcon /> View game</button><button type="button" className="games-favorite-button" onClick={() => onToggleFavorite(featuredGame)}><HeartIcon /> {favoriteGameIds.has(featuredGame.id) ? 'Remove Favorite' : 'Add to Favorites'}</button></div></div><button type="button" className="games-featured-art-button" onClick={() => onOpenGame(featuredGame)} aria-label={`Open ${featuredGame.title}`}><GameArt game={featuredGame} featured /></button></article><GamesShelf title="Popular Right Now" games={dashboardState.popularGames} label="Popular" favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} />{dashboardState.recentGames.length ? <GamesShelf title="Recently Released" games={dashboardState.recentGames} label="Recent" favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} /> : null}{dashboardState.upcomingGames.length ? <GamesShelf title="Upcoming Games" games={dashboardState.upcomingGames} label="Upcoming" favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} /> : null}<div className="games-bottom-grid"><article className="games-daily-challenge"><span className="games-challenge-icon">★</span><div><small>Daily Challenge</small><h2>Name That Movie</h2><p>Identify the movie from a single screenshot.</p><b>✦ +100 XP</b></div><span className="games-progress">0 / 10</span></article><article className="games-achievements"><div className="games-shelf-heading"><h2>Achievements</h2><button type="button">View All</button></div><div><GameBadge label="Trivia Master" icon="✦" /><GameBadge label="Streak Keeper" icon="◆" /><GameBadge label="Movie Buff" icon="◈" /><GameBadge label="Puzzle Pro" icon="✚" /></div></article></div></>
 }
 
-function GamesShelf({ title, games, label, favoriteGameIds, onToggleFavorite }) {
-  return <section className="games-shelf"><div className="games-shelf-heading"><h2>{title}</h2></div><GameCardsGrid className="games-card-grid" games={games} label={label} favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} /></section>
+function GamesShelf({ title, games, label, favoriteGameIds, onToggleFavorite, onOpenGame }) {
+  return <section className="games-shelf"><div className="games-shelf-heading"><h2>{title}</h2></div><GameCardsGrid className="games-card-grid" games={games} label={label} favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} /></section>
 }
 
-function GameCardsGrid({ className, games, label, favoriteGameIds, onToggleFavorite }) {
-  return <div className={className}>{games.map((game) => <article className={`games-card games-art-${game.art || 'trivia'}`} key={game.id || game.title}><button type="button" className={`games-favorite-toggle${favoriteGameIds.has(game.id) ? ' active' : ''}`} onClick={() => onToggleFavorite(game)} aria-label={favoriteGameIds.has(game.id) ? `Remove ${game.title} from favorites` : `Add ${game.title} to favorites`}><HeartIcon /></button><GameArt game={game} showLabel /><h3>{game.title}</h3><small>{game.playersLabel || game.meta}</small><div><span><StarIcon /> {game.rating}</span><em>{label}</em></div></article>)}</div>
+function GameCardsGrid({ className, games, label, favoriteGameIds, onToggleFavorite, onOpenGame }) {
+  return <div className={className}>{games.map((game) => <article className={`games-card games-art-${game.art || 'trivia'}`} key={game.id || game.title}><button type="button" className={`games-favorite-toggle${favoriteGameIds.has(game.id) ? ' active' : ''}`} onClick={() => onToggleFavorite(game)} aria-label={favoriteGameIds.has(game.id) ? `Remove ${game.title} from favorites` : `Add ${game.title} to favorites`}><HeartIcon /></button><button type="button" className="games-card-open" onClick={() => onOpenGame(game)} aria-label={`Open ${game.title}`}><GameArt game={game} showLabel /><h3>{game.title}</h3><small>{game.playersLabel || game.meta}</small><div><span><StarIcon /> {game.rating}</span><em>{label}</em></div></button></article>)}</div>
 }
 
 function GameArt({ game, featured = false, showLabel = true }) {
@@ -5629,6 +5883,85 @@ function GameMetric({ icon, label, value, detail }) {
 
 function GameBadge({ label, icon }) {
   return <span className="games-badge"><i>{icon}</i><b>{label}</b><small>{label === 'Trivia Master' ? 'Win 10 games' : label === 'Streak Keeper' ? '7 day streak' : label === 'Movie Buff' ? 'Play 25 games' : 'Complete 50 puzzles'}</small></span>
+}
+
+function GameDetailPage({ state, similarGamesState, favoriteGameIds, onBack, onToggleFavorite, onSubmitRating, onSaveTracking, onSaveSession, onOpenLogin, onOpenGame, isSignedIn, playedActionState, ratingActionState, trackingActionState }) {
+  const [ratingOpen, setRatingOpen] = useState(false)
+  const [selectedRating, setSelectedRating] = useState(5)
+  const [trailerState, setTrailerState] = useState({ status: 'idle', trailer: null, error: '' })
+  const [trackingOpen, setTrackingOpen] = useState(false)
+  const [sessionOpen, setSessionOpen] = useState(false)
+
+  useEffect(() => {
+    setTrailerState({ status: 'idle', trailer: null, error: '' })
+  }, [state.game?.id])
+
+  if (state.status === 'loading' || state.status === 'idle') return <section className="movie-detail-page"><SectionMessage message="Loading game detail from your local database..." /></section>
+  if (state.status === 'error') return <section className="movie-detail-page"><SectionMessage tone="error" message={`Could not load the game detail. ${state.error}`} /></section>
+  if (!state.game) return <section className="movie-detail-page"><SectionMessage message="Game detail is not available yet." /></section>
+  const game = state.game
+  const communityRating = game.communityRating ?? emptyCommunityRating
+  const isFavorite = favoriteGameIds.has(game.id)
+  const isUpdatingPlayed = playedActionState.status === 'loading' && playedActionState.gameId === game.id
+  const isSavingRating = ratingActionState.status === 'loading' && ratingActionState.gameId === game.id
+  const coverStyle = game.coverUrl ? { backgroundImage: `linear-gradient(90deg, rgba(7, 10, 18, .96) 0%, rgba(7, 10, 18, .74) 38%, rgba(7, 10, 18, .42) 100%), url(${game.coverUrl})` } : undefined
+  const openRating = () => { if (!isSignedIn) return onOpenLogin(); setSelectedRating(communityRating.yourScore ?? 5); setRatingOpen(true) }
+  const isTrailerLoading = trailerState.status === 'loading'
+
+  async function handleOpenTrailer() {
+    setTrailerState({ status: 'loading', trailer: null, error: '' })
+    try {
+      const response = await fetch(`/api/games/${game.id}/trailer`)
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || 'Unable to load a trailer right now.')
+      setTrailerState({ status: 'success', trailer: payload.trailer, error: '' })
+    } catch (error) {
+      setTrailerState({ status: 'error', trailer: null, error: error instanceof Error ? error.message : 'Unable to load a trailer right now.' })
+    }
+  }
+
+  return <section className="movie-detail-page game-detail-page">
+    <nav className="movie-detail-breadcrumb desktop-only" aria-label="Breadcrumb"><button type="button" onClick={onBack}>Games</button><span className="movie-detail-breadcrumb-separator">/</span><span className="movie-detail-breadcrumb-current">{game.title}</span></nav>
+    <button type="button" className="movie-detail-back mobile-only" onClick={onBack}><ChevronLeftIcon /></button>
+    <article className="movie-detail-hero game-detail-hero" style={coverStyle}>
+      <div className="movie-detail-hero-overlay" />
+      <div className="movie-detail-poster-wrap"><div className="movie-detail-poster game-detail-cover">{game.coverUrl ? <img className="movie-detail-poster-image" src={game.coverUrl} alt={`${game.title} cover`} /> : <GamepadIcon />}</div></div>
+      <div className="movie-detail-main"><h1>{game.title}</h1><div className="movie-detail-meta"><span>{game.releaseDate ? formatGameReleaseDate(game.releaseDate) : 'Release date TBA'}</span><span>{game.genres.length ? game.genres.join(', ') : 'Genre TBA'}</span></div>
+        <div className="movie-score-comparison"><div className="movie-score-source tmdb"><StarIcon /><div><span>IGDB</span><strong>{game.rating === null ? 'N/A' : game.rating.toFixed(1)}</strong></div><small>{game.ratingCount.toLocaleString()} ratings</small></div><div className="movie-score-source audience"><TrophyIcon /><div><span>Aggregate</span><strong>{game.aggregatedRating === null ? 'N/A' : game.aggregatedRating.toFixed(1)}</strong></div><small>{game.aggregatedRatingCount.toLocaleString()} ratings</small></div><div className="movie-score-source watchvault"><UserRatingIcon /><div><span>WatchVault</span><strong>{formatCommunityRating(communityRating.average)}</strong></div><small>{communityRating.voteCount} {communityRating.voteCount === 1 ? 'rating' : 'ratings'}</small></div></div>
+        <p className="movie-detail-summary">{game.summary}</p>
+        <div className="movie-detail-actions"><button type="button" className="primary-button movie-detail-primary" disabled={isUpdatingPlayed} onClick={() => isSignedIn ? setTrackingOpen(true) : onOpenLogin()}><CheckIcon /><span>{game.tracking?.status === 'completed' ? 'Update completion' : 'Log game progress'}</span></button><button type="button" className="secondary-button movie-detail-secondary ghost" onClick={() => isSignedIn ? setSessionOpen(true) : onOpenLogin()}>Log session</button><button type="button" className={`secondary-button movie-detail-secondary ghost${isFavorite ? ' is-active' : ''}`} onClick={() => onToggleFavorite(game)}><HeartIcon /><span>{isFavorite ? 'Remove Favorite' : 'Add to Favorites'}</span></button><button type="button" className="secondary-button movie-detail-secondary ghost" onClick={openRating}><StarOutlineIcon /><span>{communityRating.yourScore === null ? 'Rate' : 'Update Rating'}</span></button><button type="button" className="secondary-button movie-detail-secondary ghost" onClick={handleOpenTrailer} disabled={isTrailerLoading}><PlayIcon /><span>{isTrailerLoading ? 'Loading...' : 'Trailer'}</span></button>{game.igdbUrl ? <a className="secondary-button movie-detail-secondary ghost" href={game.igdbUrl} target="_blank" rel="noreferrer">IGDB</a> : null}</div>
+        {trailerState.status === 'error' ? <p className="movie-trailer-error" role="alert">{trailerState.error}</p> : null}
+      </div>
+      <aside className="movie-detail-status desktop-only"><h2>Your Status</h2><div className="movie-detail-status-list"><div className="movie-detail-status-item"><span className="movie-detail-status-icon"><HeartIcon /></span><div><span>Favorite</span><strong>{isFavorite ? 'Saved' : 'Not yet'}</strong></div></div><div className="movie-detail-status-item movie-detail-status-item-watched"><span className="movie-detail-status-icon"><CheckIcon /></span><div><span>Played</span><strong>{game.played ? 'Played' : 'Not yet'}</strong></div></div><div className="movie-detail-status-item movie-detail-status-item-rating"><span className="movie-detail-status-icon"><StarOutlineIcon /></span><div><span>Your rating</span><strong>{formatCommunityRating(communityRating.yourScore)}</strong></div></div><div className="movie-detail-status-item"><span className="movie-detail-status-icon"><GamepadIcon /></span><div><span>Platforms</span><strong>{game.platforms.length ? game.platforms.join(', ') : 'TBA'}</strong></div></div></div></aside>
+    </article>
+    <div className="movie-detail-grid game-detail-grid"><section className="content-section movie-detail-panel game-detail-facts"><div className="game-detail-fact"><CalendarIcon /><span>Release date</span><strong>{game.releaseDate ? formatLongDate(game.releaseDate) : 'TBA'}</strong></div><div className="game-detail-fact"><GamepadIcon /><span>Platforms</span><strong>{game.platforms.length ? game.platforms.join(', ') : 'TBA'}</strong></div><div className="game-detail-fact"><StarIcon /><span>Steam activity</span><strong>{game.steamPeakPlayers === null ? 'Unavailable' : formatGamePlayerCount(game.steamPeakPlayers)}</strong></div></section><section className="content-section movie-detail-panel game-detail-genres"><div className="section-header"><h2>Genres</h2></div><div className="movie-detail-tags">{game.genres.length ? game.genres.map((genre) => <span key={genre} className="movie-detail-tag">{genre}</span>) : <span className="movie-detail-tag">Genre TBA</span>}</div></section><GameTimeToBeatPanel timeToBeat={game.timeToBeat} /><section className="content-section movie-detail-panel game-detail-similar"><div className="section-header"><div><h2>Similar Games</h2><span>{similarGamesState.source === 'local' ? 'Based on shared genres' : 'Curated by IGDB'}</span></div></div>{similarGamesState.status === 'loading' ? <SectionMessage message="Finding similar games..." /> : null}{similarGamesState.status === 'error' ? <SectionMessage tone="error" message={similarGamesState.error} /> : null}{similarGamesState.status === 'success' && similarGamesState.games.length ? <GameCardsGrid className="games-card-grid game-detail-similar-carousel" games={similarGamesState.games} label="Similar" favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} /> : null}{similarGamesState.status === 'success' && !similarGamesState.games.length ? <SectionMessage message="No similar games are available yet." /> : null}</section></div>
+    {trackingOpen ? <GameTrackingDialog game={game} initial={game.tracking} saving={trackingActionState.status === 'loading' && trackingActionState.gameId === game.id} error={trackingActionState.status === 'error' && trackingActionState.gameId === game.id ? trackingActionState.error : ''} onCancel={() => setTrackingOpen(false)} onSave={async (tracking) => { if (await onSaveTracking(game, tracking)) setTrackingOpen(false) }} /> : null}
+    {sessionOpen ? <GameSessionDialog game={game} saving={trackingActionState.status === 'loading' && trackingActionState.gameId === game.id} error={trackingActionState.status === 'error' && trackingActionState.gameId === game.id ? trackingActionState.error : ''} onCancel={() => setSessionOpen(false)} onSave={async (session) => { if (await onSaveSession(game, session)) setSessionOpen(false) }} /> : null}
+    {ratingOpen ? <MovieRatingDialog movie={game} selectedRating={selectedRating} onSelectRating={setSelectedRating} onCancel={() => setRatingOpen(false)} onSubmit={async () => { if (await onSubmitRating(game, selectedRating)) setRatingOpen(false) }} isSaving={isSavingRating} error={ratingActionState.status === 'error' && ratingActionState.gameId === game.id ? ratingActionState.error : ''} kicker="Your Game Rating" /> : null}
+    {trailerState.status === 'success' && trailerState.trailer ? <MovieTrailerDialog movie={game} trailer={trailerState.trailer} onClose={() => setTrailerState({ status: 'idle', trailer: null, error: '' })} /> : null}
+  </section>
+}
+
+function GameTimeToBeatPanel({ timeToBeat }) {
+  const estimates = [
+    ['Main Story', timeToBeat?.mainStory],
+    ['Main + Extras', timeToBeat?.mainAndExtras],
+    ['Completionist', timeToBeat?.completionist],
+  ].filter(([, seconds]) => seconds !== null && seconds !== undefined)
+
+  return <section className="content-section movie-detail-panel game-detail-time-to-beat"><div className="section-header"><h2><ClockIcon />Time to Beat</h2></div>{estimates.length ? <div className="game-time-to-beat-estimates">{estimates.map(([label, seconds]) => <div key={label}><span>{label}</span><strong>{formatGameTimeToBeat(seconds)}</strong></div>)}</div> : <p className="game-time-to-beat-empty">No time-to-beat estimate is available.</p>}</section>
+}
+
+const gameManualTags = ['coop', 'no_assists', 'no_damage_boss', 'one_life', 'all_platform_trophies', 'platinum', 'all_collectibles', 'all_side_quests', 'all_optional_objectives', 'secret_ending', 'random_pick', 'recommendation', 'full_saga', 'credits', 'no_guide', 'bad_ending', 'good_ending', 'customization']
+function GameTrackingDialog({ game, initial, saving, error, onCancel, onSave }) {
+  const [status, setStatus] = useState(initial?.status || 'playing'); const [platform, setPlatform] = useState(initial?.platform || game.platforms?.[0] || ''); const [difficulty, setDifficulty] = useState(initial?.difficulty || 'normal'); const [playtime, setPlaytime] = useState(String(initial?.playtimeMinutes || '')); const [percent, setPercent] = useState(String(initial?.completionPercent || '')); const [review, setReview] = useState(initial?.review || ''); const [tags, setTags] = useState(initial?.metadata?.tags || {})
+  const toggle = (key) => setTags((current) => ({ ...current, [key]: !current[key] }))
+  return <div className="movie-rating-dialog-backdrop"><section className="movie-rating-dialog game-tracking-dialog" role="dialog" aria-modal="true"><p className="movie-rating-dialog-kicker">Game tracker</p><h2>{game.title}</h2><div className="game-tracking-fields"><label>Status<select value={status} onChange={(event) => setStatus(event.target.value)}>{['played','backlog','playing','dropped','completed'].map((item) => <option key={item}>{item}</option>)}</select></label><label>Platform<input value={platform} onChange={(event) => setPlatform(event.target.value)} placeholder="PC, PS5, Switch..." /></label><label>Difficulty<select value={difficulty} onChange={(event) => setDifficulty(event.target.value)}>{['easy','normal','hard','highest'].map((item) => <option key={item}>{item}</option>)}</select></label><label>Playtime (minutes)<input type="number" min="0" value={playtime} onChange={(event) => setPlaytime(event.target.value)} /></label><label>Completion %<input type="number" min="0" max="100" value={percent} onChange={(event) => setPercent(event.target.value)} /></label></div><label className="game-tracking-review">Review (optional)<textarea value={review} onChange={(event) => setReview(event.target.value)} placeholder="This counts toward review achievements." /></label><details><summary>Advanced, user-recorded achievement facts</summary><div className="watch-together-session-badges">{gameManualTags.map((tag) => <label key={tag}><input type="checkbox" checked={Boolean(tags[tag])} onChange={() => toggle(tag)} />{tag.replaceAll('_', ' ')}</label>)}</div></details>{error ? <p className="tmdb-search-error">{error}</p> : null}<div className="movie-rating-dialog-actions"><button type="button" className="secondary-button" onClick={onCancel} disabled={saving}>Cancel</button><button type="button" className="primary-button" onClick={() => onSave({ status, platform, difficulty, playtimeMinutes: playtime === '' ? null : Number(playtime), completionPercent: percent === '' ? null : Number(percent), review, metadata: { tags } })} disabled={saving}>{saving ? 'Saving…' : 'Save tracking'}</button></div></section></div>
+}
+
+function GameSessionDialog({ game, saving, error, onCancel, onSave }) {
+  const [durationMinutes, setDurationMinutes] = useState('60'); const [mode, setMode] = useState('solo'); const [location, setLocation] = useState(''); const [coplayer, setCoplayer] = useState(''); const [tags, setTags] = useState({})
+  return <div className="movie-rating-dialog-backdrop"><section className="movie-rating-dialog game-tracking-dialog" role="dialog" aria-modal="true"><p className="movie-rating-dialog-kicker">Log session</p><h2>{game.title}</h2><div className="game-tracking-fields"><label>Minutes<input type="number" min="1" value={durationMinutes} onChange={(event) => setDurationMinutes(event.target.value)} /></label><label>Mode<select value={mode} onChange={(event) => setMode(event.target.value)}>{['solo','coop','versus'].map((item) => <option key={item}>{item}</option>)}</select></label><label>Location<select value={location} onChange={(event) => setLocation(event.target.value)}><option value="">Not specified</option><option value="local">Local</option><option value="online">Online</option></select></label><label>Co-player<input value={coplayer} onChange={(event) => setCoplayer(event.target.value)} placeholder="Optional name" /></label></div><details><summary>Advanced session facts</summary><div className="watch-together-session-badges">{gameManualTags.slice(0, 10).map((tag) => <label key={tag}><input type="checkbox" checked={Boolean(tags[tag])} onChange={() => setTags((current) => ({ ...current, [tag]: !current[tag] }))} />{tag.replaceAll('_', ' ')}</label>)}</div></details>{error ? <p className="tmdb-search-error">{error}</p> : null}<div className="movie-rating-dialog-actions"><button type="button" className="secondary-button" onClick={onCancel} disabled={saving}>Cancel</button><button type="button" className="primary-button" onClick={() => onSave({ durationMinutes: Number(durationMinutes), mode, location: location || null, coplayer, metadata: { tags } })} disabled={saving}>{saving ? 'Saving…' : 'Save session'}</button></div></section></div>
 }
 
 function BooksGrid({ booksState, onOpenBook }) {
@@ -7706,13 +8039,14 @@ function AchievementCard({ item }) {
   return <article className={`achievement-card${item.unlocked ? ' unlocked' : ''}${item.availability === 'coming_soon' ? ' coming-soon' : ''}`}><div className="achievement-card-icon">{item.unlocked ? <TrophyIcon /> : <LockIcon />}</div><div><span className="achievement-category">{item.category} · {item.rarity}</span><h2>{item.name}</h2><p>{item.secret && !item.unlocked ? 'Keep watching to discover this secret achievement.' : item.description}</p>{item.availability === 'coming_soon' ? <em>Coming soon</em> : <><div className="achievement-progress"><i style={{ width: `${progressPercent}%` }} /></div><small>{item.unlocked ? `Unlocked ${formatLongDate(item.unlockedAt)}` : `${progress.current} / ${progress.target}`}</small></>}</div></article>
 }
 
-function StatsScreen({ movieStats, movieStatsStatus, watchedState, readBooksState, tvWatchedHistoryState, isSignedIn, statsPeriod, tvStats, tvStatsStatus, onStatsPeriodChange, insightsState, bookStatsState, achievementsState, bookAchievementsState, onOpenMovie, onOpenPerson, onOpenTvShow, onOpenBook, achievements = [], onOpenAchievements }) {
+function StatsScreen({ movieStats, movieStatsStatus, watchedState, readBooksState, tvWatchedHistoryState, playedGamesState, isSignedIn, statsPeriod, tvStats, tvStatsStatus, onStatsPeriodChange, insightsState, bookStatsState, achievementsState, bookAchievementsState, gameAchievementsState, onOpenMovie, onOpenPerson, onOpenTvShow, onOpenGame, onOpenBook, achievements = [], onOpenAchievements, enabledSections = defaultEnabledSections }) {
   const [activeTab, setActiveTab] = useState('Overview')
   const [periodOpen, setPeriodOpen] = useState(false)
   const [movieHistoryPage, setMovieHistoryPage] = useState(1)
   const [tvHistoryPage, setTvHistoryPage] = useState(1)
+  const [gameHistoryPage, setGameHistoryPage] = useState(1)
   const [bookHistoryPage, setBookHistoryPage] = useState(1)
-  const tabs = ['Overview', 'Movies', 'TV Shows', 'Books', 'Book stats', 'Book achievements', 'Achievements']
+  const tabs = statsTabs.filter((tab) => !tab.section || enabledSections.includes(tab.section))
   const period = statsPeriods.find((option) => option.value === statsPeriod) ?? statsPeriods[1]
   const metricCards = buildStatsDashboardMetrics({ movieStats, tvStats })
   const isLoading = movieStatsStatus === 'loading' || tvStatsStatus === 'loading'
@@ -7742,6 +8076,15 @@ function StatsScreen({ movieStats, movieStatsStatus, watchedState, readBooksStat
     hasPreviousPage: tvHistoryPage > 1,
     hasNextPage: tvHistoryPage < tvHistoryPageCount,
   }
+  const playedGames = playedGamesState.games
+  const gameHistoryPageCount = Math.max(1, Math.ceil(playedGames.length / statsWatchedMoviesPageSize))
+  const visiblePlayedGames = playedGames.slice((gameHistoryPage - 1) * statsWatchedMoviesPageSize, gameHistoryPage * statsWatchedMoviesPageSize)
+  const gameHistoryPagination = {
+    page: gameHistoryPage,
+    pageSize: statsWatchedMoviesPageSize,
+    hasPreviousPage: gameHistoryPage > 1,
+    hasNextPage: gameHistoryPage < gameHistoryPageCount,
+  }
   const readBooks = readBooksState.books
   const bookHistoryPageCount = Math.max(1, Math.ceil(readBooks.length / statsWatchedMoviesPageSize))
   const visibleReadBooks = readBooks.slice((bookHistoryPage - 1) * statsWatchedMoviesPageSize, bookHistoryPage * statsWatchedMoviesPageSize)
@@ -7761,8 +8104,16 @@ function StatsScreen({ movieStats, movieStatsStatus, watchedState, readBooksStat
   }, [tvHistoryPageCount])
 
   useEffect(() => {
+    setGameHistoryPage((page) => Math.min(page, gameHistoryPageCount))
+  }, [gameHistoryPageCount])
+
+  useEffect(() => {
     setBookHistoryPage((page) => Math.min(page, bookHistoryPageCount))
   }, [bookHistoryPageCount])
+
+  useEffect(() => {
+    if (!statsTabs.some((tab) => tab.label === activeTab && (!tab.section || enabledSections.includes(tab.section)))) setActiveTab('Overview')
+  }, [activeTab, enabledSections])
 
   return (
     <section className="stats-page">
@@ -7784,10 +8135,10 @@ function StatsScreen({ movieStats, movieStatsStatus, watchedState, readBooksStat
       </div>
 
       <div className="stats-tabs" role="tablist" aria-label="Stats categories">
-        {tabs.map((tab) => <button key={tab} type="button" role="tab" aria-selected={tab === activeTab} className={tab === activeTab ? 'active' : ''} onClick={() => { setActiveTab(tab); if (tab === 'Movies') setMovieHistoryPage(1); if (tab === 'TV Shows') setTvHistoryPage(1); if (tab === 'Books') setBookHistoryPage(1) }}>{tab}</button>)}
+        {tabs.map((tab) => <button key={tab.label} type="button" role="tab" aria-selected={tab.label === activeTab} className={tab.label === activeTab ? 'active' : ''} onClick={() => { setActiveTab(tab.label); if (tab.label === 'Movies') setMovieHistoryPage(1); if (tab.label === 'TV Shows') setTvHistoryPage(1); if (tab.label === 'Games') setGameHistoryPage(1); if (tab.label === 'Books') setBookHistoryPage(1) }}>{tab.label}</button>)}
       </div>
 
-      {activeTab === 'Achievements' ? <StatsAchievementsTab isSignedIn={isSignedIn} state={achievementsState} /> : activeTab === 'Book achievements' ? <BookAchievementsTab isSignedIn={isSignedIn} state={bookAchievementsState} /> : activeTab === 'Movies' ? (
+      {activeTab === 'Achievements' ? <StatsAchievementsTab isSignedIn={isSignedIn} state={achievementsState} /> : activeTab === 'Book achievements' ? <BookAchievementsTab isSignedIn={isSignedIn} state={bookAchievementsState} /> : activeTab === 'Game achievements' ? <StatsAchievementsTab isSignedIn={isSignedIn} state={gameAchievementsState} /> : activeTab === 'Movies' ? (
         <section className="stats-watched-movies">
           <div className="stats-watched-movies-heading">
             <div>
@@ -7824,6 +8175,21 @@ function StatsScreen({ movieStats, movieStatsStatus, watchedState, readBooksStat
               {visibleTvHistoryEpisodes.map((episode) => <StatsWatchedTvEpisode key={episode.episodeId} episode={episode} onOpenTvShow={onOpenTvShow} />)}
             </div>
             <PaginationControls pagination={tvHistoryPagination} onPageChange={setTvHistoryPage} />
+          </> : null}
+        </section>
+      ) : activeTab === 'Games' ? (
+        <section className="stats-watched-movies">
+          <div className="stats-watched-movies-heading">
+            <div><h2>Played Games</h2><p>Every game you have marked as played, newest first.</p></div>
+            {playedGamesState.status === 'success' ? <span>{playedGames.length} {playedGames.length === 1 ? 'game' : 'games'}</span> : null}
+          </div>
+          {!isSignedIn ? <SectionMessage message="Sign in to view your played game history." /> : null}
+          {isSignedIn && (playedGamesState.status === 'loading' || playedGamesState.status === 'idle') ? <SectionMessage message="Loading played games..." /> : null}
+          {isSignedIn && playedGamesState.status === 'error' ? <SectionMessage tone="error" message={playedGamesState.error || 'Unable to load your played games right now.'} /> : null}
+          {isSignedIn && playedGamesState.status === 'success' && playedGames.length === 0 ? <SectionMessage message="You have not marked any games as played yet." /> : null}
+          {isSignedIn && playedGamesState.status === 'success' && visiblePlayedGames.length > 0 ? <>
+            <div className="games-card-grid stats-watched-games-grid">{visiblePlayedGames.map((game) => <StatsPlayedGameCard key={game.id} game={game} onOpenGame={onOpenGame} />)}</div>
+            <PaginationControls pagination={gameHistoryPagination} onPageChange={setGameHistoryPage} />
           </> : null}
         </section>
       ) : activeTab === 'Books' ? (
@@ -7937,6 +8303,10 @@ function StatsWatchedMovieCard({ movie, onOpenMovie }) {
       <p>Watched on {formatLongDate(movie.watchedAt)}</p>
     </div>
   )
+}
+
+function StatsPlayedGameCard({ game, onOpenGame }) {
+  return <div className="stats-watched-movie-card"><article className={`games-card games-art-${game.art || 'trivia'}`}><button type="button" className="games-card-open" onClick={() => onOpenGame(game)} aria-label={`Open ${game.title}`}><GameArt game={game} showLabel /><h3>{game.title}</h3><small>{game.playersLabel || game.meta}</small><div><span><StarIcon /> {game.rating}</span><em>Played</em></div></button></article><p>Played on {formatLongDate(game.playedAt)}</p></div>
 }
 
 function StatsReadBookCard({ book, onOpenBook }) {
@@ -9137,6 +9507,61 @@ function mapUpcomingGamePayload(game) {
   }
 }
 
+function mapPlayedGamePayload(game) {
+  const rating = Number.isFinite(Number(game.rating)) ? Number(game.rating) : null
+  return {
+    id: Number(game.id),
+    title: game.title || 'Untitled',
+    coverUrl: game.coverUrl || null,
+    rating: rating === null ? 'N/A' : rating.toFixed(1),
+    playersLabel: Number.isFinite(Number(game.steamPeakPlayers)) ? formatGamePlayerCount(Number(game.steamPeakPlayers)) : '',
+    meta: game.releaseDate ? `Released ${formatGameReleaseDate(game.releaseDate)}` : 'Release date unavailable',
+    playedAt: game.playedAt || null,
+  }
+}
+
+function mapGameDetailPayload(game) {
+  return {
+    id: Number(game.id), title: game.title || 'Untitled', summary: game.summary || 'Description not available yet.', coverUrl: game.coverUrl || null,
+    releaseDate: game.releaseDate || null, rating: Number.isFinite(Number(game.rating)) ? Number(game.rating) : null,
+    ratingCount: Number(game.ratingCount) || 0, aggregatedRating: Number.isFinite(Number(game.aggregatedRating)) ? Number(game.aggregatedRating) : null,
+    aggregatedRatingCount: Number(game.aggregatedRatingCount) || 0, steamPeakPlayers: Number.isFinite(Number(game.steamPeakPlayers)) ? Number(game.steamPeakPlayers) : null,
+    platforms: Array.isArray(game.platforms) ? game.platforms.filter(Boolean) : [], genres: Array.isArray(game.genres) ? game.genres.filter(Boolean) : [],
+    igdbUrl: game.igdbUrl || null, timeToBeat: mapGameTimeToBeatPayload(game.timeToBeat), communityRating: mapCommunityRatingPayload(game.communityRating), played: Boolean(game.played), tracking: game.tracking || null,
+  }
+}
+
+function mapGameTimeToBeatPayload(timeToBeat) {
+  if (!timeToBeat || typeof timeToBeat !== 'object') return null
+  const normalized = {
+    mainStory: normalizeGameTimeToBeatSeconds(timeToBeat.mainStory),
+    mainAndExtras: normalizeGameTimeToBeatSeconds(timeToBeat.mainAndExtras),
+    completionist: normalizeGameTimeToBeatSeconds(timeToBeat.completionist),
+  }
+  return Object.values(normalized).some((value) => value !== null) ? normalized : null
+}
+
+function normalizeGameTimeToBeatSeconds(value) {
+  const seconds = Number(value)
+  return Number.isInteger(seconds) && seconds >= 0 ? seconds : null
+}
+
+function mapGamePreviewToDetail(game) {
+  return mapGameDetailPayload({ ...game, releaseDate: game.releaseDate || null, communityRating: emptyCommunityRating, platforms: [], genres: [] })
+}
+
+function mapSimilarGamePayload(game) {
+  const rating = Number.isFinite(Number(game.rating)) ? Number(game.rating) : null
+  return {
+    id: Number(game.id),
+    title: game.title || 'Untitled',
+    coverUrl: game.coverUrl || null,
+    rating: rating === null ? 'N/A' : rating.toFixed(1),
+    playersLabel: game.releaseDate ? formatGameReleaseDate(game.releaseDate) : (Array.isArray(game.genres) && game.genres.length ? game.genres.join(', ') : 'Game'),
+    meta: game.releaseDate ? `Released ${formatGameReleaseDate(game.releaseDate)}` : 'Release date unavailable',
+  }
+}
+
 function mapBookRowToCard(book) {
   const authors = Array.isArray(book.authors) ? book.authors.filter(Boolean) : []
   const categories = Array.isArray(book.categories) ? book.categories.filter(Boolean).slice(0, 1) : []
@@ -9776,6 +10201,7 @@ function readAppRoute(pathname = window.location.pathname, search = window.locat
   const bookDetailMatch = pathname.match(/^\/books\/([^/]+)\/?$/)
   const authorDetailMatch = pathname.match(/^\/authors\/(\d+)\/?$/)
   const personDetailMatch = pathname.match(/^\/people\/(\d+)\/?$/)
+  const gameDetailMatch = pathname.match(/^\/games\/(\d+)\/?$/)
   const detailMatch = pathname.match(/^\/movies\/(\d+)\/?$/)
 
   if (tvDetailMatch) {
@@ -9795,6 +10221,10 @@ function readAppRoute(pathname = window.location.pathname, search = window.locat
       kind: routeKinds.personDetail,
       personId: Number.parseInt(personDetailMatch[1], 10),
     }
+  }
+
+  if (gameDetailMatch) {
+    return { kind: routeKinds.gameDetail, gameId: Number.parseInt(gameDetailMatch[1], 10) }
   }
 
   if (detailMatch) {
@@ -9829,6 +10259,10 @@ function buildSearchPath(query) {
 
 function buildMovieDetailPath(movieId) {
   return `/movies/${movieId}`
+}
+
+function buildGameDetailPath(gameId) {
+  return `/games/${gameId}`
 }
 
 function buildBookDetailPath(bookId) {
@@ -10130,9 +10564,20 @@ function formatGamePlayerCount(value) {
   return `24h Steam peak: ${new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(value)}`
 }
 
+function formatGameTimeToBeat(seconds) {
+  const totalMinutes = Math.round(seconds / 60)
+  const hours = Math.floor(totalMinutes / 60)
+  const minutes = totalMinutes % 60
+  if (hours && minutes) return `${hours}h ${minutes}m`
+  if (hours) return `${hours}h`
+  return `${minutes}m`
+}
+
 function formatGameReleaseDate(value) {
-  const parsed = new Date(`${value}T00:00:00.000Z`)
-  if (Number.isNaN(parsed.getTime())) return value
+  if (!value) return 'Release date TBA'
+  const normalized = typeof value === 'string' && value.includes('T') ? value : `${value}T00:00:00.000Z`
+  const parsed = new Date(normalized)
+  if (Number.isNaN(parsed.getTime())) return 'Release date TBA'
   return new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).format(parsed)
 }
 

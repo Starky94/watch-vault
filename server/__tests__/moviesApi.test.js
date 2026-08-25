@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createApp, readMovieAvailability } from '../app.js'
-import { addMovieReleaseReminderForUser, buildStatsInsights, countMovies, countStoredDataBytes, ensureMoviesTable, getBookStatsForUser, getMostWatchedActorsForUser, getMovieStatsForUser, getPersonFilmographyPersonalStates, getPersonHistoryForUser, getStatsInsightsForUser, getStreamingPlatformsForUser, getTopRatedThisMonthForUser, getUserEnabledSections, hasMovieReleaseReminderForUser, listCalendarEventsForUser, listContinueWatchingTvShowsForUser, listGenres, listLatestEpisodeTvShows, listMovies, listRecentlyReleasedMovies, listSimilarMovies, listTopRatedMovies, listTvShows, listTvWatchlistShowsForUser, listUpcomingMovies, listWatchedMoviesByGenreForUser, listWatchedTvEpisodesForUser, removeMovieReleaseReminderForUser, saveUserEnabledSections, searchActors, searchBooks, searchMovies, searchTvShows, updateTvEpisodeWatchStateForUser, upsertTvEpisodeRatingForUser } from '../database.js'
+import { addMovieReleaseReminderForUser, buildStatsInsights, countMovies, countStoredDataBytes, ensureMoviesTable, getBookStatsForUser, getMostWatchedActorsForUser, getMovieStatsForUser, getPersonFilmographyPersonalStates, getPersonHistoryForUser, getStatsInsightsForUser, getStreamingPlatformsForUser, getTopRatedThisMonthForUser, getUserEnabledSections, hasMovieReleaseReminderForUser, listCalendarEventsForUser, listContinueWatchingTvShowsForUser, listGenres, listLatestEpisodeTvShows, listMovies, listRecentlyReleasedMovies, listSimilarMovies, listTopRatedMovies, listTvShows, listTvWatchlistShowsForUser, listUpcomingMovies, listWatchedMoviesByGenreForUser, listWatchedTvEpisodesForUser, removeMovieReleaseReminderForUser, saveUserEnabledSections, searchActors, searchBooks, searchGames, searchMovies, searchTvShows, updateTvEpisodeWatchStateForUser, upsertTvEpisodeRatingForUser } from '../database.js'
 
 function isSchemaSetupQuery(sql) {
   return (
@@ -10,6 +10,11 @@ function isSchemaSetupQuery(sql) {
     sql.includes('CREATE TABLE IF NOT EXISTS movie_keyword') ||
     sql.includes('CREATE TABLE IF NOT EXISTS books') ||
     sql.includes('CREATE TABLE IF NOT EXISTS games') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS played_games') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS game_ratings') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS game_time_to_beats') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS recently_released_games') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS upcoming_games') ||
     sql.includes('CREATE TABLE IF NOT EXISTS authors') ||
     sql.includes('CREATE TABLE IF NOT EXISTS book_authors') ||
     sql.includes('CREATE TABLE IF NOT EXISTS favorite_authors') ||
@@ -18,6 +23,10 @@ function isSchemaSetupQuery(sql) {
     sql.includes('CREATE TABLE IF NOT EXISTS book_ratings') ||
     sql.includes('CREATE INDEX IF NOT EXISTS books_import_order_idx') ||
     sql.includes('CREATE INDEX IF NOT EXISTS games_import_order_idx') ||
+    sql.includes('CREATE INDEX IF NOT EXISTS recently_released_games_rank_idx') ||
+    sql.includes('CREATE INDEX IF NOT EXISTS upcoming_games_rank_idx') ||
+    sql.includes('CREATE INDEX IF NOT EXISTS played_games_game_idx') ||
+    sql.includes('CREATE INDEX IF NOT EXISTS game_ratings_game_idx') ||
     sql.includes('INSERT INTO authors') ||
     sql.includes('INSERT INTO book_authors') ||
     sql.includes('UPDATE books') ||
@@ -49,6 +58,8 @@ function isSchemaSetupQuery(sql) {
     sql.includes('ALTER TABLE tv_shows')
     || sql.includes('ALTER TABLE users')
     || sql.includes('CREATE TABLE IF NOT EXISTS user_section_preferences')
+    || sql.includes('CREATE TABLE IF NOT EXISTS igdb_credentials')
+    || sql.includes('CREATE TABLE IF NOT EXISTS igdb_api_credentials')
     || sql.includes('ALTER TABLE user_section_preferences')
     || sql.includes('UPDATE user_section_preferences')
     || sql.includes('INSERT INTO user_section_preferences (user_id)')
@@ -2091,6 +2102,11 @@ test('GET /api/search validates the query and returns grouped local matches', as
         return { rows: [{ google_books_id: 'dune-book', title: 'Dune', authors: ['Frank Herbert'] }] }
       }
 
+      if (sql.includes('matching_games')) {
+        assert.deepEqual(params, ['Dune', 30])
+        return { rows: [{ igdb_id: 4, title: 'Dune: Awakening', steam_peak_players: 80 }] }
+      }
+
       throw new Error(`Unexpected query: ${sql}`)
     },
   }
@@ -2113,6 +2129,7 @@ test('GET /api/search validates the query and returns grouped local matches', as
     assert.deepEqual(payload.shows.map((show) => show.name), ['Dune: Prophecy'])
     assert.deepEqual(payload.actors.map((actor) => actor.name), ['Dune Actor'])
     assert.deepEqual(payload.books.map((book) => book.title), ['Dune'])
+    assert.deepEqual(payload.games.map((game) => game.title), ['Dune: Awakening'])
   } finally {
     await closeServer(server)
   }
@@ -2168,6 +2185,19 @@ test('searchBooks matches stored titles case-insensitively', async () => {
   assert.match(executedSql, /FROM books/i)
   assert.match(executedSql, /POSITION\(LOWER\(\$1\) IN LOWER\(title\)\)/i)
   assert.deepEqual(executedParams, ['Dune', 30])
+})
+
+test('searchGames searches all local game collections with deduplication', async () => {
+  let executedSql = ''
+  let executedParams = []
+  const pool = { async query(sql, params) { executedSql = sql; executedParams = params; return { rows: [] } } }
+  await searchGames(pool, 'Dune', 12)
+  assert.match(executedSql, /FROM games/i)
+  assert.match(executedSql, /FROM recently_released_games/i)
+  assert.match(executedSql, /FROM upcoming_games/i)
+  assert.match(executedSql, /ROW_NUMBER\(\) OVER \(PARTITION BY igdb_id/i)
+  assert.match(executedSql, /POSITION\(LOWER\(\$1\) IN LOWER\(title\)\)/i)
+  assert.deepEqual(executedParams, ['Dune', 12])
 })
 
 test('GET /api/search/tmdb returns normalized TMDB title cards without database writes', async () => {
