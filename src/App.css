@@ -4570,7 +4570,7 @@
 .admin-jobs-header,
 .admin-job-row {
   display: grid;
-  grid-template-columns: minmax(220px, 1.5fr) minmax(160px, 1fr) minmax(140px, 0.9fr) 88px;
+  grid-template-columns: minmax(220px, 1.5fr) minmax(160px, 1fr) minmax(140px, 0.9fr) minmax(150px, 1fr) 88px;
   gap: 16px;
   align-items: center;
 }
@@ -4637,6 +4637,74 @@
 .admin-run-button.error {
   background: linear-gradient(135deg, rgba(255, 118, 150, 0.24), rgba(163, 52, 83, 0.2));
   border-color: rgba(255, 142, 170, 0.34);
+}
+
+.seasonal-themes-section {
+  margin-top: 20px;
+}
+
+.seasonal-themes-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.seasonal-themes-header,
+.seasonal-theme-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.4fr) minmax(150px, 0.8fr) minmax(220px, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+}
+
+.seasonal-themes-header {
+  padding: 0 8px;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.seasonal-theme-row {
+  padding: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 18px;
+  background: rgba(15, 18, 29, 0.88);
+}
+
+.seasonal-theme-cell {
+  color: var(--text-secondary);
+}
+
+.seasonal-theme-name {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-primary);
+}
+
+.seasonal-theme-name > span {
+  font-size: 1.35rem;
+}
+
+.seasonal-theme-mobile-label {
+  display: none;
+}
+
+.seasonal-theme-action-cell {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.seasonal-theme-action-cell .primary-button,
+.seasonal-theme-action-cell .secondary-button {
+  height: 42px;
+  padding: 0 16px;
+}
+
+.seasonal-theme-action-cell button:disabled {
+  cursor: not-allowed;
+  opacity: .52;
 }
 
 .spin-icon {
@@ -4725,12 +4793,48 @@
   }
 
   .admin-jobs-header,
-  .admin-job-row {
+  .admin-job-row,
+  .seasonal-themes-header,
+  .seasonal-theme-row {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .admin-job-action-cell {
+  .admin-job-action-cell,
+  .seasonal-theme-action-cell {
     justify-content: flex-start;
+  }
+
+  .seasonal-themes-header {
+    display: none;
+  }
+
+  .seasonal-theme-row {
+    gap: 10px;
+  }
+
+  .seasonal-theme-cell,
+  .seasonal-theme-action-cell {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .seasonal-theme-cell {
+    justify-content: space-between;
+  }
+
+  .seasonal-theme-name {
+    justify-content: flex-start;
+  }
+
+  .seasonal-theme-mobile-label {
+    display: inline;
+    color: var(--text-muted);
+    font-size: 0.82rem;
+  }
+
+  .seasonal-theme-name > .seasonal-theme-mobile-label {
+    display: none;
   }
 }
 
@@ -6498,7 +6602,9 @@
 .game-detail-similar { grid-column:1 / -1; }.game-detail-similar .section-header > div { display:grid; gap:3px; }.game-detail-similar .section-header span { color:var(--text-secondary); font-size:.78rem; }.game-detail-similar-carousel { display:flex; overflow-x:auto; padding:2px 2px 8px; scroll-snap-type:x proximity; }.game-detail-similar-carousel .games-card { flex:0 0 150px; scroll-snap-align:start; }.game-detail-similar-carousel .games-card-art { min-height:150px; }
 .games-bottom-grid { display:grid; grid-template-columns:.85fr 1.15fr; gap:12px; }.games-daily-challenge,.games-achievements,.games-side-card { border:1px solid rgba(255,255,255,.09); border-radius:12px; background:linear-gradient(145deg,rgba(18,23,39,.92),rgba(9,13,24,.92)); box-shadow:var(--shadow-panel); }.games-daily-challenge { display:flex; align-items:center; gap:13px; min-height:102px; padding:15px; }.games-challenge-icon { display:grid; width:43px; height:43px; flex:0 0 auto; place-items:center; border-radius:13px; color:#fff; background:linear-gradient(135deg,#6530ca,#9d5aff); box-shadow:0 0 18px rgba(139,74,255,.45); font-size:1.4rem; }.games-daily-challenge small { color:#d9d0e6; font-size:.68rem; }.games-daily-challenge h2 { margin:3px 0; font-size:.9rem; }.games-daily-challenge p { margin:0; color:var(--text-muted); font-size:.63rem; }.games-daily-challenge b { display:block; margin-top:7px; color:#ffcf51; font-size:.68rem; }.games-progress { margin-left:auto; align-self:flex-end; color:#d3c8e0; font-size:.68rem; white-space:nowrap; }.games-achievements { padding:14px; }.games-achievements > div:last-child { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; }.games-badge { display:grid; justify-items:center; text-align:center; }.games-badge i { display:grid; width:32px; height:32px; place-items:center; border:2px solid #9b67ff; border-radius:10px; color:#f5c75f; background:rgba(84,41,161,.25); font-style:normal; }.games-badge b { margin-top:5px; color:#eeeaf4; font-size:.59rem; }.games-badge small { margin-top:2px; color:var(--text-muted); font-size:.5rem; line-height:1.2; }
 .games-sidebar { display:grid; gap:10px; }.games-side-card { padding:14px; }.games-side-card > h2 { margin:0 0 9px; font-size:.86rem; }.games-metric { display:grid; grid-template-columns:34px minmax(0,1fr); gap:9px; align-items:center; min-height:55px; padding:8px; border:1px solid rgba(255,255,255,.045); border-radius:9px; background:rgba(255,255,255,.025); }.games-metric > span { display:grid; width:31px; height:31px; place-items:center; color:#b260ff; font-size:1.45rem; }.games-metric svg { width:25px; }.games-metric p { display:grid; margin:0; color:#c3b9cd; font-size:.62rem; }.games-metric b { margin:1px 0; color:#fff; font-size:1rem; }.games-metric small { color:var(--text-muted); font-size:.56rem; }.games-friend { display:grid; grid-template-columns:27px minmax(0,1fr) auto; align-items:center; gap:7px; margin:9px 0; }.games-friend > span { display:grid; width:27px; height:27px; place-items:center; border-radius:50%; color:#fff; background:linear-gradient(135deg,#ce8e70,#45365f); font-size:.66rem; font-weight:800; }.games-friend p { display:grid; min-width:0; margin:0; }.games-friend b { color:#eae6f1; font-size:.65rem; }.games-friend small { overflow:hidden; color:var(--text-muted); font-size:.56rem; text-overflow:ellipsis; white-space:nowrap; }.games-friend i { color:#7ce496; font-size:.55rem; font-style:normal; white-space:nowrap; }.games-friend i.playing { color:#c277ff; }.games-invite-button { width:100%; min-height:30px; border:0; color:#fff; background:linear-gradient(135deg,#7133d7,#9d4deb); font-size:.68rem; }.games-leaderboard > div:not(.games-shelf-heading) { display:grid; grid-template-columns:16px 1fr auto; gap:6px; padding:5px 0; color:#c9c1d1; font-size:.61rem; }.games-leaderboard > div > span { color:#d6bd82; }.games-leaderboard > div > b { color:#eeeaf4; font-weight:600; }.games-leaderboard > div > em { color:#e4b84e; font-style:normal; }
+.games-badge i svg { width:17px; }
 @media (max-width:1100px) { .games-page { padding-bottom:96px; }.games-layout { grid-template-columns:1fr; }.games-sidebar { grid-template-columns:repeat(3,minmax(0,1fr)); }.games-featured-card { min-height:230px; }.games-metric { grid-template-columns:30px minmax(0,1fr); }.games-friends-card .games-friend:nth-of-type(n+4),.games-leaderboard > div:nth-of-type(n+5) { display:none; } }
+@media (max-width:1100px) { .games-sidebar { grid-template-columns:1fr; } }
 @media (max-width:1100px) { .games-catalog-grid { grid-template-columns:repeat(5,minmax(0,1fr)); } }
 @media (max-width:720px) { .games-page { padding:18px 0 96px; }.games-heading h1 { font-size:2.1rem; }.games-heading p { font-size:.88rem; }.games-tabs { margin-right:-2px; }.games-layout { gap:14px; }.games-featured-card { display:block; min-height:0; }.games-featured-copy { padding:21px 18px; }.games-featured-copy h2 { font-size:1.5rem; }.games-neon-art { min-height:160px; margin:0 12px 12px; border-radius:11px; }.games-neon-art::before { width:200px; height:120px; }.games-card-grid { display:flex; overflow-x:auto; padding-bottom:4px; }.games-card { flex:0 0 118px; }.games-card-art { min-height:88px; }.games-bottom-grid { grid-template-columns:1fr; }.games-sidebar { display:grid; grid-template-columns:1fr; }.games-side-card { padding:13px; }.games-side-card:first-child { display:grid; grid-template-columns:1fr 1fr; gap:7px; }.games-side-card:first-child > h2 { grid-column:1 / -1; }.games-metric { min-height:52px; }.games-friends-card .games-friend:nth-of-type(n+4),.games-leaderboard > div:nth-of-type(n+5) { display:grid; }.games-achievements > div:last-child { grid-template-columns:repeat(4,minmax(58px,1fr)); overflow-x:auto; }.games-badge { min-width:58px; } }
 @media (max-width:720px) { .games-catalog-grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }.games-catalog-grid .games-card { flex:auto; }.games-catalog-grid .games-card-art { min-height:130px; } }
@@ -6511,3 +6617,475 @@
 .game-tracking-fields input,.game-tracking-fields select,.game-tracking-review textarea { width:100%; box-sizing:border-box; padding:9px 10px; border:1px solid rgba(255,255,255,.16); border-radius:8px; color:var(--text-primary); background:rgba(7,10,18,.65); font:inherit; }
 .game-tracking-review textarea { min-height:90px; resize:vertical; }.game-tracking-dialog details { margin:15px 0; color:var(--text-secondary); }.game-tracking-dialog summary { cursor:pointer; }
 @media (max-width:640px) { .game-tracking-fields { grid-template-columns:1fr; } }
+
+/* Global Autumn theme. All structural changes stay behind the root theme flag so
+   removing it restores the original WatchVault interface. */
+.seasonal-theme-name em {
+  padding: 3px 7px;
+  border-radius: 999px;
+  color: #ffd7a2;
+  background: rgba(218, 93, 8, 0.22);
+  font-size: 0.66rem;
+  font-style: normal;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.seasonal-theme-row.active {
+  border-color: color-mix(in srgb, var(--accent) 48%, transparent);
+}
+
+html[data-theme='autumn'] .app-shell {
+  grid-template-columns: 286px minmax(0, 1fr);
+  gap: 18px;
+  padding: 10px;
+}
+
+html[data-theme='autumn'] .app-shell::before {
+  background:
+    radial-gradient(circle at 72% 0%, rgba(182, 78, 9, 0.14), transparent 27%),
+    radial-gradient(circle at 8% 86%, rgba(112, 40, 4, 0.18), transparent 29%),
+    repeating-linear-gradient(115deg, rgba(255,255,255,0.012) 0 1px, transparent 1px 7px);
+}
+
+html[data-theme='autumn'] .app-shell::after {
+  content: '';
+  position: fixed;
+  z-index: 3;
+  top: 76px;
+  left: -10px;
+  width: 48px;
+  height: 34px;
+  pointer-events: none;
+  opacity: 0.88;
+  background: linear-gradient(135deg, #e2690a, #842704 72%);
+  filter: drop-shadow(0 6px 10px rgba(0,0,0,.5));
+  clip-path: polygon(50% 0, 61% 29%, 88% 15%, 76% 43%, 100% 54%, 69% 62%, 74% 94%, 52% 71%, 33% 100%, 34% 67%, 3% 78%, 25% 52%, 0 36%, 35% 35%);
+  transform: rotate(-14deg);
+}
+
+html[data-theme='autumn'] .sidebar {
+  min-height: calc(100vh - 20px);
+  border-color: rgba(185, 92, 20, 0.28);
+  border-radius: 20px;
+  background:
+    radial-gradient(circle at 50% 100%, rgba(128, 43, 4, 0.13), transparent 35%),
+    linear-gradient(180deg, rgba(13, 9, 5, 0.98), rgba(8, 6, 4, 0.96));
+  box-shadow: 0 20px 48px rgba(0, 0, 0, .56), inset 0 1px rgba(255, 175, 83, .04);
+}
+
+html[data-theme='autumn'] .sidebar::after {
+  content: '';
+  position: absolute;
+  right: 22px;
+  bottom: 26px;
+  width: 38px;
+  height: 27px;
+  pointer-events: none;
+  opacity: .5;
+  background: linear-gradient(135deg, #f08a19, #8b2e06);
+  clip-path: polygon(50% 0, 62% 31%, 89% 17%, 77% 45%, 100% 55%, 68% 63%, 73% 94%, 51% 72%, 32% 100%, 34% 67%, 3% 78%, 25% 52%, 0 36%, 35% 35%);
+  transform: rotate(22deg);
+}
+
+html[data-theme='autumn'] .brand-name {
+  color: #fff6e9;
+}
+
+html[data-theme='autumn'] .brand-name span {
+  color: #ff9c2c;
+}
+
+html[data-theme='autumn'] .nav-item:hover,
+html[data-theme='autumn'] .nav-item.active {
+  color: #ffd8a6;
+  background: linear-gradient(90deg, rgba(182, 58, 5, .68), rgba(113, 31, 3, .48));
+  box-shadow: inset 0 0 0 1px rgba(244, 126, 24, .22);
+}
+
+html[data-theme='autumn'] .genre-item:hover,
+html[data-theme='autumn'] .genre-item.active {
+  color: var(--text-primary);
+  background: linear-gradient(90deg, rgba(204, 79, 7, .18), transparent);
+}
+
+html[data-theme='autumn'] .genre-dot {
+  background: #ef8019 !important;
+  box-shadow: 0 0 13px rgba(238, 119, 18, .62);
+}
+
+html[data-theme='autumn'] .topbar {
+  gap: 18px;
+}
+
+html[data-theme='autumn'] .searchbar,
+html[data-theme='autumn'] .profile-button,
+html[data-theme='autumn'] .icon-button,
+html[data-theme='autumn'] .mobile-header,
+html[data-theme='autumn'] .mobile-nav {
+  border-color: rgba(190, 91, 18, .25);
+  background: rgba(18, 11, 6, .9);
+  box-shadow: inset 0 1px rgba(255, 184, 98, .03);
+}
+
+html[data-theme='autumn'] .searchbar input,
+html[data-theme='autumn'] input,
+html[data-theme='autumn'] textarea,
+html[data-theme='autumn'] select {
+  color: var(--text-primary);
+}
+
+html[data-theme='autumn'] .search-submit-button,
+html[data-theme='autumn'] .primary-button,
+html[data-theme='autumn'] .premium-button,
+html[data-theme='autumn'] .games-play-button,
+html[data-theme='autumn'] .games-invite-button {
+  color: #fff9ef;
+  border: 1px solid rgba(255, 169, 62, .46);
+  background:
+    linear-gradient(145deg, rgba(255, 163, 42, .2), transparent 46%),
+    linear-gradient(135deg, #f38114, #bc4305 74%);
+  box-shadow: 0 10px 26px rgba(163, 52, 2, .3), inset 0 1px rgba(255, 230, 185, .24);
+}
+
+html[data-theme='autumn'] .secondary-button,
+html[data-theme='autumn'] .filter-pill,
+html[data-theme='autumn'] .month-button,
+html[data-theme='autumn'] .calendar-filters button,
+html[data-theme='autumn'] .games-tabs button {
+  color: var(--text-secondary);
+  border-color: rgba(216, 119, 31, .25);
+  background: rgba(30, 17, 8, .72);
+}
+
+html[data-theme='autumn'] .filter-pill.active,
+html[data-theme='autumn'] .calendar-filters button.active,
+html[data-theme='autumn'] .games-tabs button.active,
+html[data-theme='autumn'] .watchlist-pill.active,
+html[data-theme='autumn'] .stats-tabs button.active {
+  color: #fff5e5;
+  border-color: rgba(255, 151, 38, .62);
+  background: linear-gradient(135deg, #da610a, #9e3203);
+  box-shadow: 0 8px 22px rgba(149, 45, 1, .28);
+}
+
+html[data-theme='autumn'] :is(.profile-dropdown, .alert-dropdown, .search-suggestions, .stats-period-menu, .stats-page-period-menu, .movie-action-overflow-menu) {
+  border-color: rgba(222, 121, 29, .27);
+  background: #1a1009;
+  box-shadow: 0 20px 44px rgba(0,0,0,.55);
+}
+
+html[data-theme='autumn'] .hero-panel {
+  min-height: 420px;
+  margin-top: 18px;
+  border-color: rgba(218, 112, 20, .48);
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at 35% 72%, rgba(199, 70, 5, .24), transparent 35%),
+    linear-gradient(120deg, #211006 0%, #120a05 53%, #090603 100%);
+}
+
+html[data-theme='autumn'] .hero-copy {
+  position: relative;
+  z-index: 2;
+  padding: 38px 34px;
+  background:
+    radial-gradient(circle at 64% 72%, rgba(239, 104, 10, .18), transparent 30%),
+    linear-gradient(90deg, rgba(22, 11, 5, .94), rgba(22, 11, 5, .54) 78%, transparent);
+}
+
+html[data-theme='autumn'] .hero-copy::after {
+  content: '';
+  position: absolute;
+  right: 6px;
+  bottom: 19px;
+  width: 43px;
+  height: 31px;
+  pointer-events: none;
+  opacity: .75;
+  background: linear-gradient(135deg, #ef7811, #7d2502);
+  clip-path: polygon(50% 0, 61% 29%, 88% 15%, 76% 43%, 100% 54%, 69% 62%, 74% 94%, 52% 71%, 33% 100%, 34% 67%, 3% 78%, 25% 52%, 0 36%, 35% 35%);
+  transform: rotate(17deg);
+}
+
+html[data-theme='autumn'] .eyebrow,
+html[data-theme='autumn'] .hero-subcopy {
+  color: var(--text-secondary);
+}
+
+html[data-theme='autumn'] .tonight-pick-label,
+html[data-theme='autumn'] .next-up-heading .next-up-eyebrow,
+html[data-theme='autumn'] .section-link,
+html[data-theme='autumn'] .games-shelf-heading button {
+  color: #ff8c1e;
+}
+
+html[data-theme='autumn'] .hero-art {
+  min-height: 420px;
+  filter: sepia(.28) saturate(1.12) contrast(1.04);
+  background:
+    radial-gradient(circle at 50% 20%, rgba(238, 122, 30, .3), transparent 27%),
+    linear-gradient(180deg, #6a3212, #2b160b 52%, #0c0805);
+}
+
+html[data-theme='autumn'] .hero-art.tonight-pick-art::before {
+  background: linear-gradient(180deg, rgba(21, 9, 2, .04) 18%, rgba(14, 7, 3, .93));
+}
+
+html[data-theme='autumn'] .tonight-pick-art-glow {
+  background: rgba(226, 88, 5, .36);
+}
+
+html[data-theme='autumn'] .tonight-pick-art-badge {
+  color: #ffdcaa;
+  border-color: rgba(231, 130, 33, .38);
+  background: rgba(22, 11, 4, .78);
+}
+
+html[data-theme='autumn'] .stats-panel {
+  border-color: rgba(214, 112, 23, .27);
+  background: rgba(29, 16, 8, .88);
+}
+
+html[data-theme='autumn'] .stat-card,
+html[data-theme='autumn'] .mini-stat,
+html[data-theme='autumn'] .movie-detail-activity-item,
+html[data-theme='autumn'] .game-detail-fact {
+  border-color: rgba(203, 103, 20, .13);
+  background: rgba(255, 147, 42, .045);
+}
+
+html[data-theme='autumn'] .stat-icon,
+html[data-theme='autumn'] .metric-icon,
+html[data-theme='autumn'] .games-challenge-icon {
+  color: #fff5e6;
+  background: linear-gradient(135deg, #f18a18, #a73703);
+}
+
+html[data-theme='autumn'] .next-up-section {
+  min-height: 330px;
+  border-color: rgba(204, 93, 11, .42);
+  background:
+    linear-gradient(90deg, rgba(18, 9, 4, .97) 0%, rgba(18, 9, 4, .78) 45%, rgba(19, 9, 3, .44)),
+    radial-gradient(ellipse at 76% 23%, rgba(224, 97, 12, .25), transparent 24%),
+    repeating-linear-gradient(86deg, transparent 0 55px, rgba(125, 50, 5, .1) 56px 60px),
+    linear-gradient(180deg, #2b1408, #0e0804 70%);
+}
+
+html[data-theme='autumn'] .next-up-section::after {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  top: -18%;
+  right: 5%;
+  width: 42%;
+  height: 94%;
+  pointer-events: none;
+  opacity: .38;
+  background:
+    radial-gradient(ellipse at 55% 30%, #dc6a13 0 1%, transparent 2.5%),
+    radial-gradient(ellipse at 72% 46%, #9f3906 0 1.2%, transparent 2.7%),
+    radial-gradient(ellipse at 38% 58%, #c05209 0 1.1%, transparent 2.8%),
+    radial-gradient(ellipse at 64% 68%, #e27918 0 1%, transparent 2.4%);
+  background-size: 54px 54px, 72px 72px, 63px 63px, 81px 81px;
+  filter: blur(.2px);
+}
+
+html[data-theme='autumn'] .next-up-card,
+html[data-theme='autumn'] .media-card,
+html[data-theme='autumn'] .movie-card,
+html[data-theme='autumn'] .tv-show-card,
+html[data-theme='autumn'] .games-card {
+  border-color: rgba(216, 113, 24, .17);
+  background: rgba(20, 12, 7, .88);
+}
+
+html[data-theme='autumn'] .next-up-card.featured,
+html[data-theme='autumn'] .next-up-card:hover {
+  border-color: rgba(242, 130, 28, .54);
+  background: linear-gradient(145deg, rgba(139, 47, 3, .34), rgba(16, 10, 6, .92));
+  box-shadow: 0 14px 30px rgba(83, 24, 1, .3);
+}
+
+html[data-theme='autumn'] .next-up-art {
+  color: #f3a44d;
+  background: linear-gradient(145deg, #5a2a0c, #181008);
+}
+
+html[data-theme='autumn'] .next-up-copy strong {
+  color: #f18a20;
+}
+
+html[data-theme='autumn'] .home-secondary-section,
+html[data-theme='autumn'] :is(.movies-page, .tv-shows-page, .continue-watching-page, .movie-detail-page, .person-detail-page, .watchlist-page, .stats-surface, .admin-summary-card, .admin-content-section, .account-card, .login-card, .discover-wizard, .calendar-main-panel, .calendar-upcoming-panel, .calendar-agenda-panel, .watch-together-search-panel, .watch-together-shortlist, .watch-together-history, .games-featured-card, .games-daily-challenge, .games-achievements, .games-side-card, .movie-rating-dialog, .movie-trailer-dialog) {
+  border-color: rgba(211, 108, 24, .2);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(149, 53, 4, .1), transparent 31%),
+    linear-gradient(145deg, rgba(27, 16, 9, .95), rgba(11, 8, 5, .94));
+  box-shadow: var(--shadow-panel);
+}
+
+html[data-theme='autumn'] .movies-browse-toolbar {
+  border-bottom-color: rgba(212, 103, 18, .26);
+  background:
+    radial-gradient(circle at 72% 0%, rgba(166, 55, 3, .14), transparent 40%),
+    linear-gradient(180deg, rgba(28, 16, 8, .98), rgba(13, 8, 5, .94));
+}
+
+html[data-theme='autumn'] :is(.movies-discover-button, .movies-sort-control select) {
+  color: var(--text-secondary);
+  border-color: rgba(220, 112, 21, .3);
+  background: rgba(31, 17, 9, .9);
+}
+
+html[data-theme='autumn'] .movies-discover-button.active {
+  color: #fff5e6;
+  border-color: rgba(248, 143, 35, .62);
+  background: rgba(176, 58, 3, .42);
+}
+
+html[data-theme='autumn'] .watch-together-hero {
+  border-color: rgba(221, 113, 23, .32);
+  background:
+    radial-gradient(circle at right top, rgba(190, 68, 5, .28), transparent 42%),
+    linear-gradient(145deg, rgba(31, 17, 8, .96), rgba(12, 8, 5, .94));
+}
+
+html[data-theme='autumn'] .watch-together-eyebrow,
+html[data-theme='autumn'] .watch-together-empty svg {
+  color: #f18a20;
+}
+
+html[data-theme='autumn'] .watch-together-partner select,
+html[data-theme='autumn'] .watch-together-search-form input,
+html[data-theme='autumn'] .watch-together-search-form select {
+  border-color: rgba(218, 111, 24, .26);
+  background: rgba(21, 12, 7, .9);
+}
+
+html[data-theme='autumn'] .watch-together-empty {
+  border-color: rgba(220, 115, 26, .28);
+  background: rgba(28, 16, 8, .42);
+}
+
+html[data-theme='autumn'] .watch-together-picked {
+  border-color: rgba(244, 143, 40, .32);
+  background: linear-gradient(90deg, rgba(183, 62, 3, .28), rgba(95, 31, 3, .16));
+}
+
+html[data-theme='autumn'] :is(.watch-together-tabs, .watch-together-history-tabs) {
+  border-color: rgba(212, 108, 24, .2);
+  background: rgba(22, 13, 7, .82);
+}
+
+html[data-theme='autumn'] :is(.watch-together-tabs button.active, .watch-together-history-tabs button.active) {
+  color: #fff6e9;
+  background: rgba(186, 62, 4, .56);
+}
+
+html[data-theme='autumn'] .watch-together-title {
+  border-color: rgba(217, 111, 24, .16);
+  background: rgba(23, 14, 8, .78);
+}
+
+html[data-theme='autumn'] .watch-together-title.selected {
+  border-color: rgba(247, 145, 34, .62);
+  background: rgba(186, 64, 4, .18);
+}
+
+html[data-theme='autumn'] .watch-together-art {
+  background: linear-gradient(145deg, #6a300c, #211207);
+}
+
+html[data-theme='autumn'] .watch-together-remove {
+  background: rgba(250, 145, 35, .12);
+}
+
+html[data-theme='autumn'] .watch-together-in-progress-row:hover {
+  border-color: rgba(243, 134, 29, .48);
+  background: rgba(79, 28, 4, .5);
+}
+
+html[data-theme='autumn'] :is(.movie-detail-panel, .featured-movie-card, .tv-feature-card, .movie-watchlist-panel, .episode-card, .watchlist-card, .stats-metric-card, .achievement-card, .admin-job-row, .seasonal-theme-row, .section-preference-option, .movie-detail-review-card, .person-detail-filmography-row, .calendar-event-row.agenda) {
+  border-color: rgba(214, 112, 26, .16);
+  background: rgba(28, 17, 10, .78);
+}
+
+html[data-theme='autumn'] :is(.featured-movie-art, .tv-feature-art, .movie-detail-backdrop, .game-detail-hero) img {
+  filter: sepia(.17) saturate(1.08);
+}
+
+html[data-theme='autumn'] :is(.stats-metric-icon, .movie-detail-fact-row > svg, .game-detail-fact svg, .calendar-message svg, .mobile-nav-item.active) {
+  color: #f4932c;
+}
+
+html[data-theme='autumn'] .calendar-day:hover,
+html[data-theme='autumn'] .calendar-day.selected {
+  background: rgba(198, 73, 5, .15);
+  box-shadow: inset 0 0 0 1px rgba(237, 121, 23, .48);
+}
+
+html[data-theme='autumn'] .calendar-day.today .calendar-day-number {
+  background: #d95b08;
+}
+
+html[data-theme='autumn'] .seasonal-theme-row.active {
+  border-color: rgba(246, 137, 38, .52);
+  background: linear-gradient(90deg, rgba(129, 39, 2, .32), rgba(29, 16, 8, .88));
+}
+
+html[data-theme='autumn'] ::selection {
+  color: #fff8ed;
+  background: #a93a04;
+}
+
+@media (max-width: 1100px) {
+  html[data-theme='autumn'] .app-shell {
+    grid-template-columns: 1fr;
+    padding: 14px;
+  }
+
+  html[data-theme='autumn'] .hero-panel {
+    min-height: 0;
+  }
+
+  html[data-theme='autumn'] .hero-art {
+    min-height: 245px;
+  }
+
+  html[data-theme='autumn'] .mobile-stats {
+    border-color: rgba(214, 112, 23, .22);
+    background: rgba(25, 14, 7, .9);
+  }
+
+  html[data-theme='autumn'] .mobile-nav {
+    justify-content: flex-start;
+    overflow-x: auto;
+  }
+
+  html[data-theme='autumn'] .mobile-nav-item {
+    flex: 0 0 54px;
+  }
+}
+
+@media (max-width: 720px) {
+  html[data-theme='autumn'] .app-shell {
+    padding: 10px 14px;
+  }
+
+  html[data-theme='autumn'] .app-shell::after {
+    top: 67px;
+    width: 34px;
+    height: 24px;
+    opacity: .55;
+  }
+
+  html[data-theme='autumn'] .hero-copy {
+    padding: 24px 18px 8px;
+  }
+
+  html[data-theme='autumn'] .next-up-section {
+    min-height: 0;
+  }
+}

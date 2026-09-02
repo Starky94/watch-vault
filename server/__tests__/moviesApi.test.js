@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createApp, readMovieAvailability } from '../app.js'
-import { addMovieReleaseReminderForUser, buildStatsInsights, countMovies, countStoredDataBytes, ensureMoviesTable, getBookStatsForUser, getMostWatchedActorsForUser, getMovieStatsForUser, getPersonFilmographyPersonalStates, getPersonHistoryForUser, getStatsInsightsForUser, getStreamingPlatformsForUser, getTopRatedThisMonthForUser, getUserEnabledSections, hasMovieReleaseReminderForUser, listCalendarEventsForUser, listContinueWatchingTvShowsForUser, listGenres, listLatestEpisodeTvShows, listMovies, listRecentlyReleasedMovies, listSimilarMovies, listTopRatedMovies, listTvShows, listTvWatchlistShowsForUser, listUpcomingMovies, listWatchedMoviesByGenreForUser, listWatchedTvEpisodesForUser, removeMovieReleaseReminderForUser, saveUserEnabledSections, searchActors, searchBooks, searchGames, searchMovies, searchTvShows, updateTvEpisodeWatchStateForUser, upsertTvEpisodeRatingForUser } from '../database.js'
+import { addMovieReleaseReminderForUser, buildStatsInsights, countMovies, countStoredDataBytes, ensureMoviesTable, ensureSiteThemePreferencesTable, getActiveSiteTheme, getBookStatsForUser, getMostWatchedActorsForUser, getMovieStatsForUser, getPersonFilmographyPersonalStates, getPersonHistoryForUser, getStatsInsightsForUser, getStreamingPlatformsForUser, getTopRatedThisMonthForUser, getUserEnabledSections, hasMovieReleaseReminderForUser, listCalendarEventsForUser, listContinueWatchingTvShowsForUser, listGenres, listLatestEpisodeTvShows, listMovies, listRecentlyReleasedMovies, listSimilarMovies, listTopRatedMovies, listTvShows, listTvWatchlistShowsForUser, listUpcomingMovies, listWatchedMoviesByGenreForUser, listWatchedTvEpisodesForUser, removeMovieReleaseReminderForUser, saveActiveSiteTheme, saveUserEnabledSections, searchActors, searchBooks, searchGames, searchMovies, searchTvShows, updateTvEpisodeWatchStateForUser, upsertTvEpisodeRatingForUser } from '../database.js'
 
 function isSchemaSetupQuery(sql) {
   return (
@@ -58,6 +58,9 @@ function isSchemaSetupQuery(sql) {
     sql.includes('ALTER TABLE tv_shows')
     || sql.includes('ALTER TABLE users')
     || sql.includes('CREATE TABLE IF NOT EXISTS user_section_preferences')
+    || sql.includes('CREATE TABLE IF NOT EXISTS site_theme_preferences')
+    || sql.includes('CREATE TABLE IF NOT EXISTS admin_job_executions')
+    || (sql.includes('INSERT INTO site_theme_preferences') && !sql.includes('RETURNING active_theme'))
     || sql.includes('CREATE TABLE IF NOT EXISTS igdb_credentials')
     || sql.includes('CREATE TABLE IF NOT EXISTS igdb_api_credentials')
     || sql.includes('ALTER TABLE user_section_preferences')
@@ -3596,6 +3599,74 @@ test('section preference APIs require authentication and validate updates', asyn
     })
     assert.equal(update.status, 200)
     assert.deepEqual((await update.json()).enabled, ['movies', 'tv', 'games', 'calendar'])
+  } finally {
+    await closeServer(server)
+  }
+})
+
+test('site theme persistence initializes, normalizes unknown values, and saves an available theme', async () => {
+  const calls = []
+  const pool = {
+    async query(sql, params) {
+      calls.push({ sql, params })
+      if (sql.includes('SELECT active_theme')) return { rows: [{ active_theme: 'unknown-theme' }] }
+      if (sql.includes('RETURNING active_theme')) return { rows: [{ active_theme: params[0] }] }
+      return { rows: [] }
+    },
+  }
+
+  await ensureSiteThemePreferencesTable(pool)
+  assert.equal(await getActiveSiteTheme(pool), 'default')
+  assert.equal(await saveActiveSiteTheme(pool, { activeTheme: 'autumn', updatedByUserId: 17 }), 'autumn')
+  assert.match(calls[0].sql, /CREATE TABLE IF NOT EXISTS site_theme_preferences/i)
+  assert.deepEqual(calls.at(-1).params, ['autumn', 17])
+})
+
+test('global theme APIs are public for reads and validate authenticated updates', async () => {
+  let activeTheme = 'default'
+  const pool = {
+    async query(sql, params = []) {
+      if (sql.includes('RETURNING active_theme')) {
+        activeTheme = params[0]
+        return { rows: [{ active_theme: activeTheme }] }
+      }
+      if (isSchemaSetupQuery(sql)) return { rows: [] }
+      if (sql.includes('FROM users') && sql.includes('WHERE username = $1')) return { rows: [{ id: 17, username: params[0], full_name: 'Florin' }] }
+      if (sql.includes('SELECT active_theme')) return { rows: [{ active_theme: activeTheme }] }
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+  const app = await createApp(pool)
+  const server = app.listen(0)
+
+  try {
+    const baseUrl = `http://127.0.0.1:${server.address().port}`
+    const initial = await fetch(`${baseUrl}/api/theme`)
+    assert.equal(initial.status, 200)
+    assert.deepEqual(await initial.json(), { activeTheme: 'default' })
+
+    const unauthenticated = await fetch(`${baseUrl}/api/admin/theme`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ activeTheme: 'autumn' }),
+    })
+    assert.equal(unauthenticated.status, 401)
+
+    for (const invalidTheme of ['spring', 'unknown-theme']) {
+      const invalid = await fetch(`${baseUrl}/api/admin/theme`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-watchvault-username': 'florin' }, body: JSON.stringify({ activeTheme: invalidTheme }),
+      })
+      assert.equal(invalid.status, 400)
+    }
+
+    const activate = await fetch(`${baseUrl}/api/admin/theme`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-watchvault-username': 'florin' }, body: JSON.stringify({ activeTheme: 'autumn' }),
+    })
+    assert.deepEqual(await activate.json(), { activeTheme: 'autumn' })
+    assert.deepEqual(await (await fetch(`${baseUrl}/api/theme`)).json(), { activeTheme: 'autumn' })
+
+    const deactivate = await fetch(`${baseUrl}/api/admin/theme`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-watchvault-username': 'florin' }, body: JSON.stringify({ activeTheme: 'default' }),
+    })
+    assert.deepEqual(await deactivate.json(), { activeTheme: 'default' })
   } finally {
     await closeServer(server)
   }

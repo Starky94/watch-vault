@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import './App.css'
+import { defaultThemeKey, seasonalThemes } from '../shared/themes.js'
+import { applyActiveTheme, readCachedActiveTheme } from './theme.js'
 
 const primaryViews = {
   home: 'Home',
@@ -150,6 +152,11 @@ const emptyCommunityRating = {
   voteCount: 0,
   yourScore: null,
 }
+const emptyGameActivity = {
+  gamesPlayed: 0,
+  playtimeMinutes: 0,
+  lastCompletedAt: null,
+}
 const movieRatingOptions = Array.from({ length: 9 }, (_value, index) => 1 + index * 0.5)
 const watchServiceOptions = ['Netflix', 'Prime Video', 'Disney+', 'Max', 'Apple TV+', 'Hulu', 'Paramount+', 'Peacock']
 const bookCompletionFields = [
@@ -248,6 +255,8 @@ function App() {
   const igdbSearchStartedQueryRef = useRef('')
   const [activeSearchSource, setActiveSearchSource] = useState('watchvault')
   const [user, setUser] = useState(null)
+  const [activeTheme, setActiveTheme] = useState(() => readCachedActiveTheme())
+  const [themeState, setThemeState] = useState({ status: 'loading', pendingTheme: null, error: '', message: '' })
   const [enabledSections, setEnabledSections] = useState(defaultEnabledSections)
   const [authStatus, setAuthStatus] = useState('idle')
   const [authError, setAuthError] = useState('')
@@ -271,6 +280,7 @@ function App() {
   const [gamesPage, setGamesPage] = useState(1)
   const [gamesState, setGamesState] = useState(() => createGameCollectionState())
   const [gamesDashboardState, setGamesDashboardState] = useState(() => createGamesDashboardState())
+  const [gameActivityState, setGameActivityState] = useState({ status: 'idle', activity: emptyGameActivity, error: '' })
   const [favoriteGames, setFavoriteGames] = useState(() => readStoredGameFavorites())
   const handleToggleGameFavorite = (game) => {
     if (!game?.id) return
@@ -302,6 +312,7 @@ function App() {
       setGameDetailState((state) => Number(state.game?.id) === gameId ? { ...state, game: { ...state.game, played: payload.played } } : state)
       setGamePlayedActionState({ status: 'success', gameId, error: '' })
       void loadPlayedGamesForUser(user)
+      void loadGameActivityForUser(user)
       return true
     } catch (error) {
       setGamePlayedActionState({ status: 'error', gameId, error: error instanceof Error ? error.message : 'Unable to update played status right now.' })
@@ -341,6 +352,7 @@ function App() {
       setGameDetailState((state) => Number(state.game?.id) === gameId ? { ...state, game: { ...state.game, tracking: payload.tracking } } : state)
       receiveAchievementUnlocks(payload.newlyUnlockedAchievements)
       setGameTrackingActionState({ status: 'success', gameId, error: '' })
+      void loadGameActivityForUser(user)
       return true
     } catch (error) { setGameTrackingActionState({ status: 'error', gameId, error: error instanceof Error ? error.message : 'Unable to save game tracking.' }); return false }
   }
@@ -356,6 +368,7 @@ function App() {
       if (!response.ok) throw new Error(payload.error || 'Unable to save game session.')
       receiveAchievementUnlocks(payload.newlyUnlockedAchievements)
       setGameTrackingActionState({ status: 'success', gameId, error: '' })
+      void loadGameActivityForUser(user)
       return true
     } catch (error) { setGameTrackingActionState({ status: 'error', gameId, error: error instanceof Error ? error.message : 'Unable to save game session.' }); return false }
   }
@@ -480,6 +493,7 @@ function App() {
   const [bookStatsState, setBookStatsState] = useState({ status: 'idle', stats: emptyBookStats, error: '' })
   const [bookAchievementsState, setBookAchievementsState] = useState({ status: 'idle', achievements: [], error: '' })
   const [gameAchievementsState, setGameAchievementsState] = useState({ status: 'idle', achievements: [], error: '' })
+  const [statsInitialTab, setStatsInitialTab] = useState('Overview')
   const [achievementsState, setAchievementsState] = useState({ status: 'idle', achievements: [], error: '' })
   const [achievementToast, setAchievementToast] = useState(null)
   const [continueWatchingState, setContinueWatchingState] = useState({ status: 'idle', shows: [], error: '' })
@@ -545,6 +559,28 @@ function App() {
       setActiveSearchSource('watchvault')
     }
   }, [activeSearchSource, enabledSections])
+
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/theme')
+      .then(async (response) => {
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+        if (!cancelled) {
+          const nextTheme = applyActiveTheme(payload.activeTheme)
+          setActiveTheme(nextTheme)
+          setThemeState({ status: 'success', pendingTheme: null, error: '', message: '' })
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) setThemeState({ status: 'error', pendingTheme: null, error: error instanceof Error ? error.message : 'Unable to load the active site theme.', message: '' })
+      })
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
+    applyActiveTheme(activeTheme)
+  }, [activeTheme])
 
   useEffect(() => {
     try {
@@ -1029,6 +1065,7 @@ function App() {
 
   function handleMovieViewSelection(view) {
     if (view === primaryViews.stats) {
+      setStatsInitialTab('Overview')
       handleNavigateToPath('/stats', { kind: routeKinds.stats }, view)
       setSelectedGenre(null)
       return
@@ -1616,6 +1653,31 @@ function App() {
     }
   }
 
+  async function loadGameActivityForUser(nextUser) {
+    if (!nextUser?.username) {
+      setGameActivityState({ status: 'idle', activity: emptyGameActivity, error: '' })
+      return
+    }
+
+    setGameActivityState((state) => ({ ...state, status: 'loading', error: '' }))
+    try {
+      const response = await fetch('/api/games/activity', { headers: buildAuthHeaders(nextUser) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+      setGameActivityState({
+        status: 'success',
+        activity: {
+          gamesPlayed: Number(payload.gamesPlayed) || 0,
+          playtimeMinutes: Number(payload.playtimeMinutes) || 0,
+          lastCompletedAt: payload.lastCompletedAt || null,
+        },
+        error: '',
+      })
+    } catch (error) {
+      setGameActivityState({ status: 'error', activity: emptyGameActivity, error: error instanceof Error ? error.message : 'Unable to load game activity right now.' })
+    }
+  }
+
   async function handleAddMovieToWatchlist(movie) {
     const normalizedMovieId = Number(movie?.id)
 
@@ -2043,6 +2105,10 @@ function App() {
   }, [user])
 
   useEffect(() => {
+    if (activeView === primaryViews.games) loadGameActivityForUser(user)
+  }, [activeView, user])
+
+  useEffect(() => {
     if (activeView !== primaryViews.stats || !user?.username) {
       if (!user?.username) setStatsInsightsState({ status: 'idle', insights: emptyStatsInsights, error: '' })
       return
@@ -2107,7 +2173,7 @@ function App() {
   }, [activeView, user])
 
   useEffect(() => {
-    if (activeView !== primaryViews.stats || !user?.username) return
+    if (![primaryViews.games, primaryViews.stats].includes(activeView) || !user?.username) return
     let cancelled = false
     setBookAchievementsState((state) => ({ ...state, status: 'loading', error: '' }))
     fetch('/api/book-achievements', { headers: buildAuthHeaders(user) })
@@ -2129,7 +2195,7 @@ function App() {
       .then(({ response, payload }) => { if (!response.ok) throw new Error(payload.error || 'Unable to load game achievements.'); if (!cancelled) setGameAchievementsState({ status: 'success', achievements: Array.isArray(payload.achievements) ? payload.achievements : [], error: '' }) })
       .catch((error) => { if (!cancelled) setGameAchievementsState({ status: 'error', achievements: [], error: error instanceof Error ? error.message : 'Unable to load game achievements.' }) })
     return () => { cancelled = true }
-  }, [activeView, user, gameRatingActionState.status])
+  }, [activeView, user, gameRatingActionState.status, gameTrackingActionState.status])
 
   function receiveAchievementUnlocks(items) {
     if (!Array.isArray(items) || !items.length) return
@@ -2433,6 +2499,21 @@ function App() {
         throw new Error(payload.error || `Request failed with status ${response.status}`)
       }
 
+      if (typeof payload.activeTheme === 'string') {
+        const scheduledTheme = applyActiveTheme(payload.activeTheme)
+        setActiveTheme(scheduledTheme)
+        const scheduledThemeName = scheduledTheme === defaultThemeKey ? 'the default theme' : seasonalThemes.find((theme) => theme.key === scheduledTheme)?.name ?? scheduledTheme
+        setAdminRunState((previousState) => ({
+          ...previousState,
+          [jobKey]: {
+            status: 'success',
+            message: payload.changed ? `Scheduler applied ${scheduledThemeName}.` : `Scheduler kept ${scheduledThemeName}.`,
+          },
+        }))
+        setAdminRefreshKey((value) => value + 1)
+        return
+      }
+
       setAdminRunState((previousState) => ({
         ...previousState,
         [jobKey]: {
@@ -2492,6 +2573,32 @@ function App() {
     setEnabledSections(enabled)
     setAdminOverviewState((previousState) => ({ ...previousState, sections: { enabled } }))
     return enabled
+  }
+
+  async function handleSetActiveTheme(nextTheme) {
+    const pendingTheme = nextTheme === defaultThemeKey ? activeTheme : nextTheme
+    setThemeState({ status: 'loading', pendingTheme, error: '', message: '' })
+    try {
+      const response = await fetch('/api/admin/theme', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...buildAuthHeaders(user) },
+        body: JSON.stringify({ activeTheme: nextTheme }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+      const savedTheme = applyActiveTheme(payload.activeTheme)
+      setActiveTheme(savedTheme)
+      setThemeState({
+        status: 'success',
+        pendingTheme: null,
+        error: '',
+        message: savedTheme === defaultThemeKey ? 'Seasonal theme deactivated.' : 'Autumn theme activated for everyone.',
+      })
+      return savedTheme
+    } catch (error) {
+      setThemeState({ status: 'error', pendingTheme: null, error: error instanceof Error ? error.message : 'Unable to update the site theme.', message: '' })
+      return null
+    }
   }
 
   useEffect(() => {
@@ -3757,6 +3864,7 @@ function App() {
 
             {currentScreen === appScreens.admin ? (
               <AdminScreen
+                activeTheme={activeTheme}
                 adminOverviewState={adminOverviewState}
                 adminRunState={adminRunState}
                 onBack={handleOpenDashboard}
@@ -3766,6 +3874,8 @@ function App() {
                 onSaveIgdbSettings={handleSaveIgdbSettings}
                 onClearIgdbSettings={handleClearIgdbSettings}
                 onSaveEnabledSections={handleSaveEnabledSections}
+                onSetActiveTheme={handleSetActiveTheme}
+                themeState={themeState}
               />
             ) : currentScreen === appScreens.account ? (
               <AccountScreen
@@ -3862,6 +3972,7 @@ function App() {
               <AchievementsScreen isSignedIn={Boolean(user)} state={achievementsState} />
             ) : activeView === primaryViews.stats ? (
               <StatsScreen
+                initialTab={statsInitialTab}
                 movieStats={movieStatsState.stats}
                 movieStatsStatus={movieStatsState.status}
                 watchedState={watchedState}
@@ -3921,11 +4032,14 @@ function App() {
               <GamesScreen
                 activeTab={activeGamesTab}
                 dashboardState={gamesDashboardState}
+                gameActivityState={gameActivityState}
+                gameAchievementsState={gameAchievementsState}
                 favoriteGames={favoriteGames}
                 gamesState={gamesState}
                 onPageChange={setGamesPage}
                 onTabChange={(tab) => { setActiveGamesTab(tab); setGamesPage(1) }}
                 onToggleFavorite={handleToggleGameFavorite}
+                onOpenGameAchievements={() => { setStatsInitialTab('Game achievements'); setActiveView(primaryViews.stats) }}
                 onOpenGame={handleOpenGameDetail}
               />
             ) : activeView === primaryViews.watchlist ? (
@@ -4153,7 +4267,7 @@ function Brand() {
         <PlayLogo />
       </div>
       <div>
-        <p className="brand-name">WatchVault</p>
+        <p className="brand-name">Watch<span>Vault</span></p>
       </div>
     </div>
   )
@@ -5146,7 +5260,7 @@ function LoginScreen({ authError, authStatus, onCancel, onSubmit }) {
   )
 }
 
-function AdminScreen({ adminOverviewState, adminRunState, onBack, onRunJob, onSaveFilelistSettings, onClearFilelistSettings, onSaveIgdbSettings, onClearIgdbSettings, onSaveEnabledSections }) {
+function AdminScreen({ activeTheme, adminOverviewState, adminRunState, onBack, onRunJob, onSaveFilelistSettings, onClearFilelistSettings, onSaveIgdbSettings, onClearIgdbSettings, onSaveEnabledSections, onSetActiveTheme, themeState }) {
   const [filelistUsername, setFilelistUsername] = useState('')
   const [filelistPasskey, setFilelistPasskey] = useState('')
   const [filelistState, setFilelistState] = useState({ status: 'idle', error: '' })
@@ -5282,6 +5396,7 @@ function AdminScreen({ adminOverviewState, adminRunState, onBack, onRunJob, onSa
               <span role="columnheader">Name</span>
               <span role="columnheader">Execution</span>
               <span role="columnheader">Frequency</span>
+              <span role="columnheader">Last execution date</span>
               <span role="columnheader">Action</span>
             </div>
 
@@ -5301,6 +5416,9 @@ function AdminScreen({ adminOverviewState, adminRunState, onBack, onRunJob, onSa
                   <div className="admin-job-cell">
                     <span>{job.frequency}</span>
                   </div>
+                  <div className="admin-job-cell">
+                    <time dateTime={job.lastExecutedAt || undefined}>{formatAdminJobExecutionDate(job.lastExecutedAt)}</time>
+                  </div>
                   <div className="admin-job-action-cell">
                     <button
                       type="button"
@@ -5317,6 +5435,57 @@ function AdminScreen({ adminOverviewState, adminRunState, onBack, onRunJob, onSa
             })}
           </div>
         ) : null}
+      </section>
+
+      <section className="content-section admin-content-section seasonal-themes-section">
+        <div className="section-header">
+          <div>
+            <h2>Seasonal Themes</h2>
+            <span>Preview upcoming website themes and their suggested activation windows.</span>
+          </div>
+        </div>
+        <div className="seasonal-themes-list" role="table" aria-label="Seasonal themes">
+          <div className="seasonal-themes-header" role="row">
+            <span role="columnheader">Event / Theme</span>
+            <span role="columnheader">Date in 2026</span>
+            <span role="columnheader">Suggested website theme period</span>
+            <span role="columnheader">Action</span>
+          </div>
+          {seasonalThemes.map((theme) => {
+            const isActive = theme.key === activeTheme
+            const isPending = themeState.status === 'loading' && themeState.pendingTheme === theme.key
+            const label = !theme.available ? 'Coming soon' : isPending ? (isActive ? 'Deactivating…' : 'Activating…') : isActive ? 'Deactivate' : 'Activate'
+            return (
+            <article key={theme.key} className={`seasonal-theme-row${isActive ? ' active' : ''}`} role="row">
+              <div className="seasonal-theme-cell seasonal-theme-name" role="cell">
+                <span className="seasonal-theme-mobile-label">Event / Theme</span>
+                <span aria-hidden="true">{theme.emoji}</span>
+                <strong>{theme.name}</strong>{isActive ? <em>Active</em> : null}
+              </div>
+              <div className="seasonal-theme-cell" role="cell">
+                <span className="seasonal-theme-mobile-label">Date in 2026</span>
+                <span>{theme.date}</span>
+              </div>
+              <div className="seasonal-theme-cell" role="cell">
+                <span className="seasonal-theme-mobile-label">Suggested website theme period</span>
+                <span>{theme.period}</span>
+              </div>
+              <div className="seasonal-theme-action-cell" role="cell">
+                <button
+                  type="button"
+                  className={isActive ? 'secondary-button' : 'primary-button'}
+                  aria-label={theme.available ? `${isActive ? 'Deactivate' : 'Activate'} ${theme.name} theme` : `${theme.name} is coming soon`}
+                  aria-pressed={isActive}
+                  disabled={!theme.available || themeState.status === 'loading'}
+                  onClick={() => onSetActiveTheme(isActive ? defaultThemeKey : theme.key)}
+                >{label}</button>
+              </div>
+            </article>
+            )
+          })}
+        </div>
+        {themeState.message ? <p className="filelist-settings-success" role="status">{themeState.message}</p> : null}
+        {themeState.error ? <p className="filelist-settings-error" role="alert">{themeState.error}</p> : null}
       </section>
 
       <section className="content-section admin-content-section section-preferences-section">
@@ -5816,7 +5985,7 @@ const gameTabs = [
   { id: 'favorites', label: 'Favorites' },
 ]
 
-function GamesScreen({ activeTab, dashboardState, favoriteGames, gamesState, onTabChange, onPageChange, onToggleFavorite, onOpenGame }) {
+function GamesScreen({ activeTab, dashboardState, favoriteGames, gameActivityState, gameAchievementsState, gamesState, onTabChange, onPageChange, onToggleFavorite, onOpenGame, onOpenGameAchievements }) {
   const activeTabLabel = gameTabs.find((tab) => tab.id === activeTab)?.label || 'Popular'
   const favoriteGameIds = new Set(favoriteGames.map((game) => game.id))
 
@@ -5833,7 +6002,7 @@ function GamesScreen({ activeTab, dashboardState, favoriteGames, gamesState, onT
 
       <div className="games-layout">
         <div className="games-main">
-          {activeTab === 'all' ? <GamesDashboard dashboardState={dashboardState} favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} /> : activeTab === 'favorites' ? <section className="games-catalog">
+          {activeTab === 'all' ? <GamesDashboard dashboardState={dashboardState} gameAchievementsState={gameAchievementsState} favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} onOpenGameAchievements={onOpenGameAchievements} /> : activeTab === 'favorites' ? <section className="games-catalog">
             <div className="games-shelf-heading"><h2>Favorite Games</h2></div>
             {favoriteGames.length ? <GameCardsGrid className="games-catalog-grid" games={favoriteGames} label="Favorite" favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} /> : <SectionMessage message="No favorite games yet. Use the heart on a game to add it here." />}
           </section> : <section className="games-catalog">
@@ -5846,21 +6015,27 @@ function GamesScreen({ activeTab, dashboardState, favoriteGames, gamesState, onT
         </div>
 
         <aside className="games-sidebar">
-          <section className="games-side-card"><h2>Your Game Activity</h2><GameMetric icon={<GamepadIcon />} label="Games Played" value="48" detail="+12 this week" /><GameMetric icon="♨" label="Current Streak" value="7" detail="Best: 15 days" /><GameMetric icon="◎" label="Accuracy" value="86%" detail="+6% vs last week" /><GameMetric icon={<TrophyIcon />} label="Total XP" value="2,450 XP" detail="Level 12 · Film Buff" /></section>
-          <section className="games-side-card games-friends-card"><div className="games-shelf-heading"><h2>Friends Playing</h2><button type="button">See All</button></div>{['Mia — Movie Trivia', 'Liam — TV Show Trivia', 'Noah — Guess the Character', 'Emma — Poster Puzzle'].map((friend, index) => <div className="games-friend" key={friend}><span>{friend[0]}</span><p><b>{friend.split(' — ')[0]}</b><small>{friend.split(' — ')[1]}</small></p><i className={index === 1 ? 'playing' : ''}>{index === 1 ? 'In Game' : 'Online'}</i></div>)}<button type="button" className="games-invite-button"><UserIcon /> Invite Friends</button></section>
-          <section className="games-side-card games-leaderboard"><div className="games-shelf-heading"><h2>Leaderboard</h2><button type="button">This Week⌄</button></div>{['Alex Morgan', 'Mia Lee', 'Liam Carter', 'Noah Brooks', 'Emma Davis'].map((name, index) => <div key={name}><span>{index + 1}</span><b>{name}</b><em>{[12480, 9870, 7650, 6240, 5300][index].toLocaleString()} XP</em></div>)}</section>
+          <GameActivityPanel state={gameActivityState} />
         </aside>
       </div>
     </section>
   )
 }
 
-function GamesDashboard({ dashboardState, favoriteGameIds, onToggleFavorite, onOpenGame }) {
+function GameActivityPanel({ state }) {
+  const isSignedIn = state.status !== 'idle'
+  const activity = state.activity || emptyGameActivity
+  const isLoading = state.status === 'loading'
+  const value = (resolved) => isLoading ? '—' : resolved
+  return <section className="games-side-card"><h2>Your Game Activity</h2><GameMetric icon={<GamepadIcon />} label="Games Played" value={value(String(activity.gamesPlayed))} detail={isSignedIn ? 'Games marked played' : 'Sign in to see activity'} /><GameMetric icon={<ClockIcon />} label="Hours Played" value={value(formatMinutesAsHoursAndMinutes(activity.playtimeMinutes))} detail={isSignedIn ? 'From your game tracker' : 'Sign in to see activity'} /><GameMetric icon={<CalendarIcon />} label="Last Completed" value={value(activity.lastCompletedAt ? formatLongDate(activity.lastCompletedAt) : '—')} detail={isSignedIn ? (activity.lastCompletedAt ? 'Latest completed game' : 'No completed games yet') : 'Sign in to see activity'} /></section>
+}
+
+function GamesDashboard({ dashboardState, gameAchievementsState, favoriteGameIds, onToggleFavorite, onOpenGame, onOpenGameAchievements }) {
   const featuredGame = dashboardState.popularGames[0]
   if (dashboardState.status === 'loading' || dashboardState.status === 'idle') return <SectionMessage message="Loading games from your local database..." />
   if (dashboardState.status === 'error') return <SectionMessage message={`Could not load the games dashboard. ${dashboardState.error}`} tone="error" />
   if (!featuredGame) return <SectionMessage message="No games are available in the local database yet." />
-  return <><article className="games-featured-card"><div className="games-featured-copy"><span className="games-kicker">Featured game</span><h2>{featuredGame.title}</h2><p style={{ display: '-webkit-box', overflow: 'hidden', WebkitBoxOrient: 'vertical', WebkitLineClamp: 4 }}>{featuredGame.summary}</p><div className="games-featured-meta"><span><StarIcon /> {featuredGame.rating}</span><span>◉ {featuredGame.playersLabel}</span></div><div className="games-featured-actions"><button type="button" className="games-play-button" onClick={() => onOpenGame(featuredGame)}><PlayIcon /> View game</button><button type="button" className="games-favorite-button" onClick={() => onToggleFavorite(featuredGame)}><HeartIcon /> {favoriteGameIds.has(featuredGame.id) ? 'Remove Favorite' : 'Add to Favorites'}</button></div></div><button type="button" className="games-featured-art-button" onClick={() => onOpenGame(featuredGame)} aria-label={`Open ${featuredGame.title}`}><GameArt game={featuredGame} featured /></button></article><GamesShelf title="Popular Right Now" games={dashboardState.popularGames} label="Popular" favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} />{dashboardState.recentGames.length ? <GamesShelf title="Recently Released" games={dashboardState.recentGames} label="Recent" favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} /> : null}{dashboardState.upcomingGames.length ? <GamesShelf title="Upcoming Games" games={dashboardState.upcomingGames} label="Upcoming" favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} /> : null}<div className="games-bottom-grid"><article className="games-daily-challenge"><span className="games-challenge-icon">★</span><div><small>Daily Challenge</small><h2>Name That Movie</h2><p>Identify the movie from a single screenshot.</p><b>✦ +100 XP</b></div><span className="games-progress">0 / 10</span></article><article className="games-achievements"><div className="games-shelf-heading"><h2>Achievements</h2><button type="button">View All</button></div><div><GameBadge label="Trivia Master" icon="✦" /><GameBadge label="Streak Keeper" icon="◆" /><GameBadge label="Movie Buff" icon="◈" /><GameBadge label="Puzzle Pro" icon="✚" /></div></article></div></>
+  return <><article className="games-featured-card"><div className="games-featured-copy"><span className="games-kicker">Featured game</span><h2>{featuredGame.title}</h2><p style={{ display: '-webkit-box', overflow: 'hidden', WebkitBoxOrient: 'vertical', WebkitLineClamp: 4 }}>{featuredGame.summary}</p><div className="games-featured-meta"><span><StarIcon /> {featuredGame.rating}</span><span>◉ {featuredGame.playersLabel}</span></div><div className="games-featured-actions"><button type="button" className="games-play-button" onClick={() => onOpenGame(featuredGame)}><PlayIcon /> View game</button><button type="button" className="games-favorite-button" onClick={() => onToggleFavorite(featuredGame)}><HeartIcon /> {favoriteGameIds.has(featuredGame.id) ? 'Remove Favorite' : 'Add to Favorites'}</button></div></div><button type="button" className="games-featured-art-button" onClick={() => onOpenGame(featuredGame)} aria-label={`Open ${featuredGame.title}`}><GameArt game={featuredGame} featured /></button></article><GamesShelf title="Popular Right Now" games={dashboardState.popularGames} label="Popular" favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} />{dashboardState.recentGames.length ? <GamesShelf title="Recently Released" games={dashboardState.recentGames} label="Recent" favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} /> : null}{dashboardState.upcomingGames.length ? <GamesShelf title="Upcoming Games" games={dashboardState.upcomingGames} label="Upcoming" favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} /> : null}<GameAchievementsPanel state={gameAchievementsState} onViewAll={onOpenGameAchievements} /></>
 }
 
 function GamesShelf({ title, games, label, favoriteGameIds, onToggleFavorite, onOpenGame }) {
@@ -5881,8 +6056,14 @@ function GameMetric({ icon, label, value, detail }) {
   return <div className="games-metric"><span>{typeof icon === 'string' ? icon : icon}</span><p>{label}<b>{value}</b><small>{detail}</small></p></div>
 }
 
-function GameBadge({ label, icon }) {
-  return <span className="games-badge"><i>{icon}</i><b>{label}</b><small>{label === 'Trivia Master' ? 'Win 10 games' : label === 'Streak Keeper' ? '7 day streak' : label === 'Movie Buff' ? 'Play 25 games' : 'Complete 50 puzzles'}</small></span>
+function GameAchievementsPanel({ state, onViewAll }) {
+  const achievements = Array.isArray(state?.achievements) ? state.achievements : []
+  const latest = achievements.filter((achievement) => achievement.unlocked && achievement.unlockedAt).sort((left, right) => new Date(right.unlockedAt) - new Date(left.unlockedAt)).slice(0, 4)
+  return <section className="games-achievements"><div className="games-shelf-heading"><h2>Achievements</h2><button type="button" onClick={onViewAll}>View All</button></div>{state?.status === 'loading' || state?.status === 'idle' ? <SectionMessage message="Loading achievements..." /> : state?.status === 'error' ? <SectionMessage tone="error" message={state.error || 'Unable to load achievements right now.'} /> : latest.length ? <div>{latest.map((achievement) => <GameBadge key={achievement.id} achievement={achievement} />)}</div> : <SectionMessage message="No game achievements earned yet." />}</section>
+}
+
+function GameBadge({ achievement }) {
+  return <span className="games-badge"><i><TrophyIcon /></i><b>{achievement.name}</b><small>Unlocked {formatLongDate(achievement.unlockedAt)}</small></span>
 }
 
 function GameDetailPage({ state, similarGamesState, favoriteGameIds, onBack, onToggleFavorite, onSubmitRating, onSaveTracking, onSaveSession, onOpenLogin, onOpenGame, isSignedIn, playedActionState, ratingActionState, trackingActionState }) {
@@ -8039,8 +8220,8 @@ function AchievementCard({ item }) {
   return <article className={`achievement-card${item.unlocked ? ' unlocked' : ''}${item.availability === 'coming_soon' ? ' coming-soon' : ''}`}><div className="achievement-card-icon">{item.unlocked ? <TrophyIcon /> : <LockIcon />}</div><div><span className="achievement-category">{item.category} · {item.rarity}</span><h2>{item.name}</h2><p>{item.secret && !item.unlocked ? 'Keep watching to discover this secret achievement.' : item.description}</p>{item.availability === 'coming_soon' ? <em>Coming soon</em> : <><div className="achievement-progress"><i style={{ width: `${progressPercent}%` }} /></div><small>{item.unlocked ? `Unlocked ${formatLongDate(item.unlockedAt)}` : `${progress.current} / ${progress.target}`}</small></>}</div></article>
 }
 
-function StatsScreen({ movieStats, movieStatsStatus, watchedState, readBooksState, tvWatchedHistoryState, playedGamesState, isSignedIn, statsPeriod, tvStats, tvStatsStatus, onStatsPeriodChange, insightsState, bookStatsState, achievementsState, bookAchievementsState, gameAchievementsState, onOpenMovie, onOpenPerson, onOpenTvShow, onOpenGame, onOpenBook, achievements = [], onOpenAchievements, enabledSections = defaultEnabledSections }) {
-  const [activeTab, setActiveTab] = useState('Overview')
+function StatsScreen({ initialTab = 'Overview', movieStats, movieStatsStatus, watchedState, readBooksState, tvWatchedHistoryState, playedGamesState, isSignedIn, statsPeriod, tvStats, tvStatsStatus, onStatsPeriodChange, insightsState, bookStatsState, achievementsState, bookAchievementsState, gameAchievementsState, onOpenMovie, onOpenPerson, onOpenTvShow, onOpenGame, onOpenBook, achievements = [], onOpenAchievements, enabledSections = defaultEnabledSections }) {
+  const [activeTab, setActiveTab] = useState(initialTab)
   const [periodOpen, setPeriodOpen] = useState(false)
   const [movieHistoryPage, setMovieHistoryPage] = useState(1)
   const [tvHistoryPage, setTvHistoryPage] = useState(1)
@@ -8114,6 +8295,10 @@ function StatsScreen({ movieStats, movieStatsStatus, watchedState, readBooksStat
   useEffect(() => {
     if (!statsTabs.some((tab) => tab.label === activeTab && (!tab.section || enabledSections.includes(tab.section)))) setActiveTab('Overview')
   }, [activeTab, enabledSections])
+
+  useEffect(() => {
+    setActiveTab(initialTab)
+  }, [initialTab])
 
   return (
     <section className="stats-page">
@@ -10456,6 +10641,16 @@ function formatLongDate(releaseDate) {
   }).format(parsedDate)
 }
 
+function formatAdminJobExecutionDate(value) {
+  if (!value) return 'Not yet'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return 'Not yet'
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(date)
+}
+
 function getLocalIsoDate(date = new Date()) {
   const offsetDate = new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
   return offsetDate.toISOString().slice(0, 10)
@@ -10615,12 +10810,12 @@ function PlayLogo() {
     <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
       <defs>
         <linearGradient id="brand-grad" x1="4" y1="4" x2="28" y2="28" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#bf6fff" />
-          <stop offset="1" stopColor="#6e40ff" />
+          <stop stopColor="var(--brand-gradient-start, #bf6fff)" />
+          <stop offset="1" stopColor="var(--brand-gradient-end, #6e40ff)" />
         </linearGradient>
       </defs>
       <path d="M7 5.5C7 4 8.64 3.05 9.96 3.8l15.8 8.96c1.36.77 1.36 2.73 0 3.5L9.96 25.2C8.64 25.95 7 25 7 23.5V5.5Z" fill="url(#brand-grad)" />
-      <path d="M14 10.2L21 14L14 17.8V10.2Z" fill="#1b1234" fillOpacity=".85" />
+      <path d="M14 10.2L21 14L14 17.8V10.2Z" fill="var(--brand-mark-cutout, #1b1234)" fillOpacity=".85" />
     </svg>
   )
 }

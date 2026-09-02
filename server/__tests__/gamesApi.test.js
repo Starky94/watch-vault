@@ -205,6 +205,26 @@ test('GET /api/games/played requires authentication and returns the newest playe
   } finally { await closeServer(server) }
 })
 
+test('GET /api/games/activity returns persisted play, tracker, and completion metrics', async () => {
+  const pool = {
+    async query(sql) {
+      if (sql.includes('SELECT\n        id,\n        username,\n        full_name')) return { rows: [{ id: 1, username: 'florind' }] }
+      if (sql.includes('games_played')) return { rows: [{ games_played: '4', playtime_minutes: '755', last_completed_at: '2026-08-25T10:00:00.000Z' }] }
+      return { rows: [] }
+    },
+  }
+  const app = await createApp(pool)
+  const server = app.listen(0)
+  try {
+    const address = server.address()
+    const unauthenticated = await fetch(`http://127.0.0.1:${address.port}/api/games/activity`)
+    assert.equal(unauthenticated.status, 401)
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/games/activity`, { headers: { 'x-watchvault-username': 'florind' } })
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), { gamesPlayed: 4, playtimeMinutes: 755, lastCompletedAt: '2026-08-25T10:00:00.000Z' })
+  } finally { await closeServer(server) }
+})
+
 test('GET /api/games/:gameId returns imported detail and public rating state', async () => {
   const pool = {
     async query(sql) {

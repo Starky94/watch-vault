@@ -2,8 +2,10 @@ import { importNowPlayingMovies, importPopularMovies, importUpcomingMovies } fro
 import { importAiringTodayTvShows, importOnTheAirTvShows, importPopularTvShows } from './tvImportService.js'
 import { importBooks } from './bookImportService.js'
 import { importPopularGames, importRecentlyReleasedGames, importUpcomingGames } from './gameImportService.js'
+import { runThemeScheduler } from './themeScheduler.js'
 
 export const adminJobs = [
+  { key: 'theme-scheduler', name: 'Seasonal Theme Scheduler', execution: 'Daily scheduler worker', frequency: 'Daily at 00:05', source: 'theme-scheduler', run: runThemeScheduler },
   { key: 'books', name: 'Books Import', execution: 'Interval-based loop', frequency: 'Every hour', source: 'google-books', run: importBooks },
   { key: 'games-popular', name: 'Popular Games Import', execution: 'Interval-based loop', frequency: 'Every 24 hours', source: 'igdb', run: importPopularGames },
   { key: 'games-recently-released', name: 'Recently Released Games Import', execution: 'Interval-based loop', frequency: 'Every 24 hours', source: 'igdb', run: importRecentlyReleasedGames },
@@ -52,12 +54,13 @@ export const adminJobs = [
   },
 ]
 
-export function listAdminJobs(jobs = adminJobs) {
+export function listAdminJobs(jobs = adminJobs, lastExecutions = new Map()) {
   return jobs.map(({ key, name, execution, frequency }) => ({
     key,
     name,
     execution,
     frequency,
+    lastExecutedAt: lastExecutions.get(key) ?? null,
   }))
 }
 

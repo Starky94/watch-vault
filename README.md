@@ -22,7 +22,7 @@ Services:
 - API (through reverse proxy): `http://localhost:8080/api/health`
 - Postgres: internal `db:5432`
 
-The popular movie and TV importers run automatically every 10 minutes; Now Playing, Upcoming, popular games, recently released games, and upcoming games run every 24 hours; and the Google Books importer runs hourly. Configure the IGDB Client ID and Client Secret in Admin before the games importers can run.
+The popular movie and TV importers run automatically every 10 minutes; Now Playing, Upcoming, popular games, recently released games, and upcoming games run every 24 hours; and the Google Books importer runs hourly. The seasonal-theme scheduler evaluates immediately on startup and then daily at 00:05 in `THEME_SCHEDULER_TIME_ZONE` (default: `Europe/Bucharest`). Configure the IGDB Client ID and Client Secret in Admin before the games importers can run.
 
 Use this mode when you want the production-style static web image. Frontend changes require rebuilding the `web` image.
 
@@ -108,6 +108,7 @@ docker compose down
 - `npm run import:games` imports 30 popular games from IGDB, ranked by Steam 24-hour peak players.
 - `npm run import:games-recently-released` imports up to 30 games released in the last 30 days, ranked by IGDB Visits.
 - `npm run import:games-upcoming` imports up to 30 games releasing in the next 30 days, sorted by release date then IGDB Visits.
+- `npm run schedule:themes` starts the daily seasonal-theme scheduler worker; `npm run schedule:themes:once` evaluates and persists the theme once.
 - `npm run dev:stack` starts frontend and backend together outside Docker.
 - `npm test` runs the backend unit tests.
 

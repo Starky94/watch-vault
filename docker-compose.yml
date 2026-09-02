@@ -67,6 +67,7 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@db:5432/watchvault}
       IMPORT_COMMAND: ${IMPORT_COMMAND:-npm run import:movies}
+      ADMIN_JOB_KEY: popular
     depends_on:
       db:
         condition: service_healthy
@@ -84,6 +85,7 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@db:5432/watchvault}
       IMPORT_COMMAND: ${IMPORT_TV_POPULAR_COMMAND:-npm run import:tv-popular}
+      ADMIN_JOB_KEY: tv-popular
     depends_on:
       db:
         condition: service_healthy
@@ -102,6 +104,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@db:5432/watchvault}
       IMPORT_COMMAND: ${IMPORT_GAMES_COMMAND:-npm run import:games}
       IMPORT_INTERVAL_SECONDS: ${IMPORT_GAMES_INTERVAL_SECONDS:-86400}
+      ADMIN_JOB_KEY: games-popular
     depends_on:
       db:
         condition: service_healthy
@@ -120,6 +123,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@db:5432/watchvault}
       IMPORT_COMMAND: ${IMPORT_GAMES_RECENTLY_RELEASED_COMMAND:-npm run import:games-recently-released}
       IMPORT_INTERVAL_SECONDS: ${IMPORT_GAMES_RECENTLY_RELEASED_INTERVAL_SECONDS:-86400}
+      ADMIN_JOB_KEY: games-recently-released
     depends_on:
       db:
         condition: service_healthy
@@ -138,6 +142,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@db:5432/watchvault}
       IMPORT_COMMAND: ${IMPORT_GAMES_UPCOMING_COMMAND:-npm run import:games-upcoming}
       IMPORT_INTERVAL_SECONDS: ${IMPORT_GAMES_UPCOMING_INTERVAL_SECONDS:-86400}
+      ADMIN_JOB_KEY: games-upcoming
     depends_on:
       db:
         condition: service_healthy
@@ -156,6 +161,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@db:5432/watchvault}
       IMPORT_COMMAND: ${IMPORT_BOOKS_COMMAND:-npm run import:books}
       IMPORT_INTERVAL_SECONDS: ${IMPORT_BOOKS_INTERVAL_SECONDS:-3600}
+      ADMIN_JOB_KEY: books
     depends_on:
       db:
         condition: service_healthy
@@ -174,6 +180,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@db:5432/watchvault}
       IMPORT_COMMAND: ${IMPORT_NOW_PLAYING_COMMAND:-npm run import:now-playing}
       IMPORT_INTERVAL_SECONDS: ${IMPORT_NOW_PLAYING_INTERVAL_SECONDS:-86400}
+      ADMIN_JOB_KEY: now-playing
     depends_on:
       db:
         condition: service_healthy
@@ -192,6 +199,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@db:5432/watchvault}
       IMPORT_COMMAND: ${IMPORT_TV_AIRING_TODAY_COMMAND:-npm run import:tv-airing-today}
       IMPORT_INTERVAL_SECONDS: ${IMPORT_TV_AIRING_TODAY_INTERVAL_SECONDS:-86400}
+      ADMIN_JOB_KEY: tv-airing-today
     depends_on:
       db:
         condition: service_healthy
@@ -210,6 +218,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@db:5432/watchvault}
       IMPORT_COMMAND: ${IMPORT_UPCOMING_COMMAND:-npm run import:upcoming}
       IMPORT_INTERVAL_SECONDS: ${IMPORT_UPCOMING_INTERVAL_SECONDS:-86400}
+      ADMIN_JOB_KEY: upcoming
     depends_on:
       db:
         condition: service_healthy
@@ -228,6 +237,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@db:5432/watchvault}
       IMPORT_COMMAND: ${IMPORT_TV_ON_THE_AIR_COMMAND:-npm run import:tv-on-the-air}
       IMPORT_INTERVAL_SECONDS: ${IMPORT_TV_ON_THE_AIR_INTERVAL_SECONDS:-86400}
+      ADMIN_JOB_KEY: tv-on-the-air
     depends_on:
       db:
         condition: service_healthy
@@ -246,6 +256,23 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@db:5432/watchvault}
       IMPORT_COMMAND: ${ALERT_DISPATCH_COMMAND:-npm run dispatch:alerts}
       IMPORT_INTERVAL_SECONDS: ${ALERT_DISPATCH_INTERVAL_SECONDS:-900}
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+
+  theme-scheduler:
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    restart: unless-stopped
+    command: ["npm", "run", "schedule:themes"]
+    env_file:
+      - ${APP_ENV_FILE:-.env}
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@db:5432/watchvault}
+      THEME_SCHEDULER_TIME_ZONE: ${THEME_SCHEDULER_TIME_ZONE:-Europe/Bucharest}
     depends_on:
       db:
         condition: service_healthy

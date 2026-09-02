@@ -10,6 +10,15 @@
   --text-muted: #a7a1b5;
   --accent: #8f4fff;
   --accent-soft: rgba(143, 79, 255, 0.18);
+  --brand-gradient-start: #bf6fff;
+  --brand-gradient-end: #6e40ff;
+  --brand-mark-cutout: #1b1234;
+  --bg-body:
+    radial-gradient(circle at top, rgba(92, 58, 181, 0.18), transparent 22%),
+    radial-gradient(circle at right center, rgba(48, 34, 105, 0.22), transparent 30%),
+    linear-gradient(180deg, #131227 0%, #0b1020 18%, #070b16 100%);
+  --focus-color: #d39aff;
+  --focus-shadow: rgba(132, 75, 255, 0.26);
   --shadow-panel:
     0 24px 50px rgba(0, 0, 0, 0.4),
     inset 0 1px 0 rgba(255, 255, 255, 0.03);
@@ -27,6 +36,32 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
+:root[data-theme='autumn'] {
+  color-scheme: dark;
+  --bg-base: #080603;
+  --bg-shell: #100a05;
+  --surface: rgba(25, 14, 7, 0.94);
+  --border-soft: rgba(244, 143, 43, 0.13);
+  --border-strong: rgba(232, 126, 25, 0.3);
+  --text-primary: #fff1dc;
+  --text-secondary: #e4c9a9;
+  --text-muted: #bd9c79;
+  --accent: #ed7410;
+  --accent-soft: rgba(237, 116, 16, 0.2);
+  --brand-gradient-start: #ff9d27;
+  --brand-gradient-end: #bc4305;
+  --brand-mark-cutout: #261005;
+  --bg-body:
+    radial-gradient(circle at 72% 4%, rgba(136, 59, 10, 0.2), transparent 28%),
+    radial-gradient(circle at 8% 72%, rgba(103, 35, 4, 0.2), transparent 32%),
+    linear-gradient(180deg, #110a04 0%, #090603 42%, #050403 100%);
+  --focus-color: #ffb34f;
+  --focus-shadow: rgba(224, 102, 10, 0.32);
+  --shadow-panel:
+    0 24px 54px rgba(0, 0, 0, 0.58),
+    inset 0 1px 0 rgba(255, 194, 111, 0.04);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -39,10 +74,8 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
-  background:
-    radial-gradient(circle at top, rgba(92, 58, 181, 0.18), transparent 22%),
-    radial-gradient(circle at right center, rgba(48, 34, 105, 0.22), transparent 30%),
-    linear-gradient(180deg, #131227 0%, #0b1020 18%, #070b16 100%);
+  background: var(--bg-body);
+  background-attachment: fixed;
   color: var(--text-primary);
 }
 
@@ -58,9 +91,9 @@ button {
 }
 
 :where(a, button, input, select, textarea, [tabindex]):focus-visible {
-  outline: 3px solid #d39aff;
+  outline: 3px solid var(--focus-color);
   outline-offset: 3px;
-  box-shadow: 0 0 0 5px rgba(132, 75, 255, 0.26);
+  box-shadow: 0 0 0 5px var(--focus-shadow);
 }
 
 @media (prefers-reduced-motion: reduce) {

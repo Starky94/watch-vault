@@ -3,6 +3,7 @@ import { ACHIEVEMENTS } from './achievements.js'
 import { BOOK_ACHIEVEMENTS } from './bookAchievements.js'
 import { GAME_ACHIEVEMENTS } from './gameAchievements.js'
 import { WATCH_TOGETHER_ACHIEVEMENTS, WATCH_TOGETHER_AUTOMATIC_GENRE_RULES, WATCH_TOGETHER_MANUAL_ACHIEVEMENT_IDS } from './watchTogetherAchievements.js'
+import { defaultThemeKey, normalizeActiveTheme } from '../shared/themes.js'
 
 const { Pool } = pg
 
@@ -2971,6 +2972,74 @@ export async function findUserByUsername(pool, username) {
 const defaultEnabledSections = ['movies', 'tv', 'books', 'games', 'calendar']
 const requiredEnabledSections = ['movies', 'tv']
 
+export async function ensureSiteThemePreferencesTable(pool) {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS site_theme_preferences (
+      singleton_id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (singleton_id = 1),
+      active_theme TEXT NOT NULL DEFAULT 'default',
+      updated_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `)
+  await pool.query(
+    `INSERT INTO site_theme_preferences (singleton_id, active_theme)
+     VALUES (1, $1)
+     ON CONFLICT (singleton_id) DO NOTHING`,
+    [defaultThemeKey]
+  )
+}
+
+export async function getActiveSiteTheme(pool) {
+  const result = await pool.query(
+    'SELECT active_theme FROM site_theme_preferences WHERE singleton_id = 1 LIMIT 1'
+  )
+  return normalizeActiveTheme(result.rows[0]?.active_theme)
+}
+
+export async function saveActiveSiteTheme(pool, { activeTheme, updatedByUserId }) {
+  const normalizedTheme = normalizeActiveTheme(activeTheme)
+  const result = await pool.query(
+    `INSERT INTO site_theme_preferences (singleton_id, active_theme, updated_by_user_id, updated_at)
+     VALUES (1, $1, $2, NOW())
+     ON CONFLICT (singleton_id) DO UPDATE SET
+       active_theme = EXCLUDED.active_theme,
+       updated_by_user_id = EXCLUDED.updated_by_user_id,
+       updated_at = NOW()
+     RETURNING active_theme`,
+    [normalizedTheme, updatedByUserId]
+  )
+  return normalizeActiveTheme(result.rows[0]?.active_theme ?? normalizedTheme)
+}
+
+export async function ensureAdminJobExecutionsTable(pool) {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS admin_job_executions (
+      job_key TEXT PRIMARY KEY,
+      last_executed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `)
+}
+
+export async function recordAdminJobExecution(pool, jobKey) {
+  const result = await pool.query(
+    `INSERT INTO admin_job_executions (job_key, last_executed_at)
+     VALUES ($1, NOW())
+     ON CONFLICT (job_key) DO UPDATE SET last_executed_at = NOW()
+     RETURNING last_executed_at`,
+    [jobKey]
+  )
+  return result.rows[0]?.last_executed_at ?? null
+}
+
+export async function getAdminJobLastExecutions(pool, jobKeys) {
+  if (!Array.isArray(jobKeys) || jobKeys.length === 0) return new Map()
+  const result = await pool.query(
+    'SELECT job_key, last_executed_at FROM admin_job_executions WHERE job_key = ANY($1::text[])',
+    [jobKeys]
+  )
+  return new Map(result.rows.map((row) => [row.job_key, row.last_executed_at]))
+}
+
 export async function ensureUserSectionPreferencesTable(pool) {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS user_section_preferences (
@@ -3248,6 +3317,24 @@ export async function upsertGameTrackingForUser(pool, { username, gameId, tracki
 export async function addGameSessionForUser(pool, { username, gameId, session }) {
   const result = await pool.query(`WITH selected_user AS (SELECT id FROM users WHERE username=$1 LIMIT 1), saved AS (INSERT INTO game_sessions (user_id,game_igdb_id,occurred_at,duration_minutes,mode,location,coplayer,metadata) SELECT id,$2,$3,$4,$5,$6,$7,$8::jsonb FROM selected_user RETURNING id) SELECT EXISTS(SELECT 1 FROM selected_user) AS has_user,(SELECT id FROM saved) AS id`, [username,gameId,session.occurredAt,session.durationMinutes,session.mode,session.location,session.coplayer,JSON.stringify(session.metadata || {})])
   return result.rows[0]?.has_user ? { status: 'ok', id: result.rows[0].id } : { status: 'missing_user' }
+}
+
+export async function getGameActivityForUser(pool, username) {
+  const result = await pool.query(`
+    WITH selected_user AS (
+      SELECT id FROM users WHERE username = $1 LIMIT 1
+    )
+    SELECT
+      (SELECT COUNT(*)::INTEGER FROM played_games WHERE user_id = (SELECT id FROM selected_user)) AS games_played,
+      COALESCE((SELECT SUM(playtime_minutes)::INTEGER FROM game_tracking_entries WHERE user_id = (SELECT id FROM selected_user)), 0) AS playtime_minutes,
+      (SELECT MAX(completed_at) FROM game_tracking_entries WHERE user_id = (SELECT id FROM selected_user) AND status = 'completed') AS last_completed_at
+  `, [username])
+  const row = result.rows[0] ?? {}
+  return {
+    gamesPlayed: Number(row.games_played) || 0,
+    playtimeMinutes: Number(row.playtime_minutes) || 0,
+    lastCompletedAt: row.last_completed_at ?? null,
+  }
 }
 
 export async function getGameAchievementsForUser(pool, username) {

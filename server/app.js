@@ -27,6 +27,12 @@ import {
   getBookAchievementsForUser,
   findUserByCredentials,
   findUserByUsername,
+  ensureSiteThemePreferencesTable,
+  ensureAdminJobExecutionsTable,
+  getActiveSiteTheme,
+  getAdminJobLastExecutions,
+  recordAdminJobExecution,
+  saveActiveSiteTheme,
   ensureUserSectionPreferencesTable,
   getUserEnabledSections,
   saveUserEnabledSections,
@@ -40,6 +46,7 @@ import {
   ensureGameTrackingTables,
   getGameTimeToBeat,
   getGameTrackingForUser,
+  getGameActivityForUser,
   upsertGameTrackingForUser,
   addGameSessionForUser,
   getGameAchievementsForUser,
@@ -158,6 +165,7 @@ import { normalizeBook, sanitizeBookDescription } from './bookImportService.js'
 import { fetchBookById, fetchRelatedBooksByCategory, searchBooksByTitle } from './googleBooksClient.js'
 import { buildFilelistSearchUrl, buildFilelistTvEpisodeQuery, decryptFilelistValue, encryptFilelistValue, mapFilelistResults } from './filelist.js'
 import { fetchIgdbAccessToken, igdbRequest } from './igdbClient.js'
+import { isAvailableTheme } from '../shared/themes.js'
 
 const bookReadingFormats = new Set(['physical', 'ebook', 'audiobook'])
 const gameStatuses = new Set(['played', 'backlog', 'playing', 'dropped', 'completed'])
@@ -286,6 +294,8 @@ export async function createApp(pool, options = {}) {
   await ensureGamesTable(pool)
   await ensureTvDetailTables(pool)
   await ensureAchievementTables(pool)
+  await ensureSiteThemePreferencesTable(pool)
+  await ensureAdminJobExecutionsTable(pool)
   await ensureUserSectionPreferencesTable(pool)
 
   const app = express()
@@ -293,6 +303,28 @@ export async function createApp(pool, options = {}) {
 
   app.get('/api/health', async (_request, response) => {
     response.json({ ok: true })
+  })
+
+  app.get('/api/theme', async (_request, response, next) => {
+    try {
+      response.json({ activeTheme: await getActiveSiteTheme(pool) })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.put('/api/admin/theme', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const activeTheme = request.body?.activeTheme
+      if (!isAvailableTheme(activeTheme)) {
+        return response.status(400).json({ error: 'The selected theme is not available.' })
+      }
+      response.json({ activeTheme: await saveActiveSiteTheme(pool, { activeTheme, updatedByUserId: user.id }) })
+    } catch (error) {
+      next(error)
+    }
   })
 
   app.get('/api/achievements', async (request, response, next) => {
@@ -1491,13 +1523,14 @@ export async function createApp(pool, options = {}) {
       if (!user) return response.status(401).json({ error: 'Authentication required' })
       await ensureFilelistTables(pool)
       await ensureIgdbCredentialsTable(pool)
-      const [credential, enabledSections, igdbCredential] = await Promise.all([
+      const [credential, enabledSections, igdbCredential, lastExecutions] = await Promise.all([
         getFilelistCredentialStatus(pool, user.id),
         getUserEnabledSections(pool, user.id),
         getIgdbCredentialStatus(pool),
+        getAdminJobLastExecutions(pool, jobs.map((job) => job.key)),
       ])
       response.json({
-        crons: listAdminJobs(jobs),
+        crons: listAdminJobs(jobs, lastExecutions),
         totals: {
           actors: await countActors(pool),
           books: await countBooks(pool),
@@ -1608,31 +1641,44 @@ export async function createApp(pool, options = {}) {
     }
 
     try {
-      const config = loadRuntimeConfig()
       let options
-      if (job.source === 'google-books') {
-        options = { apiKey: config.googleBooksApiKey, baseUrl: config.googleBooksBaseUrl }
-      } else if (job.source === 'igdb') {
-        await ensureIgdbCredentialsTable(pool)
-        const credentials = await getIgdbCredentials(pool)
-        if (!credentials) return response.status(400).json({ error: 'IGDB credentials have not been configured in Admin settings.' })
-        options = {
-          clientId: decryptFilelistValue(credentials.encrypted_client_id, config.filelistEncryptionKey),
-          clientSecret: decryptFilelistValue(credentials.encrypted_private_key, config.filelistEncryptionKey),
-          baseUrl: config.igdbBaseUrl,
-          tokenUrl: config.twitchTokenUrl,
-          count: 30,
-        }
+      if (job.source === 'theme-scheduler') {
+        const schedulerConfig = loadConfig({ requireDatabase: false, requireTmdbToken: false })
+        options = { timeZone: schedulerConfig.themeSchedulerTimeZone }
       } else {
-        options = { token: config.tmdbBearerToken, baseUrl: config.tmdbBaseUrl, count: 30 }
+        const config = loadRuntimeConfig()
+        if (job.source === 'google-books') {
+          options = { apiKey: config.googleBooksApiKey, baseUrl: config.googleBooksBaseUrl }
+        } else if (job.source === 'igdb') {
+          await ensureIgdbCredentialsTable(pool)
+          const credentials = await getIgdbCredentials(pool)
+          if (!credentials) return response.status(400).json({ error: 'IGDB credentials have not been configured in Admin settings.' })
+          options = {
+            clientId: decryptFilelistValue(credentials.encrypted_client_id, config.filelistEncryptionKey),
+            clientSecret: decryptFilelistValue(credentials.encrypted_private_key, config.filelistEncryptionKey),
+            baseUrl: config.igdbBaseUrl,
+            tokenUrl: config.twitchTokenUrl,
+            count: 30,
+          }
+        } else {
+          options = { token: config.tmdbBearerToken, baseUrl: config.tmdbBaseUrl, count: 30 }
+        }
       }
       const result = await job.run(pool, options)
+      const lastExecutedAt = await recordAdminJobExecution(pool, job.key)
 
       response.json({
         job: job.key,
         fetchedCount: result.fetchedCount ?? 0,
         insertedCount: result.insertedCount ?? 0,
         updatedCount: result.updatedCount ?? 0,
+        lastExecutedAt,
+        ...(job.source === 'theme-scheduler' ? {
+          activeTheme: result.activeTheme,
+          previousTheme: result.previousTheme,
+          changed: result.changed,
+          timeZone: result.timeZone,
+        } : {}),
       })
     } catch (error) {
       next(error)
@@ -1716,6 +1762,17 @@ export async function createApp(pool, options = {}) {
       if (!user) return response.status(401).json({ error: 'Authentication required' })
       const games = await listPlayedGamesForUser(pool, user.username)
       response.json({ count: games.length, games: games.map(mapPlayedGame) })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/games/activity', async (request, response, next) => {
+    try {
+      await ensureGameTrackingTables(pool)
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      response.json(await getGameActivityForUser(pool, user.username))
     } catch (error) {
       next(error)
     }

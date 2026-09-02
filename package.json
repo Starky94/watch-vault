@@ -22,6 +22,8 @@
     "import:games-recently-released": "node server/importRecentlyReleasedGamesCli.js",
     "import:games-upcoming": "node server/importUpcomingGamesCli.js",
     "dispatch:alerts": "node server/dispatchAlertsCli.js",
+    "schedule:themes": "node server/themeSchedulerWorker.js",
+    "schedule:themes:once": "node server/themeSchedulerCli.js",
     "backfill:movie-credits": "node server/backfillMovieCreditsCli.js",
     "dev:stack": "node scripts/dev-stack.js",
     "deploy:prod-8181": "bash scripts/deploy-production-8181.sh",

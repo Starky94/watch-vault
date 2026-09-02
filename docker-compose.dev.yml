@@ -63,6 +63,14 @@ services:
       - .:/app
       - api-node-modules:/app/node_modules
 
+  theme-scheduler:
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    volumes:
+      - .:/app
+      - api-node-modules:/app/node_modules
+
 volumes:
   api-node-modules:
   web-node-modules:

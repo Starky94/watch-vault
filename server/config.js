@@ -1,5 +1,6 @@
 import dotenv from 'dotenv'
 import crypto from 'node:crypto'
+import { defaultThemeSchedulerTimeZone } from '../shared/themes.js'
 
 dotenv.config()
 
@@ -30,6 +31,7 @@ export function loadConfig(options = {}) {
     igdbBaseUrl: env.IGDB_BASE_URL || 'https://api.igdb.com/v4',
     twitchTokenUrl: env.TWITCH_TOKEN_URL || 'https://id.twitch.tv/oauth2/token',
     filelistEncryptionKey: env.FILELIST_ENCRYPTION_KEY || deriveFilelistEncryptionKey(env.DATABASE_URL),
+    themeSchedulerTimeZone: env.THEME_SCHEDULER_TIME_ZONE || defaultThemeSchedulerTimeZone,
   }
 
   if (!Number.isInteger(config.port) || config.port <= 0) {
