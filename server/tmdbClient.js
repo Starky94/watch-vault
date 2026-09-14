@@ -120,6 +120,21 @@ export async function searchMovieKeywords(fetchImpl, options) {
   })
 }
 
+export async function discoverMoviesByKeyword(fetchImpl, options) {
+  const { token, baseUrl, keywordId, page = 1 } = options
+
+  return tmdbRequest(fetchImpl, {
+    token,
+    baseUrl,
+    path: 'discover/movie',
+    searchParams: {
+      sort_by: 'popularity.desc',
+      with_keywords: keywordId,
+      page,
+    },
+  })
+}
+
 export async function searchPeople(fetchImpl, options) {
   const { token, baseUrl, query } = options
 

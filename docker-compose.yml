@@ -168,6 +168,25 @@ services:
       api:
         condition: service_healthy
 
+  importer-entertainment-news:
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    restart: unless-stopped
+    command: ["./docker/api/importer-loop.sh"]
+    env_file:
+      - ${APP_ENV_FILE:-.env}
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@db:5432/watchvault}
+      IMPORT_COMMAND: ${IMPORT_ENTERTAINMENT_NEWS_COMMAND:-npm run import:entertainment-news}
+      IMPORT_INTERVAL_SECONDS: ${IMPORT_ENTERTAINMENT_NEWS_INTERVAL_SECONDS:-3600}
+      ADMIN_JOB_KEY: entertainment-news
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+
   importer-now-playing:
     build:
       context: .

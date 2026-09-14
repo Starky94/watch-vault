@@ -12,6 +12,7 @@
     "preview": "vite preview",
     "import:movies": "node server/importMoviesCli.js",
     "import:books": "node server/importBooksCli.js",
+    "import:entertainment-news": "node server/importEntertainmentNewsCli.js",
     "import:now-playing": "node server/importNowPlayingCli.js",
     "import:upcoming": "node server/importUpcomingCli.js",
     "import:movie-keywords": "node server/importMovieKeywordsCli.js",
@@ -32,6 +33,7 @@
   "dependencies": {
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "fast-xml-parser": "^5.11.1",
     "pg": "^8.22.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7"

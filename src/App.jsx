@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import './App.css'
 import { defaultThemeKey, seasonalThemes } from '../shared/themes.js'
 import { applyActiveTheme, readCachedActiveTheme } from './theme.js'
@@ -9,6 +9,7 @@ const primaryViews = {
   books: 'Books',
   games: 'Games',
   tvShows: 'TV Shows',
+  news: 'News',
   watchlist: 'Watchlist',
   calendar: 'Calendar',
   stats: 'Stats',
@@ -22,6 +23,7 @@ const navItems = [
   { label: 'Books', icon: BookmarkIcon, view: primaryViews.books },
   { label: 'Games', icon: GamepadIcon, view: primaryViews.games },
   { label: 'TV Shows', icon: TvIcon, view: primaryViews.tvShows },
+  { label: 'News', icon: NewsIcon, view: primaryViews.news },
   { label: 'Watchlist', icon: BookmarkIcon, view: primaryViews.watchlist },
   { label: 'Calendar', icon: CalendarIcon, view: primaryViews.calendar },
   { label: 'Stats', icon: BarsIcon, view: primaryViews.stats },
@@ -72,6 +74,8 @@ const routeKinds = {
   stats: 'stats',
   search: 'search',
   discover: 'discover',
+  news: 'news',
+  seasonalMovies: 'seasonalMovies',
   continueWatching: 'continueWatching',
   calendar: 'calendar',
   watchlist: 'watchlist',
@@ -102,6 +106,7 @@ const mobileNavItems = [
   { label: 'Search', icon: SearchIcon, view: primaryViews.movies },
   { label: 'Books', icon: BookmarkIcon, view: primaryViews.books },
   { label: 'Games', icon: GamepadIcon, view: primaryViews.games },
+  { label: 'News', icon: NewsIcon, view: primaryViews.news },
   { label: 'Watchlist', icon: BookmarkIcon, view: primaryViews.watchlist },
   { label: 'Calendar', icon: CalendarIcon, view: primaryViews.calendar },
   { label: 'Stats', icon: BarsIcon, view: primaryViews.stats },
@@ -112,6 +117,8 @@ const watchlistTabs = ['All', 'Movies', 'TV Shows', 'Books', 'Actors', 'Authors'
 const moviesPageSize = 30
 const statsWatchedMoviesPageSize = 30
 const watchTogetherHistoryPageSize = 20
+const newsPageSize = 20
+const emptyNewsFilters = { actor: null, movie: null, show: null }
 const genreAccentPalette = ['#ff6b7a', '#7c8dff', '#ffd86f', '#84b3ff', '#ff6cb6', '#67e8f9', '#9ae66e']
 const statsActorColors = ['#c99a75', '#8f5e48', '#5e7792', '#a47265']
 
@@ -198,6 +205,8 @@ function App() {
   const [activeView, setActiveView] = useState(() =>
     readAppRoute().kind === routeKinds.stats
       ? primaryViews.stats
+      : readAppRoute().kind === routeKinds.news
+        ? primaryViews.news
       : readAppRoute().kind === routeKinds.calendar
         ? primaryViews.calendar
         : readAppRoute().kind === routeKinds.watchlist
@@ -240,6 +249,7 @@ function App() {
     shows: [],
     error: '',
   })
+  const [seasonalMoviesState, setSeasonalMoviesState] = useState({ status: 'idle', theme: null, movies: [], error: '' })
   const tmdbSearchRequestId = useRef(0)
   const tmdbSearchStartedQueryRef = useRef('')
   const [googleBooksSearchState, setGoogleBooksSearchState] = useState({
@@ -424,6 +434,7 @@ function App() {
     totalBooks: 0,
     totalGames: 0,
     totalMovies: 0,
+    totalNewsArticles: 0,
     storedDataBytes: 0,
     totalTvShows: 0,
     filelist: { configured: false, updatedAt: null },
@@ -518,6 +529,8 @@ function App() {
       setActiveView(
         nextRoute.kind === routeKinds.stats
           ? primaryViews.stats
+          : nextRoute.kind === routeKinds.news
+            ? primaryViews.news
           : nextRoute.kind === routeKinds.calendar
             ? primaryViews.calendar
             : nextRoute.kind === routeKinds.watchlist
@@ -553,6 +566,44 @@ function App() {
       setSearchError('')
     }
   }, [currentRoute])
+
+  useEffect(() => {
+    if (currentRoute.kind !== routeKinds.seasonalMovies) {
+      setSeasonalMoviesState({ status: 'idle', theme: null, movies: [], error: '' })
+      return
+    }
+
+    if (themeState.status === 'loading') return
+
+    if (!getSeasonalThemeWithMovies(activeTheme)) {
+      window.history.replaceState({}, '', '/')
+      setCurrentRoute({ kind: routeKinds.home })
+      setActiveView(primaryViews.home)
+      return
+    }
+
+    let cancelled = false
+    setSeasonalMoviesState({ status: 'loading', theme: null, movies: [], error: '' })
+
+    fetch('/api/seasonal-movies')
+      .then(async (response) => {
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+        if (!cancelled) {
+          setSeasonalMoviesState({
+            status: 'success',
+            theme: payload.theme ?? null,
+            movies: Array.isArray(payload.movies) ? payload.movies : [],
+            error: '',
+          })
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) setSeasonalMoviesState({ status: 'error', theme: null, movies: [], error: error instanceof Error ? error.message : 'Unable to load seasonal movies right now.' })
+      })
+
+    return () => { cancelled = true }
+  }, [activeTheme, currentRoute, themeState.status])
 
   useEffect(() => {
     if (!enabledSections.includes('books') && activeSearchSource === 'books') {
@@ -765,6 +816,11 @@ function App() {
 
   function handleOpenDiscover() {
     handleNavigateToPath('/discover', { kind: routeKinds.discover })
+  }
+
+  function handleOpenSeasonalMovies() {
+    if (!getSeasonalThemeWithMovies(activeTheme)) return
+    handleNavigateToPath('/seasonal', { kind: routeKinds.seasonalMovies })
   }
 
   async function handleSearchTmdb() {
@@ -1064,6 +1120,12 @@ function App() {
   }
 
   function handleMovieViewSelection(view) {
+    if (view === primaryViews.news) {
+      handleNavigateToPath('/news', { kind: routeKinds.news }, view)
+      setSelectedGenre(null)
+      return
+    }
+
     if (view === primaryViews.stats) {
       setStatsInitialTab('Overview')
       handleNavigateToPath('/stats', { kind: routeKinds.stats }, view)
@@ -2447,6 +2509,7 @@ function App() {
             totalBooks: typeof payload?.totals?.books === 'number' ? payload.totals.books : 0,
             totalGames: typeof payload?.totals?.games === 'number' ? payload.totals.games : 0,
             totalMovies: typeof payload?.totals?.movies === 'number' ? payload.totals.movies : 0,
+            totalNewsArticles: typeof payload?.totals?.newsArticles === 'number' ? payload.totals.newsArticles : 0,
             storedDataBytes: typeof payload?.totals?.storedDataBytes === 'number' ? payload.totals.storedDataBytes : 0,
             totalTvShows: typeof payload?.totals?.tvShows === 'number' ? payload.totals.tvShows : 0,
             filelist: { configured: Boolean(payload?.filelist?.configured), updatedAt: payload?.filelist?.updatedAt ?? null },
@@ -3921,6 +3984,13 @@ function App() {
                 onOpenDiscover={handleOpenDiscover}
                 onSearchQuery={handleSearchSubmit}
               />
+            ) : currentRoute.kind === routeKinds.seasonalMovies ? (
+              <SeasonalMoviesPage
+                state={seasonalMoviesState}
+                activeTheme={getSeasonalThemeWithMovies(activeTheme)}
+                onBack={() => handleNavigateToPath('/', { kind: routeKinds.home })}
+                onOpenMovie={handleOpenMovieDetail}
+              />
             ) : currentRoute.kind === routeKinds.discover ? (
               <DiscoverScreen
                 user={user}
@@ -3998,6 +4068,13 @@ function App() {
                 onOpenAchievements={() => setActiveView(primaryViews.achievements)}
                 enabledSections={enabledSections}
               />
+            ) : activeView === primaryViews.news ? (
+              <NewsScreen
+                route={currentRoute}
+                user={user}
+                onOpenLogin={handleOpenLogin}
+                onNavigateNews={(filters) => handleNavigateToPath(buildNewsPath(filters), { kind: routeKinds.news, filters }, primaryViews.news)}
+              />
             ) : activeView === primaryViews.home ? (
               <HomeScreen
                 user={user}
@@ -4005,6 +4082,8 @@ function App() {
                 onOpenPopularMovies={handleOpenPopularMovies}
                 onOpenWatchlist={handleOpenWatchlistCta}
                 onOpenDiscover={handleOpenDiscover}
+                seasonalTheme={getSeasonalThemeWithMovies(activeTheme)}
+                onOpenSeasonalMovies={handleOpenSeasonalMovies}
                 stats={homeStats}
                 statsPeriod={statsPeriod}
                 onStatsPeriodChange={setStatsPeriod}
@@ -4774,6 +4853,265 @@ function normalizeSearchLabel(value) {
   return String(value || '').toLocaleLowerCase().replace(/[^a-z0-9]/g, '')
 }
 
+function NewsScreen({ route, user, onNavigateNews, onOpenLogin }) {
+  const filters = route?.filters ?? emptyNewsFilters
+  const [feed, setFeed] = useState({ status: 'loading', articles: [], hasNextPage: true, error: '' })
+  const [likeAction, setLikeAction] = useState({ articleId: null, errorArticleId: null, error: '' })
+  const sentinelRef = useRef(null)
+  const loadingRef = useRef(false)
+  const nextPageRef = useRef(1)
+  const mountedRef = useRef(true)
+  const requestControllerRef = useRef(null)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false; requestControllerRef.current?.abort() }
+  }, [])
+
+  const filterKey = `${filters.actor ?? ''}:${filters.movie ?? ''}:${filters.show ?? ''}`
+  const loadPage = useCallback(async (page) => {
+    if (loadingRef.current || !mountedRef.current) return
+    const controller = new AbortController()
+    requestControllerRef.current = controller
+    loadingRef.current = true
+    setFeed((current) => ({
+      ...current,
+      status: current.articles.length === 0 ? 'loading' : 'loading-more',
+      error: '',
+    }))
+
+    try {
+      const response = await fetch(`${buildNewsApiPath(page, filters)}`, { signal: controller.signal })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+      const incomingArticles = (Array.isArray(payload.articles) ? payload.articles : [])
+        .filter((article) => article?.id && article?.title && article?.link)
+
+      if (!mountedRef.current || requestControllerRef.current !== controller) return
+      setFeed((current) => {
+        const articlesById = new Map(current.articles.map((article) => [article.id, article]))
+        incomingArticles.forEach((article) => articlesById.set(article.id, article))
+        return {
+          status: 'success',
+          articles: [...articlesById.values()],
+          hasNextPage: Boolean(payload.pagination?.hasNextPage),
+          error: '',
+        }
+      })
+      nextPageRef.current = page + 1
+    } catch (error) {
+      if (!mountedRef.current || error?.name === 'AbortError' || requestControllerRef.current !== controller) return
+      setFeed((current) => ({
+        ...current,
+        status: current.articles.length === 0 ? 'error' : 'load-more-error',
+        error: error instanceof Error ? error.message : 'Unable to load news right now.',
+      }))
+    } finally {
+      if (requestControllerRef.current === controller) loadingRef.current = false
+    }
+  }, [filters])
+
+  useEffect(() => {
+    requestControllerRef.current?.abort()
+    nextPageRef.current = 1
+    loadingRef.current = false
+    setFeed({ status: 'loading', articles: [], hasNextPage: true, error: '' })
+    void loadPage(1)
+  }, [filterKey, loadPage])
+
+  async function handleLike(article) {
+    if (!user) {
+      onOpenLogin()
+      return
+    }
+    if (likeAction.articleId !== null) return
+
+    setLikeAction({ articleId: article.id, errorArticleId: null, error: '' })
+    try {
+      const response = await fetch(`/api/news/${article.id}/like`, {
+        method: article.likedByCurrentUser ? 'DELETE' : 'POST',
+        headers: buildAuthHeaders(user),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+      setFeed((current) => ({
+        ...current,
+        articles: current.articles.map((currentArticle) => currentArticle.id === article.id
+          ? { ...currentArticle, likeCount: Number(payload.likeCount) || 0, likedByCurrentUser: Boolean(payload.likedByCurrentUser) }
+          : currentArticle),
+      }))
+      setLikeAction({ articleId: null, errorArticleId: null, error: '' })
+    } catch (error) {
+      setLikeAction({ articleId: null, errorArticleId: article.id, error: error instanceof Error ? error.message : 'Unable to update article like.' })
+    }
+  }
+
+  useEffect(() => {
+    const sentinel = sentinelRef.current
+    if (!sentinel || !feed.hasNextPage || feed.status !== 'success') return undefined
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) void loadPage(nextPageRef.current)
+    }, { rootMargin: '320px 0px' })
+    observer.observe(sentinel)
+    return () => observer.disconnect()
+  }, [feed.hasNextPage, feed.status, loadPage])
+
+  if (feed.status === 'error') {
+    return (
+      <section className="news-page">
+        <NewsHeading />
+        <NewsFilters filters={filters} onChange={onNavigateNews} />
+        <div className="news-feed-message error" role="alert">
+          <p>Could not load the news feed. {feed.error}</p>
+          <button type="button" className="secondary-button" onClick={() => loadPage(1)}>Retry</button>
+        </div>
+      </section>
+    )
+  }
+
+  return (
+    <section className="news-page">
+      <NewsHeading />
+      <NewsFilters filters={filters} onChange={onNavigateNews} />
+      {feed.status === 'loading' ? <NewsFeedSkeleton /> : null}
+      {feed.status !== 'loading' && feed.articles.length === 0 ? <SectionMessage message={filters.actor || filters.movie || filters.show ? 'No articles match these filters.' : 'No stored news articles are available yet.'} /> : null}
+      {feed.articles.length > 0 ? (
+        <div className="news-feed" aria-live="polite">
+          {feed.articles.map((article, index) => <NewsArticleCard key={article.id} article={article} featured={index === 0} filters={filters} onFilter={onNavigateNews} isLikePending={likeAction.articleId === article.id} likeError={likeAction.errorArticleId === article.id ? likeAction.error : ''} onLike={handleLike} />)}
+        </div>
+      ) : null}
+      {feed.status === 'loading-more' ? <div className="news-loading-more"><SpinnerIcon /><span>Loading more news…</span></div> : null}
+      {feed.status === 'load-more-error' ? (
+        <div className="news-feed-message error" role="alert">
+          <p>Could not load more articles. {feed.error}</p>
+          <button type="button" className="secondary-button" onClick={() => loadPage(nextPageRef.current)}>Retry</button>
+        </div>
+      ) : null}
+      {feed.articles.length > 0 && !feed.hasNextPage && feed.status === 'success' ? <p className="news-feed-end">You’re all caught up.</p> : null}
+      <div ref={sentinelRef} className="news-feed-sentinel" aria-hidden="true" />
+    </section>
+  )
+}
+
+function NewsHeading() {
+  return <header className="news-heading"><p className="eyebrow">Entertainment news</p><h1>News Feed</h1><p>Latest movie, TV, and celebrity updates from trusted entertainment publishers.</p></header>
+}
+
+function NewsFilters({ filters, onChange }) {
+  const [options, setOptions] = useState({ actors: [], titles: [], selected: { actor: null, movie: null, show: null } })
+  const [actorQuery, setActorQuery] = useState('')
+  const [titleQuery, setTitleQuery] = useState('')
+  const requestId = useRef(0)
+  const selectionKey = `${filters.actor ?? ''}:${filters.movie ?? ''}:${filters.show ?? ''}`
+
+  useEffect(() => {
+    const controller = new AbortController()
+    const id = ++requestId.current
+    const params = new URLSearchParams()
+    if (actorQuery.trim()) params.set('q', actorQuery.trim())
+    if (filters.actor) params.set('actor', filters.actor)
+    if (filters.movie) params.set('movie', filters.movie)
+    if (filters.show) params.set('show', filters.show)
+    fetch(`/api/news/filters?${params.toString()}`, { signal: controller.signal })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(payload.error || 'Unable to load filters')
+        if (id === requestId.current) setOptions({ actors: Array.isArray(payload.actors) ? payload.actors : [], titles: Array.isArray(payload.titles) ? payload.titles : [], selected: payload.selected || {} })
+      })
+      .catch((error) => { if (error.name !== 'AbortError' && id === requestId.current) setOptions((current) => ({ ...current, actors: [], titles: [] })) })
+    return () => controller.abort()
+  }, [actorQuery, filters.actor, filters.movie, filters.show, selectionKey])
+
+  useEffect(() => {
+    if (!titleQuery.trim()) return undefined
+    const controller = new AbortController()
+    const params = new URLSearchParams({ q: titleQuery.trim() })
+    if (filters.actor) params.set('actor', filters.actor)
+    if (filters.movie) params.set('movie', filters.movie)
+    if (filters.show) params.set('show', filters.show)
+    fetch(`/api/news/filters?${params.toString()}`, { signal: controller.signal })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(payload.error || 'Unable to load filters')
+        setOptions((current) => ({ ...current, titles: Array.isArray(payload.titles) ? payload.titles : [], selected: payload.selected || current.selected }))
+      })
+      .catch(() => {})
+    return () => controller.abort()
+  }, [titleQuery, filters.actor, filters.movie, filters.show, selectionKey])
+
+  const selectedActor = options.selected?.actor
+  const selectedTitle = options.selected?.movie ?? options.selected?.show
+  const clear = (key) => {
+    const next = { ...filters, [key]: null }
+    if (key === 'movie' || key === 'show') { next.movie = null; next.show = null }
+    onChange(next)
+  }
+  return <div className="news-filters" aria-label="Filter news">
+    <div className="news-filter-control"><label htmlFor="news-actor-filter">Actor</label><input id="news-actor-filter" value={actorQuery} onChange={(event) => setActorQuery(event.target.value)} placeholder={selectedActor?.name || 'Search linked actors'} />{actorQuery.trim() ? <div className="news-filter-options">{options.actors.map((actor) => <button type="button" key={actor.id} onClick={() => { onChange({ ...filters, actor: actor.id }); setActorQuery('') }}>{actor.name}</button>)}</div> : null}{selectedActor ? <button type="button" className="news-active-filter" onClick={() => clear('actor')}>{selectedActor.name} <span aria-hidden="true">×</span></button> : null}</div>
+    <div className="news-filter-control"><label htmlFor="news-title-filter">Movie or show</label><input id="news-title-filter" value={titleQuery} onChange={(event) => setTitleQuery(event.target.value)} placeholder={selectedTitle?.name || 'Search linked titles'} />{titleQuery.trim() ? <div className="news-filter-options">{options.titles.map((title) => <button type="button" key={`${title.kind}-${title.id}`} onClick={() => { onChange({ ...filters, movie: title.kind === 'movie' ? title.id : null, show: title.kind === 'show' ? title.id : null }); setTitleQuery('') }}><span>{title.name}</span><small>{title.kind === 'movie' ? 'Movie' : 'TV show'}</small></button>)}</div> : null}{selectedTitle ? <button type="button" className="news-active-filter" onClick={() => clear('movie')}>{selectedTitle.name} <span aria-hidden="true">×</span></button> : null}</div>
+    {(filters.actor || filters.movie || filters.show) ? <button type="button" className="news-clear-filters" onClick={() => onChange(emptyNewsFilters)}>Clear filters</button> : null}
+  </div>
+}
+
+function NewsArticleCard({ article, featured = false, filters, onFilter, isLikePending, likeError, onLike }) {
+  const [imageUnavailable, setImageUnavailable] = useState(false)
+  const showImage = Boolean(article.photoUrl) && !imageUnavailable
+  const source = getNewsSource(article.link)
+  return (
+    <article className={`news-card${featured ? ' featured' : ''}`}>
+      <div className="news-card-primary">
+        <a className="news-card-art" href={article.link} target="_blank" rel="noopener noreferrer" aria-label={`Read ${article.title} on ${source}`}>
+          {showImage ? <img src={article.photoUrl} alt="" loading="lazy" onError={() => setImageUnavailable(true)} /> : <NewsIcon />}
+          <span className={`news-card-badge${featured ? ' featured' : ''}`}>{featured ? 'Featured' : 'News'}</span>
+        </a>
+        <div className="news-card-copy">
+          <a className="news-card-content-link" href={article.link} target="_blank" rel="noopener noreferrer" aria-label={`Read ${article.title} on ${source}`}>
+            <p className="news-card-meta"><span>{source}</span><i aria-hidden="true" />{article.publishedAt ? <time dateTime={article.publishedAt}>{formatNewsDate(article.publishedAt)}</time> : <span>Date unavailable</span>}</p>
+            <h2>{article.title}</h2>
+            {article.description ? <p className="news-card-description">{article.description}</p> : null}
+            <span className="news-read-link"><GlobeIcon />Read article</span>
+          </a>
+          {(article.actors?.length || article.movies?.length || article.shows?.length) ? <div className="news-article-links" aria-label="Related people and titles">
+            {article.actors?.map((actor) => <button type="button" className="news-article-link actor" key={`actor-${actor.id}`} onClick={() => onFilter({ ...filters, actor: actor.id })}>{actor.name}</button>)}
+            {article.movies?.map((movie) => <button type="button" className="news-article-link movie" key={`movie-${movie.id}`} onClick={() => onFilter({ ...filters, movie: movie.id, show: null })}>{movie.name}</button>)}
+            {article.shows?.map((show) => <button type="button" className="news-article-link show" key={`show-${show.id}`} onClick={() => onFilter({ ...filters, movie: null, show: show.id })}>{show.name}</button>)}
+          </div> : null}
+        </div>
+      </div>
+      <div className="news-future-actions" aria-label="Article actions">
+        <button type="button" className={`news-article-like${article.likedByCurrentUser ? ' is-liked' : ''}`} aria-pressed={Boolean(article.likedByCurrentUser)} aria-label={`${article.likedByCurrentUser ? 'Remove like from' : 'Like'} ${article.title}; ${article.likeCount || 0} ${(article.likeCount || 0) === 1 ? 'like' : 'likes'}`} disabled={isLikePending} onClick={() => onLike(article)}><HeartIcon /><span>{article.likedByCurrentUser ? 'Liked' : 'Like'}</span><strong aria-hidden="true">{article.likeCount || 0}</strong></button>
+      </div>
+      {likeError ? <p className="news-like-error" role="alert">Could not update like. {likeError}</p> : null}
+    </article>
+  )
+}
+
+function NewsFeedSkeleton() {
+  return <div className="news-feed" aria-label="Loading news">{Array.from({ length: 4 }, (_value, index) => <div key={index} className="news-card news-card-skeleton"><i /><div><span /><strong /><strong /><small /></div></div>)}</div>
+}
+
+function SeasonalMoviesPage({ state, activeTheme, onBack, onOpenMovie }) {
+  const theme = state.theme || activeTheme
+  const themeName = getSeasonalThemeLabel(theme)
+
+  return (
+    <section className="seasonal-movies-page">
+      <div className="seasonal-movies-heading">
+        <div>
+          <p className="eyebrow">{theme?.emoji || '🍿'} Seasonal picks</p>
+          <h1>{themeName} movies</h1>
+          <p>Twenty popular movies selected from TMDB for the current seasonal theme.</p>
+        </div>
+        <button type="button" className="secondary-button" onClick={onBack}>Back home</button>
+      </div>
+      {state.status === 'loading' ? <SectionMessage message={`Finding ${themeName.toLocaleLowerCase()} movies...`} /> : null}
+      {state.status === 'error' ? <SectionMessage tone="error" message={state.error} /> : null}
+      {state.status === 'success' && state.movies.length === 0 ? <SectionMessage message={`No ${themeName.toLocaleLowerCase()} movies are available from TMDB right now.`} /> : null}
+      {state.status === 'success' && state.movies.length > 0 ? <div className="movie-card-grid seasonal-movies-grid">{state.movies.map((movie) => <MovieCard key={movie.id} movie={movie} onOpenMovie={onOpenMovie} />)}</div> : null}
+    </section>
+  )
+}
+
 function DiscoverScreen({ user, onOpenMovie, onOpenTvShow }) {
   const [step, setStep] = useState(1)
   const [type, setType] = useState(null)
@@ -4916,7 +5254,7 @@ function DiscoverResultCard({ item, onOpen }) {
   return <button type="button" className="discover-result-card" onClick={onOpen}><DiscoverResultArt item={item} /><div><h3>{item.title}</h3><p>{item.year} · {item.meta}</p><span className="star-rating"><StarIcon /> {item.rating}</span></div></button>
 }
 
-function HomeScreen({ user, onOpenMovie, onOpenPopularMovies, onOpenWatchlist, onOpenDiscover, stats, statsPeriod, onStatsPeriodChange, watchlistState, popularMoviesState, continueWatchingState, onOpenContinueWatching, onOpenTvShow, onOpenBook, latestEpisodesState, onOpenLatestEpisodes, tvWatchlistShows, tvWatchlistIds, tvWatchedIds, watchedMovieIds, readBookIds, onToggleMovieWatchlist, onToggleMovieWatched, onToggleTvWatchlist, onToggleTvWatched, onToggleBookWatchlist, onToggleBookRead }) {
+function HomeScreen({ user, onOpenMovie, onOpenPopularMovies, onOpenWatchlist, onOpenDiscover, seasonalTheme, onOpenSeasonalMovies, stats, statsPeriod, onStatsPeriodChange, watchlistState, popularMoviesState, continueWatchingState, onOpenContinueWatching, onOpenTvShow, onOpenBook, latestEpisodesState, onOpenLatestEpisodes, tvWatchlistShows, tvWatchlistIds, tvWatchedIds, watchedMovieIds, readBookIds, onToggleMovieWatchlist, onToggleMovieWatched, onToggleTvWatchlist, onToggleTvWatched, onToggleBookWatchlist, onToggleBookRead }) {
   const greeting = user ? `Good evening, ${getFirstName(user.fullName)}! 🍿` : 'Good evening! 🍿'
   const homeWatchlistMovies = watchlistState.movies.slice(0, 5)
   const homeWatchlistItems = [
@@ -4997,6 +5335,10 @@ function HomeScreen({ user, onOpenMovie, onOpenPopularMovies, onOpenWatchlist, o
               <SparklesIcon />
               <span>Find a movie</span>
             </button>
+            {seasonalTheme ? <button type="button" className="secondary-button seasonal-movies-button" onClick={onOpenSeasonalMovies}>
+              <span aria-hidden="true">{seasonalTheme.emoji}</span>
+              <span>Explore {getSeasonalThemeLabel(seasonalTheme)} movies</span>
+            </button> : null}
             <button type="button" className="secondary-button" onClick={onOpenWatchlist}>
               <BookmarkIcon />
               <span>Open watchlist</span>
@@ -5369,6 +5711,11 @@ function AdminScreen({ activeTheme, adminOverviewState, adminRunState, onBack, o
           <span>Total Actors Stored</span>
           <strong>{adminOverviewState.status === 'success' ? formatAdminTotal(adminOverviewState.totalActors) : '--'}</strong>
           <p>Cast members currently stored in the local database.</p>
+        </article>
+        <article className="admin-summary-card">
+          <span>Total News Articles Stored</span>
+          <strong>{adminOverviewState.status === 'success' ? formatAdminTotal(adminOverviewState.totalNewsArticles) : '--'}</strong>
+          <p>Entertainment-news articles currently stored in the local database.</p>
         </article>
         <article className="admin-summary-card">
           <span>Stored Data Size</span>
@@ -10357,7 +10704,25 @@ function getMovieCreditInitials(name) {
     .join('')
 }
 
+function getSeasonalThemeWithMovies(themeKey) {
+  return seasonalThemes.find((theme) => theme.key === themeKey && typeof theme.tmdbKeyword === 'string' && theme.tmdbKeyword.trim()) ?? null
+}
+
+function getSeasonalThemeLabel(theme) {
+  return String(theme?.name || 'Seasonal').replace(/\s+Theme$/i, '')
+}
+
 function readAppRoute(pathname = window.location.pathname, search = window.location.search) {
+  if (/^\/news\/?$/.test(pathname)) {
+    const params = new URLSearchParams(search)
+    const readId = (key) => {
+      const value = params.get(key)
+      return value && /^\d+$/.test(value) && Number(value) > 0 ? Number(value) : null
+    }
+    const movie = readId('movie')
+    return { kind: routeKinds.news, filters: { actor: readId('actor'), movie, show: movie ? null : readId('show') } }
+  }
+
   if (/^\/stats\/?$/.test(pathname)) {
     return { kind: routeKinds.stats }
   }
@@ -10376,6 +10741,10 @@ function readAppRoute(pathname = window.location.pathname, search = window.locat
 
   if (/^\/discover\/?$/.test(pathname)) {
     return { kind: routeKinds.discover }
+  }
+
+  if (/^\/seasonal\/?$/.test(pathname)) {
+    return { kind: routeKinds.seasonalMovies }
   }
 
   if (/^\/tv\/continue-watching\/?$/.test(pathname)) {
@@ -10436,6 +10805,23 @@ function readWatchlistViewState(search = window.location.search) {
 function buildWatchlistPath({ tab, availability, sort }) {
   const params = new URLSearchParams({ tab: watchlistTabKeys[tab] || 'all', availability, sort })
   return `/watchlist?${params.toString()}`
+}
+
+function buildNewsPath(filters = emptyNewsFilters) {
+  const params = new URLSearchParams()
+  if (Number.isInteger(filters.actor) && filters.actor > 0) params.set('actor', filters.actor)
+  if (Number.isInteger(filters.movie) && filters.movie > 0) params.set('movie', filters.movie)
+  if (Number.isInteger(filters.show) && filters.show > 0 && !params.has('movie')) params.set('show', filters.show)
+  const query = params.toString()
+  return query ? `/news?${query}` : '/news'
+}
+
+function buildNewsApiPath(page, filters = emptyNewsFilters) {
+  const params = new URLSearchParams({ page: String(page), limit: String(newsPageSize) })
+  if (Number.isInteger(filters.actor) && filters.actor > 0) params.set('actor', filters.actor)
+  if (Number.isInteger(filters.movie) && filters.movie > 0) params.set('movie', filters.movie)
+  if (Number.isInteger(filters.show) && filters.show > 0 && !params.has('movie')) params.set('show', filters.show)
+  return `/api/news?${params.toString()}`
 }
 
 function buildSearchPath(query) {
@@ -10639,6 +11025,28 @@ function formatLongDate(releaseDate) {
     year: 'numeric',
     timeZone: 'UTC',
   }).format(parsedDate)
+}
+
+function formatNewsDate(value) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return 'Date unavailable'
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  }).format(date)
+}
+
+function getNewsSource(link) {
+  try {
+    const hostname = new URL(link).hostname.replace(/^www\./, '')
+    if (hostname === 'variety.com' || hostname.endsWith('.variety.com')) return 'Variety'
+    if (hostname === 'deadline.com' || hostname.endsWith('.deadline.com')) return 'Deadline'
+    if (hostname === 'hollywoodreporter.com' || hostname.endsWith('.hollywoodreporter.com')) return 'The Hollywood Reporter'
+    return hostname
+  } catch {
+    return 'Original publisher'
+  }
 }
 
 function formatAdminJobExecutionDate(value) {
@@ -10849,6 +11257,16 @@ function TvIcon() {
       <rect x="4" y="5.5" width="16" height="11.5" rx="2.5" />
       <path d="M10 20h4" />
       <path d="M12 17v3" />
+    </IconBase>
+  )
+}
+
+function NewsIcon() {
+  return (
+    <IconBase>
+      <path d="M5 5.5h11.5v13H6.8A1.8 1.8 0 0 1 5 16.7V5.5Z" />
+      <path d="M16.5 8.5H19v8.2a1.8 1.8 0 0 1-1.8 1.8h-.7" />
+      <path d="M8 9h5.5M8 12h5.5M8 15h3.2" />
     </IconBase>
   )
 }

@@ -22,7 +22,7 @@ Services:
 - API (through reverse proxy): `http://localhost:8080/api/health`
 - Postgres: internal `db:5432`
 
-The popular movie and TV importers run automatically every 10 minutes; Now Playing, Upcoming, popular games, recently released games, and upcoming games run every 24 hours; and the Google Books importer runs hourly. The seasonal-theme scheduler evaluates immediately on startup and then daily at 00:05 in `THEME_SCHEDULER_TIME_ZONE` (default: `Europe/Bucharest`). Configure the IGDB Client ID and Client Secret in Admin before the games importers can run.
+The popular movie and TV importers run automatically every 10 minutes; Now Playing, Upcoming, popular games, recently released games, and upcoming games run every 24 hours; and the Google Books and entertainment-news RSS importers run hourly. The seasonal-theme scheduler evaluates immediately on startup and then daily at 00:05 in `THEME_SCHEDULER_TIME_ZONE` (default: `Europe/Bucharest`). Configure the IGDB Client ID and Client Secret in Admin before the games importers can run.
 
 Use this mode when you want the production-style static web image. Frontend changes require rebuilding the `web` image.
 
@@ -100,6 +100,7 @@ docker compose down
 - `npm run server:watch` starts the API with automatic reload on file changes.
 - `npm run import:movies` runs a one-off TMDB import.
 - `npm run import:books` imports 10 Google Books titles from one randomly selected subject each run.
+- `npm run import:entertainment-news` imports articles from Variety, Deadline, and The Hollywood Reporter RSS feeds and links exact actor-category matches.
 - `npm run import:now-playing` runs a one-off TMDB Now Playing import for movies released in the last 30 days.
 - `npm run import:upcoming` runs a one-off TMDB Upcoming import for movies releasing in the next 30 days.
 - `npm run import:tv-popular` runs a one-off TMDB Popular TV import.

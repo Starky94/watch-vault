@@ -2,6 +2,7 @@ import express from 'express'
 import { loadConfig } from './config.js'
 import {
   addMovieToWatchlistForUser,
+  addNewsArticleLikeForUser,
   addMovieReleaseReminderForUser,
   addBookToWatchlistForUser,
   addBookToReadForUser,
@@ -10,6 +11,7 @@ import {
   countBooks,
   countGames,
   countMovies,
+  countNewsArticles,
   countStoredDataBytes,
   countTvShows,
   getBookByGoogleBooksId,
@@ -18,6 +20,7 @@ import {
   ensureFavoriteActorsTable,
   ensureMovieKeywordTables,
   ensureAchievementTables,
+  ensureNewsTables,
   ensureTvDetailTables,
   ensureMoviesTable,
   ensureBooksTable,
@@ -94,6 +97,9 @@ import {
   listBooksForAuthor,
   listGenres,
   listMovieSummariesByTmdbIds,
+  listNewsArticles,
+  listNewsFilterOptions,
+  removeNewsArticleLikeForUser,
   searchActors,
   searchBooks,
   searchGames,
@@ -157,7 +163,7 @@ import {
   upsertBookRatingForUser,
 } from './database.js'
 import { adminJobs, findAdminJob, listAdminJobs } from './adminJobs.js'
-import { discoverTitles, fetchMovieReviews, fetchMovieVideos, fetchPersonCombinedCredits, fetchPersonDetails, fetchTvReviews, searchMovies as searchTmdbMovies, searchPeople, searchTvShows as searchTmdbTvShows } from './tmdbClient.js'
+import { discoverMoviesByKeyword, discoverTitles, fetchMovieReviews, fetchMovieVideos, fetchPersonCombinedCredits, fetchPersonDetails, fetchTvReviews, searchMovieKeywords, searchMovies as searchTmdbMovies, searchPeople, searchTvShows as searchTmdbTvShows } from './tmdbClient.js'
 import { hydrateMovieByTmdbId } from './movieImportService.js'
 import { hydrateGameByIgdbId } from './gameImportService.js'
 import { hydrateTvShowByTmdbId } from './tvImportService.js'
@@ -165,7 +171,7 @@ import { normalizeBook, sanitizeBookDescription } from './bookImportService.js'
 import { fetchBookById, fetchRelatedBooksByCategory, searchBooksByTitle } from './googleBooksClient.js'
 import { buildFilelistSearchUrl, buildFilelistTvEpisodeQuery, decryptFilelistValue, encryptFilelistValue, mapFilelistResults } from './filelist.js'
 import { fetchIgdbAccessToken, igdbRequest } from './igdbClient.js'
-import { isAvailableTheme } from '../shared/themes.js'
+import { getSeasonalTheme, isAvailableTheme } from '../shared/themes.js'
 
 const bookReadingFormats = new Set(['physical', 'ebook', 'audiobook'])
 const gameStatuses = new Set(['played', 'backlog', 'playing', 'dropped', 'completed'])
@@ -289,6 +295,7 @@ export async function createApp(pool, options = {}) {
   }
 
   await ensureMoviesTable(pool)
+  await ensureNewsTables(pool)
   await ensureMovieKeywordTables(pool)
   await ensureBooksTable(pool)
   await ensureGamesTable(pool)
@@ -449,6 +456,52 @@ export async function createApp(pool, options = {}) {
         query,
         movies: (Array.isArray(moviePayload?.results) ? moviePayload.results : []).slice(0, 20).map(mapTmdbMovieSearchResult),
         shows: (Array.isArray(tvPayload?.results) ? tvPayload.results : []).slice(0, 20).map(mapTmdbTvSearchResult),
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/seasonal-movies', async (_request, response, next) => {
+    try {
+      const activeTheme = await getActiveSiteTheme(pool)
+      const theme = getSeasonalTheme(activeTheme)
+      const keyword = theme?.tmdbKeyword
+
+      if (!keyword) {
+        return response.status(404).json({ error: 'No seasonal movie collection is active.' })
+      }
+
+      const config = loadRuntimeConfig()
+      const keywordPayload = await searchMovieKeywords(fetch, {
+        token: config.tmdbBearerToken,
+        baseUrl: config.tmdbBaseUrl,
+        query: keyword,
+      })
+      const keywordId = (Array.isArray(keywordPayload?.results) ? keywordPayload.results : [])
+        .find((item) => Number.isInteger(item?.id) && String(item?.name || '').trim().toLocaleLowerCase() === keyword.toLocaleLowerCase())?.id
+
+      if (!keywordId) {
+        return response.status(404).json({ error: `TMDB does not have a matching keyword for ${theme.name}.` })
+      }
+
+      const moviesPayload = await discoverMoviesByKeyword(fetch, {
+        token: config.tmdbBearerToken,
+        baseUrl: config.tmdbBaseUrl,
+        keywordId,
+      })
+      const includedIds = new Set()
+      const movies = []
+      for (const movie of Array.isArray(moviesPayload?.results) ? moviesPayload.results : []) {
+        if (!Number.isInteger(movie?.id) || includedIds.has(movie.id)) continue
+        includedIds.add(movie.id)
+        movies.push(mapTmdbMovieSearchResult(movie))
+        if (movies.length === 20) break
+      }
+
+      response.json({
+        theme: { key: theme.key, name: theme.name, emoji: theme.emoji },
+        movies,
       })
     } catch (error) {
       next(error)
@@ -1536,12 +1589,87 @@ export async function createApp(pool, options = {}) {
           books: await countBooks(pool),
           games: await countGames(pool),
           movies: await countMovies(pool),
+          newsArticles: await countNewsArticles(pool),
           storedDataBytes: await countStoredDataBytes(pool),
           tvShows: await countTvShows(pool),
         },
         filelist: { configured: Boolean(credential), updatedAt: credential?.updated_at ?? null },
         igdb: { configured: Boolean(igdbCredential), updatedAt: igdbCredential?.updated_at ?? null },
         sections: { enabled: enabledSections },
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/news', async (request, response, next) => {
+    try {
+      const pagination = readPaginationQuery(request, { defaultLimit: 20 })
+      const filters = readNewsFilters(request)
+      if (filters.error) return response.status(400).json({ error: filters.error })
+      const user = await getAuthenticatedUser(pool, request)
+      const articles = await listNewsArticles(pool, { limit: pagination.limit + 1, page: pagination.page, userId: user?.id ?? null, ...filters })
+      const pagedArticles = articles.slice(0, pagination.limit)
+      response.json({
+        count: pagedArticles.length,
+        articles: pagedArticles.map((article) => ({
+          id: Number(article.id),
+          title: decodeHtmlEntities(article.title),
+          link: article.link,
+          publishedAt: article.published_at,
+          photoUrl: article.photo_url,
+          description: decodeHtmlEntities(article.description),
+          likeCount: Number(article.like_count) || 0,
+          likedByCurrentUser: Boolean(article.liked_by_current_user),
+          actors: Array.isArray(article.actors) ? article.actors.map((actor) => ({ id: Number(actor.id), name: actor.name })) : [],
+          movies: Array.isArray(article.movies) ? article.movies.map((movie) => ({ id: Number(movie.id), name: movie.name })) : [],
+          shows: Array.isArray(article.shows) ? article.shows.map((show) => ({ id: Number(show.id), name: show.name })) : [],
+        })),
+        pagination: buildPaginationPayload(pagination, articles.length > pagination.limit),
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/news/:articleId/like', async (request, response, next) => {
+    const articleId = Number.parseInt(request.params.articleId, 10)
+    if (!Number.isInteger(articleId) || articleId <= 0) return response.status(400).json({ error: `Invalid article id: ${request.params.articleId}` })
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const result = await addNewsArticleLikeForUser(pool, { articleId, userId: user.id })
+      if (result.status === 'missing_article') return response.status(404).json({ error: `Article ${articleId} was not found` })
+      response.json({ likeCount: result.likeCount, likedByCurrentUser: result.likedByCurrentUser })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.delete('/api/news/:articleId/like', async (request, response, next) => {
+    const articleId = Number.parseInt(request.params.articleId, 10)
+    if (!Number.isInteger(articleId) || articleId <= 0) return response.status(400).json({ error: `Invalid article id: ${request.params.articleId}` })
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const result = await removeNewsArticleLikeForUser(pool, { articleId, userId: user.id })
+      if (result.status === 'missing_article') return response.status(404).json({ error: `Article ${articleId} was not found` })
+      response.json({ likeCount: result.likeCount, likedByCurrentUser: result.likedByCurrentUser })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/news/filters', async (request, response, next) => {
+    try {
+      const filters = readNewsFilters(request)
+      if (filters.error) return response.status(400).json({ error: filters.error })
+      const query = typeof request.query.q === 'string' ? request.query.q.trim().slice(0, 120) : ''
+      const options = await listNewsFilterOptions(pool, { query, ...filters })
+      response.json({
+        actors: options.actors.map((actor) => ({ id: Number(actor.id), name: actor.name })),
+        titles: options.titles.map((title) => ({ kind: title.kind, id: Number(title.id), name: title.name })),
+        selected: options.selected,
       })
     } catch (error) {
       next(error)
@@ -3146,6 +3274,36 @@ function readPaginationQuery(request, { defaultLimit = 30 } = {}) {
     limit: Number.isInteger(requestedLimit) && requestedLimit > 0 ? requestedLimit : defaultLimit,
     page: Number.isInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1,
   }
+}
+
+function readNewsFilters(request) {
+  const parse = (key) => {
+    const value = request.query[key]
+    if (value === undefined || value === '') return null
+    if (typeof value !== 'string' || !/^\d+$/.test(value)) return Number.NaN
+    const id = Number(value)
+    return Number.isSafeInteger(id) && id > 0 ? id : Number.NaN
+  }
+  const actorId = parse('actor')
+  const movieId = parse('movie')
+  const showId = parse('show')
+  if ([actorId, movieId, showId].some(Number.isNaN)) return { error: 'News filters must be positive integer IDs' }
+  if (movieId && showId) return { error: 'Choose either a movie or a show filter' }
+  return { actorId, movieId, showId }
+}
+
+function decodeHtmlEntities(value) {
+  const namedEntities = { amp: '&', apos: "'", gt: '>', lt: '<', nbsp: ' ', quot: '"' }
+  return String(value || '').replace(/&(#(?:x[0-9a-f]+|\d+)|amp|apos|gt|lt|nbsp|quot);/gi, (match, entity) => {
+    if (entity[0] !== '#') return namedEntities[entity.toLocaleLowerCase()] ?? match
+    const hexadecimal = entity[1]?.toLocaleLowerCase() === 'x'
+    const codePoint = Number.parseInt(entity.slice(hexadecimal ? 2 : 1), hexadecimal ? 16 : 10)
+    try {
+      return Number.isInteger(codePoint) ? String.fromCodePoint(codePoint) : match
+    } catch {
+      return match
+    }
+  })
 }
 
 function buildPaginationPayload(pagination, hasNextPage) {

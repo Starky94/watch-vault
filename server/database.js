@@ -438,7 +438,29 @@ export async function ensureMoviesTable(pool) {
       full_name TEXT NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS news_articles (
+      id BIGSERIAL PRIMARY KEY,
+      title TEXT NOT NULL,
+      link TEXT NOT NULL UNIQUE,
+      published_at TIMESTAMPTZ,
+      photo_url TEXT,
+      description TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS news_article_actors (
+      news_article_id BIGINT NOT NULL REFERENCES news_articles(id) ON DELETE CASCADE,
+      cast_member_id BIGINT NOT NULL REFERENCES cast_members(id) ON DELETE CASCADE,
+      PRIMARY KEY (news_article_id, cast_member_id)
     )
+  `)
+
+  await pool.query(`
+    ALTER TABLE news_articles
+    ADD COLUMN IF NOT EXISTS description TEXT
   `)
 
   await pool.query(`
@@ -3018,6 +3040,327 @@ export async function ensureAdminJobExecutionsTable(pool) {
       last_executed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `)
+}
+
+export async function ensureNewsTables(pool) {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS news_articles (
+      id BIGSERIAL PRIMARY KEY,
+      title TEXT NOT NULL,
+      link TEXT NOT NULL UNIQUE,
+      published_at TIMESTAMPTZ,
+      photo_url TEXT,
+      description TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `)
+
+  await pool.query(`
+    ALTER TABLE news_articles
+    ADD COLUMN IF NOT EXISTS description TEXT
+  `)
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS news_article_actors (
+      news_article_id BIGINT NOT NULL REFERENCES news_articles(id) ON DELETE CASCADE,
+      cast_member_id BIGINT NOT NULL REFERENCES cast_members(id) ON DELETE CASCADE,
+      PRIMARY KEY (news_article_id, cast_member_id)
+    )
+  `)
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS news_article_movies (
+      news_article_id BIGINT NOT NULL REFERENCES news_articles(id) ON DELETE CASCADE,
+      movie_id BIGINT NOT NULL REFERENCES movies(id) ON DELETE CASCADE,
+      PRIMARY KEY (news_article_id, movie_id)
+    )
+  `)
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS news_article_tv_shows (
+      news_article_id BIGINT NOT NULL REFERENCES news_articles(id) ON DELETE CASCADE,
+      tv_show_id BIGINT NOT NULL REFERENCES tv_shows(id) ON DELETE CASCADE,
+      PRIMARY KEY (news_article_id, tv_show_id)
+    )
+  `)
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS news_article_likes (
+      news_article_id BIGINT NOT NULL REFERENCES news_articles(id) ON DELETE CASCADE,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (news_article_id, user_id)
+    )
+  `)
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS news_article_actors_cast_member_idx
+    ON news_article_actors (cast_member_id, news_article_id)
+  `)
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS news_article_movies_movie_idx
+    ON news_article_movies (movie_id, news_article_id)
+  `)
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS news_article_tv_shows_show_idx
+    ON news_article_tv_shows (tv_show_id, news_article_id)
+  `)
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS news_article_likes_article_idx
+    ON news_article_likes (news_article_id)
+  `)
+}
+
+export async function listNewsActors(pool) {
+  const result = await pool.query(`
+    SELECT DISTINCT cast_members.id, cast_members.name
+    FROM cast_members
+    WHERE EXISTS (
+      SELECT 1
+      FROM movie_cast
+      WHERE movie_cast.cast_member_id = cast_members.id
+        AND movie_cast.credit_type = 'actor'
+    )
+    OR EXISTS (
+      SELECT 1
+      FROM tv_show_credits
+      WHERE tv_show_credits.tmdb_person_id = cast_members.tmdb_person_id
+        AND tv_show_credits.credit_type = 'actor'
+    )
+  `)
+  return result.rows
+}
+
+export async function listNewsMovies(pool) {
+  const result = await pool.query(`
+    SELECT id, tmdb_id, title
+    FROM movies
+  `)
+  return result.rows
+}
+
+export async function listNewsTvShows(pool) {
+  const result = await pool.query(`
+    SELECT id, tmdb_id, name
+    FROM tv_shows
+  `)
+  return result.rows
+}
+
+export async function upsertNewsArticles(pool, articles) {
+  if (!Array.isArray(articles) || articles.length === 0) return { articleIdsByLink: new Map(), insertedCount: 0, updatedCount: 0 }
+  const client = await pool.connect()
+  const articleIdsByLink = new Map()
+  let insertedCount = 0
+  let updatedCount = 0
+  try {
+    await client.query('BEGIN')
+    for (const article of articles) {
+      const result = await client.query(
+        `INSERT INTO news_articles (title, link, published_at, photo_url, description, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+         ON CONFLICT (link) DO UPDATE SET
+           title = EXCLUDED.title,
+           published_at = COALESCE(EXCLUDED.published_at, news_articles.published_at),
+           photo_url = COALESCE(EXCLUDED.photo_url, news_articles.photo_url),
+           description = COALESCE(EXCLUDED.description, news_articles.description),
+           updated_at = NOW()
+         RETURNING id, (xmax = 0) AS inserted`,
+        [article.title, article.link, article.publishedAt, article.photoUrl, article.description]
+      )
+      const row = result.rows[0]
+      articleIdsByLink.set(article.link, row.id)
+      if (row.inserted) insertedCount += 1
+      else updatedCount += 1
+    }
+    await client.query('COMMIT')
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally {
+    client.release()
+  }
+  return { articleIdsByLink, insertedCount, updatedCount }
+}
+
+export async function linkNewsArticlesToActors(pool, links) {
+  if (!Array.isArray(links) || links.length === 0) return 0
+  const client = await pool.connect()
+  let linkedCount = 0
+  try {
+    await client.query('BEGIN')
+    for (const link of links) {
+      const result = await client.query(
+        `INSERT INTO news_article_actors (news_article_id, cast_member_id)
+         VALUES ($1, $2)
+         ON CONFLICT DO NOTHING`,
+        [link.articleId, link.actorId]
+      )
+      linkedCount += result.rowCount ?? 0
+    }
+    await client.query('COMMIT')
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally {
+    client.release()
+  }
+  return linkedCount
+}
+
+async function linkNewsArticles(pool, links, tableName, columnName) {
+  if (!Array.isArray(links) || links.length === 0) return 0
+  const client = await pool.connect()
+  let linkedCount = 0
+  try {
+    await client.query('BEGIN')
+    for (const link of links) {
+      const result = await client.query(
+        `INSERT INTO ${tableName} (news_article_id, ${columnName})
+         VALUES ($1, $2)
+         ON CONFLICT DO NOTHING`,
+        [link.articleId, link.entityId]
+      )
+      linkedCount += result.rowCount ?? 0
+    }
+    await client.query('COMMIT')
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally {
+    client.release()
+  }
+  return linkedCount
+}
+
+export function linkNewsArticlesToMovies(pool, links) {
+  return linkNewsArticles(pool, links, 'news_article_movies', 'movie_id')
+}
+
+export function linkNewsArticlesToTvShows(pool, links) {
+  return linkNewsArticles(pool, links, 'news_article_tv_shows', 'tv_show_id')
+}
+
+export async function listNewsArticles(pool, options = {}) {
+  const { limit = 20, page = 1, actorId = null, movieId = null, showId = null, userId = null } = options
+  const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 20
+  const normalizedPage = Number.isInteger(page) ? Math.max(1, page) : 1
+  const offset = (normalizedPage - 1) * normalizedLimit
+  const params = []
+  const conditions = []
+  if (Number.isInteger(actorId)) {
+    params.push(actorId)
+    conditions.push(`EXISTS (SELECT 1 FROM news_article_actors filter_actor_link JOIN cast_members filter_actor ON filter_actor.id = filter_actor_link.cast_member_id WHERE filter_actor_link.news_article_id = news_articles.id AND filter_actor.tmdb_person_id = $${params.length})`)
+  }
+  if (Number.isInteger(movieId)) {
+    params.push(movieId)
+    conditions.push(`EXISTS (SELECT 1 FROM news_article_movies filter_movie_link JOIN movies filter_movie ON filter_movie.id = filter_movie_link.movie_id WHERE filter_movie_link.news_article_id = news_articles.id AND filter_movie.tmdb_id = $${params.length})`)
+  }
+  if (Number.isInteger(showId)) {
+    params.push(showId)
+    conditions.push(`EXISTS (SELECT 1 FROM news_article_tv_shows filter_show_link JOIN tv_shows filter_show ON filter_show.id = filter_show_link.tv_show_id WHERE filter_show_link.news_article_id = news_articles.id AND filter_show.tmdb_id = $${params.length})`)
+  }
+  const viewerUserId = userId !== null && userId !== undefined && Number.isSafeInteger(Number(userId)) ? Number(userId) : null
+  if (viewerUserId !== null) params.push(viewerUserId)
+  params.push(normalizedLimit, offset)
+  const result = await pool.query(
+    `SELECT news_articles.id, news_articles.title, news_articles.link, news_articles.published_at, news_articles.photo_url, news_articles.description,
+      (SELECT COUNT(*)::INTEGER FROM news_article_likes WHERE news_article_likes.news_article_id = news_articles.id) AS like_count,
+      ${viewerUserId === null ? 'FALSE' : `EXISTS (SELECT 1 FROM news_article_likes viewer_like WHERE viewer_like.news_article_id = news_articles.id AND viewer_like.user_id = $${params.length - 2})`} AS liked_by_current_user,
+      COALESCE((SELECT json_agg(json_build_object('id', cast_members.tmdb_person_id, 'name', cast_members.name) ORDER BY cast_members.name)
+        FROM news_article_actors JOIN cast_members ON cast_members.id = news_article_actors.cast_member_id
+        WHERE news_article_actors.news_article_id = news_articles.id), '[]'::json) AS actors,
+      COALESCE((SELECT json_agg(json_build_object('id', movies.tmdb_id, 'name', movies.title) ORDER BY movies.title)
+        FROM news_article_movies JOIN movies ON movies.id = news_article_movies.movie_id
+        WHERE news_article_movies.news_article_id = news_articles.id), '[]'::json) AS movies,
+      COALESCE((SELECT json_agg(json_build_object('id', tv_shows.tmdb_id, 'name', tv_shows.name) ORDER BY tv_shows.name)
+        FROM news_article_tv_shows JOIN tv_shows ON tv_shows.id = news_article_tv_shows.tv_show_id
+        WHERE news_article_tv_shows.news_article_id = news_articles.id), '[]'::json) AS shows
+     FROM news_articles
+     ${conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''}
+     ORDER BY COALESCE(published_at, created_at) DESC, id DESC
+     LIMIT $${params.length - 1}
+     OFFSET $${params.length}`,
+    params
+  )
+  return result.rows
+}
+
+async function getNewsArticleLikeCount(pool, articleId) {
+  const result = await pool.query(
+    `SELECT COUNT(news_article_likes.user_id)::INTEGER AS like_count
+     FROM news_articles
+     LEFT JOIN news_article_likes ON news_article_likes.news_article_id = news_articles.id
+     WHERE news_articles.id = $1
+     GROUP BY news_articles.id`,
+    [articleId]
+  )
+  return result.rows[0] ? Number(result.rows[0].like_count) : null
+}
+
+export async function addNewsArticleLikeForUser(pool, { articleId, userId }) {
+  const likeCount = await getNewsArticleLikeCount(pool, articleId)
+  if (likeCount === null) return { status: 'missing_article' }
+  await pool.query(
+    `INSERT INTO news_article_likes (news_article_id, user_id)
+     VALUES ($1, $2)
+     ON CONFLICT DO NOTHING`,
+    [articleId, userId]
+  )
+  return { status: 'ok', likedByCurrentUser: true, likeCount: await getNewsArticleLikeCount(pool, articleId) }
+}
+
+export async function removeNewsArticleLikeForUser(pool, { articleId, userId }) {
+  const likeCount = await getNewsArticleLikeCount(pool, articleId)
+  if (likeCount === null) return { status: 'missing_article' }
+  await pool.query(
+    `DELETE FROM news_article_likes
+     WHERE news_article_id = $1 AND user_id = $2`,
+    [articleId, userId]
+  )
+  return { status: 'ok', likedByCurrentUser: false, likeCount: await getNewsArticleLikeCount(pool, articleId) }
+}
+
+export async function listNewsFilterOptions(pool, { query = '', actorId = null, movieId = null, showId = null } = {}) {
+  const term = String(query || '').trim()
+  const matches = term ? `AND POSITION(LOWER($1) IN LOWER(name)) > 0` : ''
+  const titleMatches = term ? `AND POSITION(LOWER($1) IN LOWER(name)) > 0` : ''
+  const queryParams = term ? [term] : []
+  const [actorResult, titleResult, selectedResult] = await Promise.all([
+    pool.query(`SELECT DISTINCT cast_members.tmdb_person_id AS id, cast_members.name
+      FROM news_article_actors
+      JOIN cast_members ON cast_members.id = news_article_actors.cast_member_id
+      WHERE TRUE ${matches}
+      ORDER BY cast_members.name ASC
+      LIMIT 20`, queryParams),
+    pool.query(`SELECT kind, id, name FROM (
+        SELECT DISTINCT 'movie' AS kind, movies.tmdb_id AS id, movies.title AS name
+        FROM news_article_movies JOIN movies ON movies.id = news_article_movies.movie_id
+        UNION
+        SELECT DISTINCT 'show' AS kind, tv_shows.tmdb_id AS id, tv_shows.name AS name
+        FROM news_article_tv_shows JOIN tv_shows ON tv_shows.id = news_article_tv_shows.tv_show_id
+      ) title_options
+      WHERE TRUE ${titleMatches}
+      ORDER BY name ASC, kind ASC
+      LIMIT 20`, queryParams),
+    pool.query(`SELECT kind, id, name FROM (
+        SELECT 'actor' AS kind, cast_members.tmdb_person_id AS id, cast_members.name
+        FROM news_article_actors JOIN cast_members ON cast_members.id = news_article_actors.cast_member_id
+        WHERE cast_members.tmdb_person_id = $1
+        UNION ALL
+        SELECT 'movie' AS kind, movies.tmdb_id AS id, movies.title AS name
+        FROM news_article_movies JOIN movies ON movies.id = news_article_movies.movie_id
+        WHERE movies.tmdb_id = $2
+        UNION ALL
+        SELECT 'show' AS kind, tv_shows.tmdb_id AS id, tv_shows.name
+        FROM news_article_tv_shows JOIN tv_shows ON tv_shows.id = news_article_tv_shows.tv_show_id
+        WHERE tv_shows.tmdb_id = $3
+      ) selected_options`, [actorId ?? -1, movieId ?? -1, showId ?? -1]),
+  ])
+  const selected = { actor: null, movie: null, show: null }
+  for (const row of selectedResult.rows) selected[row.kind] = { id: Number(row.id), name: row.name }
+  return { actors: actorResult.rows, titles: titleResult.rows, selected }
 }
 
 export async function recordAdminJobExecution(pool, jobKey) {
@@ -6370,13 +6713,18 @@ export async function countActors(pool) {
   return result.rows[0]?.actor_count ?? 0
 }
 
+export async function countNewsArticles(pool) {
+  const result = await pool.query('SELECT COUNT(*)::INTEGER AS news_article_count FROM news_articles')
+  return result.rows[0]?.news_article_count ?? 0
+}
+
 export async function countStoredDataBytes(pool) {
   const result = await pool.query(`
     SELECT COALESCE(
       SUM(pg_total_relation_size(to_regclass(table_name))),
       0
     )::BIGINT AS stored_data_bytes
-    FROM UNNEST(ARRAY['movies', 'books', 'games', 'genres', 'cast_members', 'movie_cast', 'users', 'watchlist_items', 'watched_movies']) AS table_name
+    FROM UNNEST(ARRAY['movies', 'books', 'games', 'genres', 'cast_members', 'movie_cast', 'users', 'watchlist_items', 'watched_movies', 'news_articles', 'news_article_actors']) AS table_name
     WHERE to_regclass(table_name) IS NOT NULL
   `)
 

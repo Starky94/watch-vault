@@ -2267,6 +2267,80 @@ test('GET /api/search/tmdb returns normalized TMDB title cards without database 
   }
 })
 
+test('GET /api/seasonal-movies returns twenty TMDB keyword matches without catalog writes', async () => {
+  const nonThemeQueries = []
+  const originalFetch = global.fetch
+  const tmdbRequests = []
+  global.fetch = async (url, options) => {
+    const value = String(url)
+    if (!value.startsWith('https://example.test')) return originalFetch(url, options)
+    tmdbRequests.push({ url: value, options })
+    if (value.includes('/search/keyword')) {
+      return { ok: true, async json() { return { results: [{ id: 91, name: 'autumn' }] } } }
+    }
+    return {
+      ok: true,
+      async json() {
+        return { results: Array.from({ length: 21 }, (_value, index) => ({ id: index === 20 ? 1 : index + 1, title: `Autumn Movie ${index + 1}`, release_date: '2026-09-01', vote_average: 7.1, poster_path: '/autumn.jpg' })) }
+      },
+    }
+  }
+  const pool = {
+    async query(sql) {
+      if (isSchemaSetupQuery(sql)) return { rowCount: null, rows: [] }
+      if (sql.includes('SELECT active_theme')) return { rows: [{ active_theme: 'autumn' }] }
+      nonThemeQueries.push(sql)
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+  const app = await createApp(pool, { loadRuntimeConfig: () => ({ tmdbBearerToken: 'token', tmdbBaseUrl: 'https://example.test' }) })
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const response = await originalFetch(`http://127.0.0.1:${address.port}/api/seasonal-movies`)
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.deepEqual(payload.theme, { key: 'autumn', name: 'Autumn Theme', emoji: '🍂' })
+    assert.equal(payload.movies.length, 20)
+    assert.equal(new Set(payload.movies.map((movie) => movie.id)).size, 20)
+    assert.equal(payload.movies[0].title, 'Autumn Movie 1')
+    assert.ok(tmdbRequests.some((request) => request.url.endsWith('/search/keyword?query=autumn&page=1')))
+    assert.ok(tmdbRequests.some((request) => request.url.endsWith('/discover/movie?sort_by=popularity.desc&with_keywords=91&page=1')))
+    assert.ok(tmdbRequests.every((request) => request.options.headers.Authorization === 'Bearer token'))
+    assert.deepEqual(nonThemeQueries, [])
+  } finally {
+    global.fetch = originalFetch
+    await closeServer(server)
+  }
+})
+
+test('GET /api/seasonal-movies rejects requests without an active configured theme', async () => {
+  const originalFetch = global.fetch
+  let tmdbRequested = false
+  global.fetch = async (...args) => { tmdbRequested = true; return originalFetch(...args) }
+  const pool = {
+    async query(sql) {
+      if (isSchemaSetupQuery(sql)) return { rowCount: null, rows: [] }
+      if (sql.includes('SELECT active_theme')) return { rows: [{ active_theme: 'default' }] }
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+  const app = await createApp(pool, { loadRuntimeConfig: () => ({ tmdbBearerToken: 'token', tmdbBaseUrl: 'https://example.test' }) })
+  const server = app.listen(0)
+
+  try {
+    const address = server.address()
+    const response = await originalFetch(`http://127.0.0.1:${address.port}/api/seasonal-movies`)
+    assert.equal(response.status, 404)
+    assert.deepEqual(await response.json(), { error: 'No seasonal movie collection is active.' })
+    assert.equal(tmdbRequested, false)
+  } finally {
+    global.fetch = originalFetch
+    await closeServer(server)
+  }
+})
+
 test('GET /api/movies forwards the optional genre filter to the database query', async () => {
   const rows = [
     {

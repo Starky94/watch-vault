@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   discoverTitles,
+  discoverMoviesByKeyword,
   fetchAiringTodayTvShowsPage,
   fetchMovieCredits,
   fetchMovieReviews,
@@ -100,6 +101,22 @@ test('searchMovieKeywords requests the TMDB keyword search endpoint', async () =
   })
 
   assert.match(requestedUrl, /\/search\/keyword\?query=time\+travel&page=1$/)
+})
+
+test('discoverMoviesByKeyword requests popular movie matches for one TMDB keyword', async () => {
+  let requestedUrl = ''
+  const fetchImpl = async (url) => {
+    requestedUrl = String(url)
+    return { ok: true, async json() { return { results: [] } } }
+  }
+
+  await discoverMoviesByKeyword(fetchImpl, {
+    token: 'token',
+    baseUrl: 'https://api.themoviedb.org/3',
+    keywordId: 123,
+  })
+
+  assert.match(requestedUrl, /\/discover\/movie\?sort_by=popularity.desc&with_keywords=123&page=1$/)
 })
 
 test('searchPeople requests the TMDB person search endpoint', async () => {

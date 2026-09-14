@@ -16,6 +16,7 @@ export const seasonalThemes = [
     date: '1 September',
     period: '1–10 Sep',
     schedule: { startsOn: '09-01', endsOn: '09-10' },
+    tmdbKeyword: 'autumn',
     available: true,
   },
   { key: 'halloween', name: 'Halloween', emoji: '👻', date: '31 October', period: '20–31 Oct', available: false },
@@ -30,6 +31,10 @@ export const availableThemeKeys = new Set([
 
 export function isAvailableTheme(themeKey) {
   return typeof themeKey === 'string' && availableThemeKeys.has(themeKey)
+}
+
+export function getSeasonalTheme(themeKey) {
+  return seasonalThemes.find((theme) => theme.key === themeKey) ?? null
 }
 
 export function normalizeActiveTheme(themeKey) {
