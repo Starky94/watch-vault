@@ -1866,6 +1866,7 @@ export async function createApp(pool, options = {}) {
           changed: result.changed,
           timeZone: result.timeZone,
         } : {}),
+        ...(job.source === 'news-cleanup' ? { deletedCount: result.deletedCount ?? 0, cutoff: result.cutoff ?? null } : {}),
       })
     } catch (error) {
       next(error)

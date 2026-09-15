@@ -22,7 +22,7 @@ Services:
 - API (through reverse proxy): `http://localhost:8080/api/health`
 - Postgres: internal `db:5432`
 
-The popular movie and TV importers run automatically every 10 minutes; Now Playing, Upcoming, popular games, recently released games, and upcoming games run every 24 hours; and the Google Books and entertainment-news RSS importers run hourly. The seasonal-theme scheduler evaluates immediately on startup and then daily at 00:05 in `THEME_SCHEDULER_TIME_ZONE` (default: `Europe/Bucharest`). Configure the IGDB Client ID and Client Secret in Admin before the games importers can run.
+The popular movie and TV importers run automatically every 10 minutes; Now Playing, Upcoming, popular games, recently released games, and upcoming games run every 24 hours; and the Google Books and entertainment-news RSS importers run hourly. The seasonal-theme scheduler evaluates immediately on startup and then daily at 00:05 in `THEME_SCHEDULER_TIME_ZONE` (default: `Europe/Bucharest`). The news-retention cleanup runs daily at 00:10 in `NEWS_CLEANUP_TIME_ZONE` (default: `Europe/Bucharest`), deleting only articles published more than seven days ago that no user has saved and that have no actor, movie, or show mapping. Configure the IGDB Client ID and Client Secret in Admin before the games importers can run.
 
 Use this mode when you want the production-style static web image. Frontend changes require rebuilding the `web` image.
 
@@ -80,6 +80,7 @@ This mode uses bind mounts plus file watching so frontend and backend changes ar
 Dev behavior:
 - `web-dev` runs the Vite dev server with Docker-friendly file polling.
 - `api` runs `node --watch` so server code reloads automatically.
+- `news-cleanup` starts automatically and waits for its next daily 00:10 run.
 - `web` is disabled in this mode unless you explicitly enable the `prod` profile.
 
 If you previously ran the production-style stack on port `8080`, stop it before starting the dev stack so the Vite container can bind that port cleanly.

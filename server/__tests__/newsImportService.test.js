@@ -197,6 +197,14 @@ test('entertainment news is registered as an hourly admin job', () => {
   assert.deepEqual({ name: job?.name, frequency: job?.frequency, source: job?.source }, { name: 'Entertainment News Import', frequency: 'Every hour', source: 'rss' })
 })
 
+test('news cleanup is registered as a daily Admin job', () => {
+  const job = adminJobs.find((candidate) => candidate.key === 'news-cleanup')
+  assert.deepEqual(
+    { name: job?.name, execution: job?.execution, frequency: job?.frequency, source: job?.source },
+    { name: 'News Retention Cleanup', execution: 'Daily scheduler worker', frequency: 'Daily at 00:10', source: 'news-cleanup' }
+  )
+})
+
 test('news article total is read from the stored news table', async () => {
   let query = ''
   const total = await countNewsArticles({

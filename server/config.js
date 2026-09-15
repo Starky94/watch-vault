@@ -32,6 +32,7 @@ export function loadConfig(options = {}) {
     twitchTokenUrl: env.TWITCH_TOKEN_URL || 'https://id.twitch.tv/oauth2/token',
     filelistEncryptionKey: env.FILELIST_ENCRYPTION_KEY || deriveFilelistEncryptionKey(env.DATABASE_URL),
     themeSchedulerTimeZone: env.THEME_SCHEDULER_TIME_ZONE || defaultThemeSchedulerTimeZone,
+    newsCleanupTimeZone: env.NEWS_CLEANUP_TIME_ZONE || 'Europe/Bucharest',
   }
 
   if (!Number.isInteger(config.port) || config.port <= 0) {

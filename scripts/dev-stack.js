@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process'
 const children = [
   spawn('npm', ['run', 'server'], { stdio: 'inherit', shell: true }),
   spawn('npm', ['run', 'dev'], { stdio: 'inherit', shell: true }),
+  spawn('npm', ['run', 'schedule:news-cleanup'], { stdio: 'inherit', shell: true }),
 ]
 
 function shutdown(signal) {

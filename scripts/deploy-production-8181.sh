@@ -117,7 +117,7 @@ ssh "$REMOTE_HOST" "
   fi
 
   tar -xzf '$REMOTE_TMP_ARCHIVE' -C '$REMOTE_DIR'
-  docker compose --env-file '$REMOTE_ENV_FILE' -p '$COMPOSE_PROJECT' up -d --build db api importer importer-tv-popular importer-entertainment-news importer-games importer-games-recently-released importer-games-upcoming importer-now-playing importer-tv-airing-today importer-upcoming importer-tv-on-the-air theme-scheduler
+  docker compose --env-file '$REMOTE_ENV_FILE' -p '$COMPOSE_PROJECT' up -d --build db api importer importer-tv-popular importer-entertainment-news importer-games importer-games-recently-released importer-games-upcoming importer-now-playing importer-tv-airing-today importer-upcoming importer-tv-on-the-air theme-scheduler news-cleanup
   rm -f '$REMOTE_TMP_ARCHIVE'
 "
 

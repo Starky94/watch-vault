@@ -3239,6 +3239,40 @@ export async function upsertNewsArticles(pool, articles) {
   return { articleIdsByLink, insertedCount, updatedCount }
 }
 
+export async function deleteExpiredUnretainedNewsArticles(pool, { cutoff } = {}) {
+  if (!(cutoff instanceof Date) || Number.isNaN(cutoff.getTime())) {
+    throw new Error('A valid news article cleanup cutoff is required.')
+  }
+  const result = await pool.query(
+    `DELETE FROM news_articles
+     WHERE published_at IS NOT NULL
+       AND published_at < $1
+       AND NOT EXISTS (
+         SELECT 1
+         FROM news_article_saves
+         WHERE news_article_saves.news_article_id = news_articles.id
+       )
+       AND NOT EXISTS (
+         SELECT 1
+         FROM news_article_actors
+         WHERE news_article_actors.news_article_id = news_articles.id
+       )
+       AND NOT EXISTS (
+         SELECT 1
+         FROM news_article_movies
+         WHERE news_article_movies.news_article_id = news_articles.id
+       )
+       AND NOT EXISTS (
+         SELECT 1
+         FROM news_article_tv_shows
+         WHERE news_article_tv_shows.news_article_id = news_articles.id
+       )
+     RETURNING id`,
+    [cutoff.toISOString()]
+  )
+  return result.rowCount ?? result.rows.length
+}
+
 export async function linkNewsArticlesToActors(pool, links) {
   if (!Array.isArray(links) || links.length === 0) return 0
   const client = await pool.connect()

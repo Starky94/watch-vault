@@ -2580,11 +2580,14 @@ function App() {
       }
 
       const isRssJob = jobKey === 'entertainment-news'
+      const isNewsCleanupJob = jobKey === 'news-cleanup'
       setAdminRunState((previousState) => ({
         ...previousState,
         [jobKey]: {
           status: 'success',
-          message: isRssJob
+          message: isNewsCleanupJob
+            ? `Removed ${payload.deletedCount ?? 0} expired unlinked, unsaved article${payload.deletedCount === 1 ? '' : 's'}.`
+            : isRssJob
             ? `Fetched ${payload.fetchedCount} articles from ${payload.activeSourceCount ?? 0} active source${payload.activeSourceCount === 1 ? '' : 's'}: ${payload.insertedCount} new, ${payload.updatedCount} refreshed.`
             : `Imported ${payload.fetchedCount} titles: ${payload.insertedCount} new, ${payload.updatedCount} refreshed.`,
         },
