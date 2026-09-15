@@ -100,7 +100,7 @@ docker compose down
 - `npm run server:watch` starts the API with automatic reload on file changes.
 - `npm run import:movies` runs a one-off TMDB import.
 - `npm run import:books` imports 10 Google Books titles from one randomly selected subject each run.
-- `npm run import:entertainment-news` imports articles from Variety, Deadline, and The Hollywood Reporter RSS feeds and links exact actor-category matches.
+- `npm run import:entertainment-news` imports articles from Variety, Deadline, The Hollywood Reporter, Film Now, E! Online, and ProFM RSS feeds and links exact actor-category matches.
 - `npm run import:now-playing` runs a one-off TMDB Now Playing import for movies released in the last 30 days.
 - `npm run import:upcoming` runs a one-off TMDB Upcoming import for movies releasing in the next 30 days.
 - `npm run import:tv-popular` runs a one-off TMDB Popular TV import.

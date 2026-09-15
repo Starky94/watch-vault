@@ -3,6 +3,7 @@ import { loadConfig } from './config.js'
 import {
   addMovieToWatchlistForUser,
   addNewsArticleLikeForUser,
+  addNewsArticleSaveForUser,
   addMovieReleaseReminderForUser,
   addBookToWatchlistForUser,
   addBookToReadForUser,
@@ -32,9 +33,12 @@ import {
   findUserByUsername,
   ensureSiteThemePreferencesTable,
   ensureAdminJobExecutionsTable,
+  ensureRssSourcesTable,
   getActiveSiteTheme,
   getAdminJobLastExecutions,
+  listRssSources,
   recordAdminJobExecution,
+  updateRssSourceEnabled,
   saveActiveSiteTheme,
   ensureUserSectionPreferencesTable,
   getUserEnabledSections,
@@ -100,6 +104,7 @@ import {
   listNewsArticles,
   listNewsFilterOptions,
   removeNewsArticleLikeForUser,
+  removeNewsArticleSaveForUser,
   searchActors,
   searchBooks,
   searchGames,
@@ -172,6 +177,7 @@ import { fetchBookById, fetchRelatedBooksByCategory, searchBooksByTitle } from '
 import { buildFilelistSearchUrl, buildFilelistTvEpisodeQuery, decryptFilelistValue, encryptFilelistValue, mapFilelistResults } from './filelist.js'
 import { fetchIgdbAccessToken, igdbRequest } from './igdbClient.js'
 import { getSeasonalTheme, isAvailableTheme } from '../shared/themes.js'
+import { entertainmentNewsSourceKeys } from './rssSources.js'
 
 const bookReadingFormats = new Set(['physical', 'ebook', 'audiobook'])
 const gameStatuses = new Set(['played', 'backlog', 'playing', 'dropped', 'completed'])
@@ -303,6 +309,7 @@ export async function createApp(pool, options = {}) {
   await ensureAchievementTables(pool)
   await ensureSiteThemePreferencesTable(pool)
   await ensureAdminJobExecutionsTable(pool)
+  await ensureRssSourcesTable(pool)
   await ensureUserSectionPreferencesTable(pool)
 
   const app = express()
@@ -1576,11 +1583,13 @@ export async function createApp(pool, options = {}) {
       if (!user) return response.status(401).json({ error: 'Authentication required' })
       await ensureFilelistTables(pool)
       await ensureIgdbCredentialsTable(pool)
-      const [credential, enabledSections, igdbCredential, lastExecutions] = await Promise.all([
+      await ensureRssSourcesTable(pool)
+      const [credential, enabledSections, igdbCredential, lastExecutions, rssSources] = await Promise.all([
         getFilelistCredentialStatus(pool, user.id),
         getUserEnabledSections(pool, user.id),
         getIgdbCredentialStatus(pool),
         getAdminJobLastExecutions(pool, jobs.map((job) => job.key)),
+        listRssSources(pool),
       ])
       response.json({
         crons: listAdminJobs(jobs, lastExecutions),
@@ -1595,11 +1604,27 @@ export async function createApp(pool, options = {}) {
         },
         filelist: { configured: Boolean(credential), updatedAt: credential?.updated_at ?? null },
         igdb: { configured: Boolean(igdbCredential), updatedAt: igdbCredential?.updated_at ?? null },
+        rssSources: rssSources.map((source) => ({ key: source.source_key, name: source.name, url: source.url, enabled: Boolean(source.enabled), updatedAt: source.updated_at })),
         sections: { enabled: enabledSections },
       })
     } catch (error) {
       next(error)
     }
+  })
+
+  app.put('/api/admin/rss-sources/:sourceKey', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const { sourceKey } = request.params
+      const { enabled } = request.body ?? {}
+      if (!entertainmentNewsSourceKeys.has(sourceKey)) return response.status(404).json({ error: `Unknown RSS source: ${sourceKey}` })
+      if (typeof enabled !== 'boolean') return response.status(400).json({ error: 'enabled must be a boolean.' })
+      await ensureRssSourcesTable(pool)
+      const source = await updateRssSourceEnabled(pool, { sourceKey, enabled })
+      if (!source) return response.status(404).json({ error: `Unknown RSS source: ${sourceKey}` })
+      response.json({ key: source.source_key, name: source.name, url: source.url, enabled: Boolean(source.enabled), updatedAt: source.updated_at })
+    } catch (error) { next(error) }
   })
 
   app.get('/api/news', async (request, response, next) => {
@@ -1608,7 +1633,9 @@ export async function createApp(pool, options = {}) {
       const filters = readNewsFilters(request)
       if (filters.error) return response.status(400).json({ error: filters.error })
       const user = await getAuthenticatedUser(pool, request)
-      const articles = await listNewsArticles(pool, { limit: pagination.limit + 1, page: pagination.page, userId: user?.id ?? null, ...filters })
+      const savedOnly = request.query.saved === 'true'
+      if (savedOnly && !user) return response.status(401).json({ error: 'Authentication required' })
+      const articles = await listNewsArticles(pool, { limit: pagination.limit + 1, page: pagination.page, userId: user?.id ?? null, savedOnly, ...filters })
       const pagedArticles = articles.slice(0, pagination.limit)
       response.json({
         count: pagedArticles.length,
@@ -1621,6 +1648,7 @@ export async function createApp(pool, options = {}) {
           description: decodeHtmlEntities(article.description),
           likeCount: Number(article.like_count) || 0,
           likedByCurrentUser: Boolean(article.liked_by_current_user),
+          savedByCurrentUser: Boolean(article.saved_by_current_user),
           actors: Array.isArray(article.actors) ? article.actors.map((actor) => ({ id: Number(actor.id), name: actor.name })) : [],
           movies: Array.isArray(article.movies) ? article.movies.map((movie) => ({ id: Number(movie.id), name: movie.name })) : [],
           shows: Array.isArray(article.shows) ? article.shows.map((show) => ({ id: Number(show.id), name: show.name })) : [],
@@ -1655,6 +1683,34 @@ export async function createApp(pool, options = {}) {
       const result = await removeNewsArticleLikeForUser(pool, { articleId, userId: user.id })
       if (result.status === 'missing_article') return response.status(404).json({ error: `Article ${articleId} was not found` })
       response.json({ likeCount: result.likeCount, likedByCurrentUser: result.likedByCurrentUser })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/news/:articleId/save', async (request, response, next) => {
+    const articleId = Number.parseInt(request.params.articleId, 10)
+    if (!Number.isInteger(articleId) || articleId <= 0) return response.status(400).json({ error: `Invalid article id: ${request.params.articleId}` })
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const result = await addNewsArticleSaveForUser(pool, { articleId, userId: user.id })
+      if (result.status === 'missing_article') return response.status(404).json({ error: `Article ${articleId} was not found` })
+      response.json({ savedByCurrentUser: result.savedByCurrentUser })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.delete('/api/news/:articleId/save', async (request, response, next) => {
+    const articleId = Number.parseInt(request.params.articleId, 10)
+    if (!Number.isInteger(articleId) || articleId <= 0) return response.status(400).json({ error: `Invalid article id: ${request.params.articleId}` })
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const result = await removeNewsArticleSaveForUser(pool, { articleId, userId: user.id })
+      if (result.status === 'missing_article') return response.status(404).json({ error: `Article ${articleId} was not found` })
+      response.json({ savedByCurrentUser: result.savedByCurrentUser })
     } catch (error) {
       next(error)
     }
@@ -1773,6 +1829,8 @@ export async function createApp(pool, options = {}) {
       if (job.source === 'theme-scheduler') {
         const schedulerConfig = loadConfig({ requireDatabase: false, requireTmdbToken: false })
         options = { timeZone: schedulerConfig.themeSchedulerTimeZone }
+      } else if (job.source === 'rss') {
+        options = {}
       } else {
         const config = loadRuntimeConfig()
         if (job.source === 'google-books') {
@@ -1801,6 +1859,7 @@ export async function createApp(pool, options = {}) {
         insertedCount: result.insertedCount ?? 0,
         updatedCount: result.updatedCount ?? 0,
         lastExecutedAt,
+        ...(job.source === 'rss' ? { activeSourceCount: result.activeSourceCount ?? 0 } : {}),
         ...(job.source === 'theme-scheduler' ? {
           activeTheme: result.activeTheme,
           previousTheme: result.previousTheme,

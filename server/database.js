@@ -4,6 +4,7 @@ import { BOOK_ACHIEVEMENTS } from './bookAchievements.js'
 import { GAME_ACHIEVEMENTS } from './gameAchievements.js'
 import { WATCH_TOGETHER_ACHIEVEMENTS, WATCH_TOGETHER_AUTOMATIC_GENRE_RULES, WATCH_TOGETHER_MANUAL_ACHIEVEMENT_IDS } from './watchTogetherAchievements.js'
 import { defaultThemeKey, normalizeActiveTheme } from '../shared/themes.js'
+import { ENTERTAINMENT_NEWS_SOURCES } from './rssSources.js'
 
 const { Pool } = pg
 
@@ -3042,6 +3043,47 @@ export async function ensureAdminJobExecutionsTable(pool) {
   `)
 }
 
+export async function ensureRssSourcesTable(pool) {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS rss_sources (
+      source_key TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      url TEXT NOT NULL,
+      enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `)
+  for (const source of ENTERTAINMENT_NEWS_SOURCES) {
+    await pool.query(
+      `INSERT INTO rss_sources (source_key, name, url, enabled)
+       VALUES ($1, $2, $3, TRUE)
+       ON CONFLICT (source_key) DO NOTHING`,
+      [source.key, source.name, source.url]
+    )
+  }
+}
+
+export async function listRssSources(pool, { enabledOnly = false } = {}) {
+  const result = await pool.query(
+    `SELECT source_key, name, url, enabled, updated_at
+     FROM rss_sources
+     ${enabledOnly ? 'WHERE enabled = TRUE' : ''}
+     ORDER BY CASE source_key ${ENTERTAINMENT_NEWS_SOURCES.map((source, index) => `WHEN '${source.key}' THEN ${index}`).join(' ')} ELSE ${ENTERTAINMENT_NEWS_SOURCES.length} END`,
+  )
+  return result.rows
+}
+
+export async function updateRssSourceEnabled(pool, { sourceKey, enabled }) {
+  const result = await pool.query(
+    `UPDATE rss_sources
+     SET enabled = $2, updated_at = NOW()
+     WHERE source_key = $1
+     RETURNING source_key, name, url, enabled, updated_at`,
+    [sourceKey, enabled]
+  )
+  return result.rows[0] ?? null
+}
+
 export async function ensureNewsTables(pool) {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS news_articles (
@@ -3095,6 +3137,15 @@ export async function ensureNewsTables(pool) {
   `)
 
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS news_article_saves (
+      news_article_id BIGINT NOT NULL REFERENCES news_articles(id) ON DELETE CASCADE,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (news_article_id, user_id)
+    )
+  `)
+
+  await pool.query(`
     CREATE INDEX IF NOT EXISTS news_article_actors_cast_member_idx
     ON news_article_actors (cast_member_id, news_article_id)
   `)
@@ -3109,6 +3160,10 @@ export async function ensureNewsTables(pool) {
   await pool.query(`
     CREATE INDEX IF NOT EXISTS news_article_likes_article_idx
     ON news_article_likes (news_article_id)
+  `)
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS news_article_saves_user_created_idx
+    ON news_article_saves (user_id, created_at DESC, news_article_id)
   `)
 }
 
@@ -3243,7 +3298,7 @@ export function linkNewsArticlesToTvShows(pool, links) {
 }
 
 export async function listNewsArticles(pool, options = {}) {
-  const { limit = 20, page = 1, actorId = null, movieId = null, showId = null, userId = null } = options
+  const { limit = 20, page = 1, actorId = null, movieId = null, showId = null, userId = null, savedOnly = false } = options
   const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 20
   const normalizedPage = Number.isInteger(page) ? Math.max(1, page) : 1
   const offset = (normalizedPage - 1) * normalizedLimit
@@ -3262,12 +3317,15 @@ export async function listNewsArticles(pool, options = {}) {
     conditions.push(`EXISTS (SELECT 1 FROM news_article_tv_shows filter_show_link JOIN tv_shows filter_show ON filter_show.id = filter_show_link.tv_show_id WHERE filter_show_link.news_article_id = news_articles.id AND filter_show.tmdb_id = $${params.length})`)
   }
   const viewerUserId = userId !== null && userId !== undefined && Number.isSafeInteger(Number(userId)) ? Number(userId) : null
-  if (viewerUserId !== null) params.push(viewerUserId)
+  if (savedOnly && viewerUserId === null) return []
+  const viewerUserParamIndex = viewerUserId === null ? null : (params.push(viewerUserId), params.length)
+  if (savedOnly) conditions.push(`EXISTS (SELECT 1 FROM news_article_saves saved_filter WHERE saved_filter.news_article_id = news_articles.id AND saved_filter.user_id = $${viewerUserParamIndex})`)
   params.push(normalizedLimit, offset)
   const result = await pool.query(
     `SELECT news_articles.id, news_articles.title, news_articles.link, news_articles.published_at, news_articles.photo_url, news_articles.description,
       (SELECT COUNT(*)::INTEGER FROM news_article_likes WHERE news_article_likes.news_article_id = news_articles.id) AS like_count,
-      ${viewerUserId === null ? 'FALSE' : `EXISTS (SELECT 1 FROM news_article_likes viewer_like WHERE viewer_like.news_article_id = news_articles.id AND viewer_like.user_id = $${params.length - 2})`} AS liked_by_current_user,
+      ${viewerUserId === null ? 'FALSE' : `EXISTS (SELECT 1 FROM news_article_likes viewer_like WHERE viewer_like.news_article_id = news_articles.id AND viewer_like.user_id = $${viewerUserParamIndex})`} AS liked_by_current_user,
+      ${viewerUserId === null ? 'FALSE' : `EXISTS (SELECT 1 FROM news_article_saves viewer_save WHERE viewer_save.news_article_id = news_articles.id AND viewer_save.user_id = $${viewerUserParamIndex})`} AS saved_by_current_user,
       COALESCE((SELECT json_agg(json_build_object('id', cast_members.tmdb_person_id, 'name', cast_members.name) ORDER BY cast_members.name)
         FROM news_article_actors JOIN cast_members ON cast_members.id = news_article_actors.cast_member_id
         WHERE news_article_actors.news_article_id = news_articles.id), '[]'::json) AS actors,
@@ -3279,7 +3337,7 @@ export async function listNewsArticles(pool, options = {}) {
         WHERE news_article_tv_shows.news_article_id = news_articles.id), '[]'::json) AS shows
      FROM news_articles
      ${conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''}
-     ORDER BY COALESCE(published_at, created_at) DESC, id DESC
+     ORDER BY ${savedOnly ? `(SELECT saved_order.created_at FROM news_article_saves saved_order WHERE saved_order.news_article_id = news_articles.id AND saved_order.user_id = $${viewerUserParamIndex}) DESC` : 'COALESCE(published_at, created_at) DESC'}, id DESC
      LIMIT $${params.length - 1}
      OFFSET $${params.length}`,
     params
@@ -3320,6 +3378,32 @@ export async function removeNewsArticleLikeForUser(pool, { articleId, userId }) 
     [articleId, userId]
   )
   return { status: 'ok', likedByCurrentUser: false, likeCount: await getNewsArticleLikeCount(pool, articleId) }
+}
+
+async function newsArticleExists(pool, articleId) {
+  const result = await pool.query('SELECT id FROM news_articles WHERE id = $1', [articleId])
+  return Boolean(result.rows[0])
+}
+
+export async function addNewsArticleSaveForUser(pool, { articleId, userId }) {
+  if (!await newsArticleExists(pool, articleId)) return { status: 'missing_article' }
+  await pool.query(
+    `INSERT INTO news_article_saves (news_article_id, user_id)
+     VALUES ($1, $2)
+     ON CONFLICT DO NOTHING`,
+    [articleId, userId]
+  )
+  return { status: 'ok', savedByCurrentUser: true }
+}
+
+export async function removeNewsArticleSaveForUser(pool, { articleId, userId }) {
+  if (!await newsArticleExists(pool, articleId)) return { status: 'missing_article' }
+  await pool.query(
+    `DELETE FROM news_article_saves
+     WHERE news_article_id = $1 AND user_id = $2`,
+    [articleId, userId]
+  )
+  return { status: 'ok', savedByCurrentUser: false }
 }
 
 export async function listNewsFilterOptions(pool, { query = '', actorId = null, movieId = null, showId = null } = {}) {

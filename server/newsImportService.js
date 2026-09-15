@@ -1,12 +1,8 @@
 import { XMLParser } from 'fast-xml-parser'
-import { ensureNewsTables, linkNewsArticlesToActors, linkNewsArticlesToMovies, linkNewsArticlesToTvShows, listNewsActors, listNewsMovies, listNewsTvShows, upsertNewsArticles } from './database.js'
+import { ensureNewsTables, ensureRssSourcesTable, linkNewsArticlesToActors, linkNewsArticlesToMovies, linkNewsArticlesToTvShows, listNewsActors, listNewsMovies, listNewsTvShows, listRssSources, upsertNewsArticles } from './database.js'
+import { ENTERTAINMENT_NEWS_SOURCES } from './rssSources.js'
 
-export const ENTERTAINMENT_NEWS_FEEDS = [
-  'https://variety.com/feed/',
-  'https://variety.com/v/film/feed/',
-  'https://deadline.com/feed/',
-  'https://www.hollywoodreporter.com/feed/',
-]
+export const ENTERTAINMENT_NEWS_FEEDS = ENTERTAINMENT_NEWS_SOURCES.map((source) => source.url)
 
 const xmlParser = new XMLParser({
   ignoreAttributes: false,
@@ -116,16 +112,21 @@ async function fetchNewsFeed(fetchImpl, url) {
   return parseNewsFeed(await response.text())
 }
 
-export async function importEntertainmentNews(pool, { fetchImpl = fetch, feeds = ENTERTAINMENT_NEWS_FEEDS } = {}) {
+export async function importEntertainmentNews(pool, { fetchImpl = fetch, feeds } = {}) {
   await ensureNewsTables(pool)
-  const settledFeeds = await Promise.allSettled(feeds.map((url) => fetchNewsFeed(fetchImpl, url)))
+  let selectedFeeds = feeds
+  if (!Array.isArray(selectedFeeds)) {
+    await ensureRssSourcesTable(pool)
+    selectedFeeds = (await listRssSources(pool, { enabledOnly: true })).map((source) => source.url)
+  }
+  const settledFeeds = await Promise.allSettled(selectedFeeds.map((url) => fetchNewsFeed(fetchImpl, url)))
   const errors = []
   const articleByLink = new Map()
   let fetchedCount = 0
 
   settledFeeds.forEach((result, index) => {
     if (result.status === 'rejected') {
-      errors.push({ feed: feeds[index], message: result.reason?.message ?? String(result.reason) })
+      errors.push({ feed: selectedFeeds[index], message: result.reason?.message ?? String(result.reason) })
       return
     }
     for (const article of result.value) {
@@ -145,6 +146,9 @@ export async function importEntertainmentNews(pool, { fetchImpl = fetch, feeds =
   })
 
   const articles = [...articleByLink.values()]
+  if (articles.length === 0) {
+    return { fetchedCount, insertedCount: 0, updatedCount: 0, linkedActorCount: 0, linkedMovieCount: 0, linkedShowCount: 0, activeSourceCount: selectedFeeds.length, failedFeedCount: errors.length, errors }
+  }
   const [{ articleIdsByLink, insertedCount, updatedCount }, actors, movies, shows] = await Promise.all([
     upsertNewsArticles(pool, articles),
     listNewsActors(pool),
@@ -182,5 +186,5 @@ export async function importEntertainmentNews(pool, { fetchImpl = fetch, feeds =
     linkNewsArticlesToMovies(pool, createTitleLinks(movieIdsByName)),
     linkNewsArticlesToTvShows(pool, createTitleLinks(showIdsByName)),
   ])
-  return { fetchedCount, insertedCount, updatedCount, linkedActorCount, linkedMovieCount, linkedShowCount, failedFeedCount: errors.length, errors }
+  return { fetchedCount, insertedCount, updatedCount, linkedActorCount, linkedMovieCount, linkedShowCount, activeSourceCount: selectedFeeds.length, failedFeedCount: errors.length, errors }
 }

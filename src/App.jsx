@@ -439,6 +439,7 @@ function App() {
     totalTvShows: 0,
     filelist: { configured: false, updatedAt: null },
     igdb: { configured: false, updatedAt: null },
+    rssSources: [],
     sections: { enabled: defaultEnabledSections },
     error: '',
   })
@@ -2514,6 +2515,7 @@ function App() {
             totalTvShows: typeof payload?.totals?.tvShows === 'number' ? payload.totals.tvShows : 0,
             filelist: { configured: Boolean(payload?.filelist?.configured), updatedAt: payload?.filelist?.updatedAt ?? null },
             igdb: { configured: Boolean(payload?.igdb?.configured), updatedAt: payload?.igdb?.updatedAt ?? null },
+            rssSources: Array.isArray(payload?.rssSources) ? payload.rssSources : [],
             sections: { enabled: normalizeEnabledSections(payload?.sections?.enabled) },
             error: '',
           })
@@ -2577,11 +2579,14 @@ function App() {
         return
       }
 
+      const isRssJob = jobKey === 'entertainment-news'
       setAdminRunState((previousState) => ({
         ...previousState,
         [jobKey]: {
           status: 'success',
-          message: `Imported ${payload.fetchedCount} titles: ${payload.insertedCount} new, ${payload.updatedCount} refreshed.`,
+          message: isRssJob
+            ? `Fetched ${payload.fetchedCount} articles from ${payload.activeSourceCount ?? 0} active source${payload.activeSourceCount === 1 ? '' : 's'}: ${payload.insertedCount} new, ${payload.updatedCount} refreshed.`
+            : `Imported ${payload.fetchedCount} titles: ${payload.insertedCount} new, ${payload.updatedCount} refreshed.`,
         },
       }))
       setAdminRefreshKey((value) => value + 1)
@@ -2594,6 +2599,22 @@ function App() {
         },
       }))
     }
+  }
+
+  async function handleSetRssSourceEnabled(sourceKey, enabled) {
+    const response = await fetch(`/api/admin/rss-sources/${sourceKey}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...buildAuthHeaders(user) },
+      body: JSON.stringify({ enabled }),
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+    setAdminOverviewState((previousState) => ({
+      ...previousState,
+      rssSources: previousState.rssSources.map((source) => source.key === sourceKey ? payload : source),
+    }))
+    setAdminRefreshKey((value) => value + 1)
+    return payload
   }
 
   async function handleSaveFilelistSettings({ username, passkey }) {
@@ -3937,6 +3958,7 @@ function App() {
                 onSaveIgdbSettings={handleSaveIgdbSettings}
                 onClearIgdbSettings={handleClearIgdbSettings}
                 onSaveEnabledSections={handleSaveEnabledSections}
+                onSetRssSourceEnabled={handleSetRssSourceEnabled}
                 onSetActiveTheme={handleSetActiveTheme}
                 themeState={themeState}
               />
@@ -4073,7 +4095,7 @@ function App() {
                 route={currentRoute}
                 user={user}
                 onOpenLogin={handleOpenLogin}
-                onNavigateNews={(filters) => handleNavigateToPath(buildNewsPath(filters), { kind: routeKinds.news, filters }, primaryViews.news)}
+                onNavigateNews={(filters, tab = currentRoute.tab) => handleNavigateToPath(buildNewsPath(filters, tab), { kind: routeKinds.news, filters, tab }, primaryViews.news)}
               />
             ) : activeView === primaryViews.home ? (
               <HomeScreen
@@ -4855,8 +4877,10 @@ function normalizeSearchLabel(value) {
 
 function NewsScreen({ route, user, onNavigateNews, onOpenLogin }) {
   const filters = route?.filters ?? emptyNewsFilters
+  const tab = route?.tab === 'saved' ? 'saved' : 'news'
   const [feed, setFeed] = useState({ status: 'loading', articles: [], hasNextPage: true, error: '' })
   const [likeAction, setLikeAction] = useState({ articleId: null, errorArticleId: null, error: '' })
+  const [saveAction, setSaveAction] = useState({ articleId: null, errorArticleId: null, error: '' })
   const sentinelRef = useRef(null)
   const loadingRef = useRef(false)
   const nextPageRef = useRef(1)
@@ -4868,9 +4892,13 @@ function NewsScreen({ route, user, onNavigateNews, onOpenLogin }) {
     return () => { mountedRef.current = false; requestControllerRef.current?.abort() }
   }, [])
 
-  const filterKey = `${filters.actor ?? ''}:${filters.movie ?? ''}:${filters.show ?? ''}`
+  const filterKey = `${tab}:${filters.actor ?? ''}:${filters.movie ?? ''}:${filters.show ?? ''}`
   const loadPage = useCallback(async (page) => {
     if (loadingRef.current || !mountedRef.current) return
+    if (tab === 'saved' && !user) {
+      setFeed({ status: 'success', articles: [], hasNextPage: false, error: '' })
+      return
+    }
     const controller = new AbortController()
     requestControllerRef.current = controller
     loadingRef.current = true
@@ -4881,7 +4909,7 @@ function NewsScreen({ route, user, onNavigateNews, onOpenLogin }) {
     }))
 
     try {
-      const response = await fetch(`${buildNewsApiPath(page, filters)}`, { signal: controller.signal })
+      const response = await fetch(`${buildNewsApiPath(page, filters, tab)}`, { signal: controller.signal, headers: user ? buildAuthHeaders(user) : undefined })
       const payload = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
       const incomingArticles = (Array.isArray(payload.articles) ? payload.articles : [])
@@ -4909,7 +4937,7 @@ function NewsScreen({ route, user, onNavigateNews, onOpenLogin }) {
     } finally {
       if (requestControllerRef.current === controller) loadingRef.current = false
     }
-  }, [filters])
+  }, [filters, tab, user])
 
   useEffect(() => {
     requestControllerRef.current?.abort()
@@ -4946,6 +4974,33 @@ function NewsScreen({ route, user, onNavigateNews, onOpenLogin }) {
     }
   }
 
+  async function handleSave(article) {
+    if (!user) {
+      onOpenLogin()
+      return
+    }
+    if (saveAction.articleId !== null) return
+
+    setSaveAction({ articleId: article.id, errorArticleId: null, error: '' })
+    try {
+      const response = await fetch(`/api/news/${article.id}/save`, {
+        method: article.savedByCurrentUser ? 'DELETE' : 'POST',
+        headers: buildAuthHeaders(user),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+      setFeed((current) => ({
+        ...current,
+        articles: current.articles
+          .map((currentArticle) => currentArticle.id === article.id ? { ...currentArticle, savedByCurrentUser: Boolean(payload.savedByCurrentUser) } : currentArticle)
+          .filter((currentArticle) => tab !== 'saved' || currentArticle.savedByCurrentUser),
+      }))
+      setSaveAction({ articleId: null, errorArticleId: null, error: '' })
+    } catch (error) {
+      setSaveAction({ articleId: null, errorArticleId: article.id, error: error instanceof Error ? error.message : 'Unable to update saved article.' })
+    }
+  }
+
   useEffect(() => {
     const sentinel = sentinelRef.current
     if (!sentinel || !feed.hasNextPage || feed.status !== 'success') return undefined
@@ -4960,6 +5015,7 @@ function NewsScreen({ route, user, onNavigateNews, onOpenLogin }) {
     return (
       <section className="news-page">
         <NewsHeading />
+        <NewsTabs activeTab={tab} onChange={(nextTab) => onNavigateNews(filters, nextTab)} />
         <NewsFilters filters={filters} onChange={onNavigateNews} />
         <div className="news-feed-message error" role="alert">
           <p>Could not load the news feed. {feed.error}</p>
@@ -4972,12 +5028,14 @@ function NewsScreen({ route, user, onNavigateNews, onOpenLogin }) {
   return (
     <section className="news-page">
       <NewsHeading />
+      <NewsTabs activeTab={tab} onChange={(nextTab) => onNavigateNews(filters, nextTab)} />
       <NewsFilters filters={filters} onChange={onNavigateNews} />
-      {feed.status === 'loading' ? <NewsFeedSkeleton /> : null}
-      {feed.status !== 'loading' && feed.articles.length === 0 ? <SectionMessage message={filters.actor || filters.movie || filters.show ? 'No articles match these filters.' : 'No stored news articles are available yet.'} /> : null}
+      {tab === 'saved' && !user ? <div className="news-feed-message"><p>Sign in to view and manage your saved articles.</p><button type="button" className="secondary-button" onClick={onOpenLogin}>Sign in</button></div> : null}
+      {tab !== 'saved' || user ? <>{feed.status === 'loading' ? <NewsFeedSkeleton /> : null}
+      {feed.status !== 'loading' && feed.articles.length === 0 ? <SectionMessage message={filters.actor || filters.movie || filters.show ? 'No articles match these filters.' : tab === 'saved' ? 'You have no saved articles yet.' : 'No stored news articles are available yet.'} /> : null}</> : null}
       {feed.articles.length > 0 ? (
         <div className="news-feed" aria-live="polite">
-          {feed.articles.map((article, index) => <NewsArticleCard key={article.id} article={article} featured={index === 0} filters={filters} onFilter={onNavigateNews} isLikePending={likeAction.articleId === article.id} likeError={likeAction.errorArticleId === article.id ? likeAction.error : ''} onLike={handleLike} />)}
+          {feed.articles.map((article, index) => <NewsArticleCard key={article.id} article={article} featured={index === 0} filters={filters} onFilter={onNavigateNews} isLikePending={likeAction.articleId === article.id} likeError={likeAction.errorArticleId === article.id ? likeAction.error : ''} onLike={handleLike} isSavePending={saveAction.articleId === article.id} saveError={saveAction.errorArticleId === article.id ? saveAction.error : ''} onSave={handleSave} />)}
         </div>
       ) : null}
       {feed.status === 'loading-more' ? <div className="news-loading-more"><SpinnerIcon /><span>Loading more news…</span></div> : null}
@@ -4995,6 +5053,13 @@ function NewsScreen({ route, user, onNavigateNews, onOpenLogin }) {
 
 function NewsHeading() {
   return <header className="news-heading"><p className="eyebrow">Entertainment news</p><h1>News Feed</h1><p>Latest movie, TV, and celebrity updates from trusted entertainment publishers.</p></header>
+}
+
+function NewsTabs({ activeTab, onChange }) {
+  return <div className="news-tabs" role="tablist" aria-label="News views">
+    <button type="button" role="tab" aria-selected={activeTab === 'news'} className={activeTab === 'news' ? 'is-active' : ''} onClick={() => onChange('news')}>News</button>
+    <button type="button" role="tab" aria-selected={activeTab === 'saved'} className={activeTab === 'saved' ? 'is-active' : ''} onClick={() => onChange('saved')}><BookmarkIcon />Saved</button>
+  </div>
 }
 
 function NewsFilters({ filters, onChange }) {
@@ -5053,7 +5118,7 @@ function NewsFilters({ filters, onChange }) {
   </div>
 }
 
-function NewsArticleCard({ article, featured = false, filters, onFilter, isLikePending, likeError, onLike }) {
+function NewsArticleCard({ article, featured = false, filters, onFilter, isLikePending, likeError, onLike, isSavePending, saveError, onSave }) {
   const [imageUnavailable, setImageUnavailable] = useState(false)
   const showImage = Boolean(article.photoUrl) && !imageUnavailable
   const source = getNewsSource(article.link)
@@ -5080,8 +5145,10 @@ function NewsArticleCard({ article, featured = false, filters, onFilter, isLikeP
       </div>
       <div className="news-future-actions" aria-label="Article actions">
         <button type="button" className={`news-article-like${article.likedByCurrentUser ? ' is-liked' : ''}`} aria-pressed={Boolean(article.likedByCurrentUser)} aria-label={`${article.likedByCurrentUser ? 'Remove like from' : 'Like'} ${article.title}; ${article.likeCount || 0} ${(article.likeCount || 0) === 1 ? 'like' : 'likes'}`} disabled={isLikePending} onClick={() => onLike(article)}><HeartIcon /><span>{article.likedByCurrentUser ? 'Liked' : 'Like'}</span><strong aria-hidden="true">{article.likeCount || 0}</strong></button>
+        <button type="button" className={`news-article-save${article.savedByCurrentUser ? ' is-saved' : ''}`} aria-pressed={Boolean(article.savedByCurrentUser)} aria-label={`${article.savedByCurrentUser ? 'Remove' : 'Save'} ${article.title} ${article.savedByCurrentUser ? 'from' : 'to'} saved articles`} disabled={isSavePending} onClick={() => onSave(article)}><BookmarkIcon /><span>{article.savedByCurrentUser ? 'Saved' : 'Save'}</span></button>
       </div>
       {likeError ? <p className="news-like-error" role="alert">Could not update like. {likeError}</p> : null}
+      {saveError ? <p className="news-like-error" role="alert">Could not update saved article. {saveError}</p> : null}
     </article>
   )
 }
@@ -5602,7 +5669,7 @@ function LoginScreen({ authError, authStatus, onCancel, onSubmit }) {
   )
 }
 
-function AdminScreen({ activeTheme, adminOverviewState, adminRunState, onBack, onRunJob, onSaveFilelistSettings, onClearFilelistSettings, onSaveIgdbSettings, onClearIgdbSettings, onSaveEnabledSections, onSetActiveTheme, themeState }) {
+function AdminScreen({ activeTheme, adminOverviewState, adminRunState, onBack, onRunJob, onSaveFilelistSettings, onClearFilelistSettings, onSaveIgdbSettings, onClearIgdbSettings, onSaveEnabledSections, onSetActiveTheme, onSetRssSourceEnabled, themeState }) {
   const [filelistUsername, setFilelistUsername] = useState('')
   const [filelistPasskey, setFilelistPasskey] = useState('')
   const [filelistState, setFilelistState] = useState({ status: 'idle', error: '' })
@@ -5610,6 +5677,7 @@ function AdminScreen({ activeTheme, adminOverviewState, adminRunState, onBack, o
   const [igdbPrivateKey, setIgdbPrivateKey] = useState('')
   const [igdbState, setIgdbState] = useState({ status: 'idle', error: '' })
   const [sectionState, setSectionState] = useState({ status: 'idle', error: '' })
+  const [rssSourceState, setRssSourceState] = useState({ pendingKey: null, error: '' })
   const [selectedSections, setSelectedSections] = useState(() => normalizeEnabledSections(adminOverviewState.sections?.enabled))
 
   useEffect(() => {
@@ -5672,6 +5740,16 @@ function AdminScreen({ activeTheme, adminOverviewState, adminRunState, onBack, o
     }
   }
 
+  async function handleRssSourceToggle(source) {
+    setRssSourceState({ pendingKey: source.key, error: '' })
+    try {
+      await onSetRssSourceEnabled(source.key, !source.enabled)
+      setRssSourceState({ pendingKey: null, error: '' })
+    } catch (error) {
+      setRssSourceState({ pendingKey: null, error: error instanceof Error ? error.message : 'Unable to update RSS source.' })
+    }
+  }
+
   return (
     <section className="admin-page">
       <div className="admin-heading">
@@ -5722,6 +5800,21 @@ function AdminScreen({ activeTheme, adminOverviewState, adminRunState, onBack, o
           <strong>{adminOverviewState.status === 'success' ? formatAdminBytes(adminOverviewState.storedDataBytes) : '--'}</strong>
           <p>Total size used by the app tables currently stored in the database.</p>
         </article>
+      </section>
+
+      <section className="content-section admin-content-section rss-sources-section">
+        <div className="section-header"><div><h2>RSS Sources</h2><span>Choose which publishers the hourly Entertainment News Import reads. Changes apply to its next scheduled or manual run.</span></div></div>
+        <div className="rss-sources-list" aria-label="RSS sources">
+          {adminOverviewState.rssSources.map((source) => {
+            const pending = rssSourceState.pendingKey === source.key
+            return <article key={source.key} className={`rss-source-row${source.enabled ? ' active' : ''}`}>
+              <div><strong>{source.name}</strong><a href={source.url} target="_blank" rel="noreferrer">{source.url}</a></div>
+              <span className={`rss-source-status${source.enabled ? ' active' : ''}`}>{source.enabled ? 'Active' : 'Inactive'}</span>
+              <button type="button" className={source.enabled ? 'secondary-button' : 'primary-button'} aria-pressed={source.enabled} aria-label={`${source.enabled ? 'Deactivate' : 'Activate'} ${source.name} RSS source`} disabled={pending} onClick={() => handleRssSourceToggle(source)}>{pending ? 'Saving…' : source.enabled ? 'Deactivate' : 'Activate'}</button>
+            </article>
+          })}
+        </div>
+        {rssSourceState.error ? <p className="filelist-settings-error" role="alert">{rssSourceState.error}</p> : null}
       </section>
 
       <section className="content-section admin-content-section">
@@ -10720,7 +10813,8 @@ function readAppRoute(pathname = window.location.pathname, search = window.locat
       return value && /^\d+$/.test(value) && Number(value) > 0 ? Number(value) : null
     }
     const movie = readId('movie')
-    return { kind: routeKinds.news, filters: { actor: readId('actor'), movie, show: movie ? null : readId('show') } }
+    const tab = params.get('tab') === 'saved' ? 'saved' : 'news'
+    return { kind: routeKinds.news, tab, filters: { actor: readId('actor'), movie, show: movie ? null : readId('show') } }
   }
 
   if (/^\/stats\/?$/.test(pathname)) {
@@ -10807,8 +10901,9 @@ function buildWatchlistPath({ tab, availability, sort }) {
   return `/watchlist?${params.toString()}`
 }
 
-function buildNewsPath(filters = emptyNewsFilters) {
+function buildNewsPath(filters = emptyNewsFilters, tab = 'news') {
   const params = new URLSearchParams()
+  if (tab === 'saved') params.set('tab', 'saved')
   if (Number.isInteger(filters.actor) && filters.actor > 0) params.set('actor', filters.actor)
   if (Number.isInteger(filters.movie) && filters.movie > 0) params.set('movie', filters.movie)
   if (Number.isInteger(filters.show) && filters.show > 0 && !params.has('movie')) params.set('show', filters.show)
@@ -10816,8 +10911,9 @@ function buildNewsPath(filters = emptyNewsFilters) {
   return query ? `/news?${query}` : '/news'
 }
 
-function buildNewsApiPath(page, filters = emptyNewsFilters) {
+function buildNewsApiPath(page, filters = emptyNewsFilters, tab = 'news') {
   const params = new URLSearchParams({ page: String(page), limit: String(newsPageSize) })
+  if (tab === 'saved') params.set('saved', 'true')
   if (Number.isInteger(filters.actor) && filters.actor > 0) params.set('actor', filters.actor)
   if (Number.isInteger(filters.movie) && filters.movie > 0) params.set('movie', filters.movie)
   if (Number.isInteger(filters.show) && filters.show > 0 && !params.has('movie')) params.set('show', filters.show)
