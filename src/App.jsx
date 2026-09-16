@@ -6880,15 +6880,21 @@ function TvShowsScreen({
           <PaginationControls pagination={topRatedTvState.pagination} onPageChange={onChangeTopRatedPage} />
         </ContentSection>
       ) : (
-        <div className="tv-layout">
-          <div className="tv-main">
+        <>
+          <div className="tv-dashboard-hero-layout">
             <TvFeaturedCard
               show={featuredShow}
               isWatched={watchedIds.has(Number(featuredShow?.id))}
               isInWatchlist={watchlistIds.has(Number(featuredShow?.id))}
               onToggleWatchlist={onToggleWatchlist}
+              onOpenShow={onSelectShow}
             />
+            <TvWatchlistPanel items={watchlistShows} onOpenWatchlist={onOpenWatchlist} onSelectShow={onSelectShow} />
+          </div>
 
+          <TvDashboardStats items={tvStats} period={statsPeriod} onPeriodChange={onStatsPeriodChange} />
+
+          <div className="tv-dashboard-rails">
             <ContentSection title="Popular Right Now" action="View all" onAction={onOpenPopularTvShows}>
               <TvShowsGrid
                 tvState={popularTvState}
@@ -6898,7 +6904,6 @@ function TvShowsScreen({
                 activeShowId={selectedShowId}
               />
             </ContentSection>
-
             <ContentSection title="Recently Aired" action="View all" onAction={onOpenRecentlyAiredTvShows}>
               <TvShowsGrid
                 tvState={recentTvState}
@@ -6908,7 +6913,6 @@ function TvShowsScreen({
                 activeShowId={selectedShowId}
               />
             </ContentSection>
-
             <ContentSection title="Upcoming Soon" action="View all" onAction={onOpenUpcomingTvShows}>
               <TvShowsGrid
                 tvState={upcomingTvState}
@@ -6918,7 +6922,6 @@ function TvShowsScreen({
                 activeShowId={selectedShowId}
               />
             </ContentSection>
-
             <ContentSection title="Top Rated" action="View all" onAction={onOpenTopRatedTvShows}>
               <TvShowsGrid
                 tvState={topRatedTvState}
@@ -6929,25 +6932,8 @@ function TvShowsScreen({
               />
             </ContentSection>
           </div>
-
-          <aside className="tv-rail">
-            <StatsPanel className="tv-stats-panel" title="Your TV Stats" items={tvStats} period={statsPeriod} onPeriodChange={onStatsPeriodChange} />
-            <TvWatchlistPanel items={watchlistShows} onOpenWatchlist={onOpenWatchlist} onSelectShow={onSelectShow} />
-          </aside>
-        </div>
+        </>
       )}
-
-      <section className="movie-mobile-stats tv-mobile-stats mobile-only">
-        {tvStats.map(({ label, value, tone, icon: Icon }) => (
-          <article key={label} className="mini-stat">
-            <div className={`stat-icon ${tone}`}>
-              <Icon />
-            </div>
-            <strong>{value}</strong>
-            <span>{label.replace('Shows Watched', 'Shows').replace('Episodes Watched', 'Episodes').replace('Hours Watched', 'Hours').replace('In Watchlist', 'Watchlist')}</span>
-          </article>
-        ))}
-      </section>
     </section>
   )
 }
@@ -7267,7 +7253,7 @@ function FavoriteAuthorCard({ author, onOpenAuthor }) {
   )
 }
 
-function TvFeaturedCard({ show, isWatched, isInWatchlist, onToggleWatchlist }) {
+function TvFeaturedCard({ show, isWatched, isInWatchlist, onToggleWatchlist, onOpenShow }) {
   if (!show) {
     return <SectionMessage message="No TV show is available for this filter yet." />
   }
@@ -7307,6 +7293,10 @@ function TvFeaturedCard({ show, isWatched, isInWatchlist, onToggleWatchlist }) {
             <PlusIcon />
             <span>{isWatched ? 'Watched' : isInWatchlist ? 'In Watchlist' : 'Add to Watchlist'}</span>
           </button>
+          <button type="button" className="secondary-button tv-feature-details" onClick={() => onOpenShow(show)}>
+            <span>View details</span>
+            <ChevronRight />
+          </button>
         </div>
       </div>
 
@@ -7315,16 +7305,6 @@ function TvFeaturedCard({ show, isWatched, isInWatchlist, onToggleWatchlist }) {
         style={artStyle}
         aria-hidden="true"
       >
-        <span className="feature-arrow">
-          <ChevronRight />
-        </span>
-        <div className="feature-dots">
-          <span className="active" />
-          <span />
-          <span />
-          <span />
-          <span />
-        </div>
       </div>
     </section>
   )
@@ -7439,6 +7419,58 @@ function TvShowsGrid({
   )
 }
 
+function TvDashboardStats({ items, period = 'month', onPeriodChange }) {
+  const [isPeriodMenuOpen, setIsPeriodMenuOpen] = useState(false)
+  const activePeriod = statsPeriods.find((option) => option.value === period) ?? statsPeriods[1]
+
+  return (
+    <section className="tv-dashboard-stats" aria-label="Your TV statistics">
+      <div className="tv-dashboard-stats-heading">
+        <span>Your TV Stats</span>
+        <div className="stats-period-control">
+          <button
+            type="button"
+            className="month-button"
+            aria-haspopup="menu"
+            aria-expanded={isPeriodMenuOpen}
+            onClick={() => setIsPeriodMenuOpen((open) => !open)}
+          >
+            {activePeriod.label}
+            <ChevronDown />
+          </button>
+          {isPeriodMenuOpen ? (
+            <div className="stats-period-menu" role="menu" aria-label="TV stats period">
+              {statsPeriods.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={option.value === period}
+                  className={option.value === period ? 'active' : ''}
+                  onClick={() => {
+                    onPeriodChange(option.value)
+                    setIsPeriodMenuOpen(false)
+                  }}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      </div>
+      <div className="tv-dashboard-stat-grid">
+        {items.map(({ label, value, tone, icon: Icon }) => (
+          <article key={label} className={`tv-dashboard-stat-card ${tone}`}>
+            <div className="stat-icon"><Icon /></div>
+            <div><span>{label}</span><strong>{value}</strong></div>
+          </article>
+        ))}
+      </div>
+    </section>
+  )
+}
+
 function TvWatchlistPanel({ items, onOpenWatchlist, onSelectShow }) {
   return (
     <section className="movie-watchlist-panel tv-watchlist-panel">
@@ -7489,9 +7521,10 @@ function TvDetailPage({ tvDetailState, tvReviewsState, user, onBackToTv, onToggl
   const [pendingWatchRequest, setPendingWatchRequest] = useState(null)
   const [ratingEpisode, setRatingEpisode] = useState(null)
   const [selectedRating, setSelectedRating] = useState(5)
+  const [isOverviewExpanded, setIsOverviewExpanded] = useState(false)
   const [isUpdatingEpisodes, setIsUpdatingEpisodes] = useState(false)
   const [filelistState, setFilelistState] = useState({ open: false, status: 'idle', results: [], error: '', minutesUntilReset: null, episode: null })
-  useEffect(() => { setSeasonNumber(null); setTrailer(null); setCatchUpEpisode(null); setPendingWatchRequest(null); setRatingEpisode(null); setIsUpdatingEpisodes(false); setFilelistState({ open: false, status: 'idle', results: [], error: '', minutesUntilReset: null, episode: null }) }, [tvDetailState.show?.id])
+  useEffect(() => { setSeasonNumber(null); setTrailer(null); setCatchUpEpisode(null); setPendingWatchRequest(null); setRatingEpisode(null); setIsOverviewExpanded(false); setIsUpdatingEpisodes(false); setFilelistState({ open: false, status: 'idle', results: [], error: '', minutesUntilReset: null, episode: null }) }, [tvDetailState.show?.id])
   if (tvDetailState.status === 'loading' || tvDetailState.status === 'idle') return <section className="movie-detail-page"><SectionMessage message="Loading TV series detail..." /></section>
   if (tvDetailState.status === 'error' || !tvDetailState.show) return <section className="movie-detail-page"><SectionMessage tone="error" message={tvDetailState.error || 'TV series detail is not available.'} /></section>
   const show = tvDetailState.show
@@ -7504,7 +7537,6 @@ function TvDetailPage({ tvDetailState, tvReviewsState, user, onBackToTv, onToggl
   const backdropStyle = show.backdropUrl ? { backgroundImage: `linear-gradient(90deg, rgba(7, 10, 18, .96), rgba(7, 10, 18, .46)), url(${show.backdropUrl})` } : undefined
   const seasonAiredEpisodes = episodes.filter((episode) => episode.isAired)
   const isSeasonWatched = seasonAiredEpisodes.length > 0 && seasonAiredEpisodes.every((episode) => episode.watched)
-  const communityRating = show.communityRating ?? { average: null, voteCount: 0 }
   const yourEpisodeRating = show.yourEpisodeRating ?? { average: null, ratingCount: 0 }
   const filelistTarget = getFilelistTvEpisodeTarget(show)
 
@@ -7566,28 +7598,28 @@ function TvDetailPage({ tvDetailState, tvReviewsState, user, onBackToTv, onToggl
       setFilelistState({ open: true, status: 'success', results: Array.isArray(payload.results) ? payload.results : [], error: '', minutesUntilReset: null, episode: payload.episode ?? filelistTarget })
     } catch (error) { setFilelistState({ open: true, status: 'error', results: [], error: error instanceof Error ? error.message : 'Unable to search Filelist right now.', minutesUntilReset: null, episode: filelistTarget }) }
   }
-  return <section className="movie-detail-page tv-detail-page">
-    <button type="button" className="movie-detail-back" onClick={onBackToTv} aria-label="Back to TV shows"><ChevronLeftIcon /></button>
-    <article className="movie-detail-hero" style={backdropStyle}>
-      <div className="movie-detail-hero-overlay" />
-      <div className="movie-detail-poster-wrap"><div className="movie-detail-poster">{show.posterUrl ? <img className="movie-detail-poster-image" src={show.posterUrl} alt={`${show.title} poster`} /> : null}</div></div>
-      <div className="movie-detail-main"><h1>{show.title}</h1><div className="movie-detail-meta"><span>{show.year}</span><span>{show.genresLabel}</span><span>{show.maturityRating}</span><span>{show.seasons.length} Seasons</span></div>
-        <div className="movie-detail-score-row"><MetricBadge icon={StarIcon} value={show.voteAverage} label="TMDB" tone="gold" /><MetricBadge icon={TomatoIcon} value={show.voteCount} label="Votes" tone="tomato" /><MetricBadge icon={UserRatingIcon} value={formatCommunityRating(communityRating.average)} label={`${communityRating.voteCount} ${communityRating.voteCount === 1 ? 'episode rating' : 'episode ratings'}`} tone="violet" /><MetricBadge icon={ProgressIcon} value={`${watchedCount}/${totalEpisodes}`} label="Episodes watched" tone="violet" /></div>
-        <p className="movie-detail-summary">{show.overview}</p><div className="movie-detail-actions"><button type="button" className={`primary-button movie-detail-primary${isWatchlist ? ' is-active' : ''}`} onClick={() => onToggleWatchlist(show)}><PlusIcon /><span>{isWatchlist ? 'In Watchlist' : 'Add to Watchlist'}</span></button>{show.trailer ? <button type="button" className="secondary-button movie-detail-secondary ghost" onClick={() => setTrailer(show.trailer)}><PlayIcon /><span>Trailer</span></button> : null}<button type="button" className="secondary-button movie-detail-secondary ghost" onClick={handleOpenFilelist} disabled={!filelistTarget} title={!filelistTarget ? 'You are caught up on all aired episodes.' : undefined}><span>Filelist</span></button></div>
+  const watchedPercentage = totalEpisodes ? Math.round((watchedCount / totalEpisodes) * 100) : 0
+  const scrollToSection = (sectionId) => document.getElementById(sectionId)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  return <section className="movie-detail-page tv-detail-page tv-detail-redesign">
+    <article className="tv-detail-hero" style={backdropStyle}>
+      <div className="tv-detail-hero-overlay" />
+      <button type="button" className="tv-detail-back" onClick={onBackToTv}><ChevronLeftIcon /><span>Back to TV Shows</span></button>
+      <div className="tv-detail-hero-content">
+        <div className="tv-detail-poster-wrap"><div className="tv-detail-poster">{show.posterUrl ? <img src={show.posterUrl} alt={`${show.title} poster`} /> : null}</div></div>
+        <div className="tv-detail-main"><h1>{show.title}</h1><div className="tv-detail-meta"><span>{show.year}</span><span>{show.genresLabel}</span><span>{show.maturityRating}</span></div>
+          <div className="tv-detail-statline"><span className="tv-detail-rating"><StarIcon /> {show.voteAverage}<small>TMDB</small></span><span>{totalEpisodes} Episodes</span><span>{show.seasons.length} {show.seasons.length === 1 ? 'Season' : 'Seasons'}</span><span><TvIcon /> {show.network || 'TBA'}</span></div>
+          <p className={`tv-detail-summary${isOverviewExpanded ? ' expanded' : ''}`}>{show.overview}</p>{show.overview?.length > 150 ? <button type="button" className="tv-detail-more" onClick={() => setIsOverviewExpanded((expanded) => !expanded)}>{isOverviewExpanded ? 'Less' : 'More'}</button> : null}
+          <div className="tv-detail-actions"><button type="button" className={`primary-button tv-detail-primary${isWatchlist ? ' is-active' : ''}`} onClick={() => onToggleWatchlist(show)}><PlusIcon /><span>{isWatchlist ? 'In Watchlist' : 'Add to Watchlist'}</span></button><div className="tv-detail-secondary-actions">{show.trailer ? <button type="button" className="secondary-button" onClick={() => setTrailer(show.trailer)}><PlayIcon /><span>Trailer</span></button> : null}<button type="button" className="secondary-button" onClick={handleOpenFilelist} disabled={!filelistTarget} title={!filelistTarget ? 'You are caught up on all aired episodes.' : undefined}><BarsIcon /><span>Filelist</span></button></div></div>
+        </div>
       </div>
-      <aside className="movie-detail-status desktop-only"><h2>Your Status</h2><div className="movie-detail-status-list"><div className="movie-detail-status-item"><span className="movie-detail-status-icon"><BookmarkStatusIcon /></span><div><span>Watchlist</span><strong>{isWatchlist ? 'Saved' : 'Not yet'}</strong></div></div><div className="movie-detail-status-item"><span className="movie-detail-status-icon"><ProgressIcon /></span><div><span>Progress</span><strong>{watchedCount} of {totalEpisodes}</strong></div></div><div className="movie-detail-status-item movie-detail-status-item-rating"><span className="movie-detail-status-icon"><StarOutlineIcon /></span><div><span>Your episode average</span><strong>{formatCommunityRating(yourEpisodeRating.average)}{yourEpisodeRating.ratingCount ? ` · ${yourEpisodeRating.ratingCount}` : ''}</strong></div></div><div className="movie-detail-status-item"><span className="movie-detail-status-icon"><CalendarIcon /></span><div><span>First air date</span><strong>{show.firstAirDateLabel}</strong></div></div><div className="movie-detail-status-item"><span className="movie-detail-status-icon"><TvIcon /></span><div><span>Network</span><strong>{show.network || 'TBA'}</strong></div></div></div></aside>
     </article>
-    <section className="content-section movie-detail-panel tv-episodes-panel">
-      <div className="section-header tv-episodes-header">
-        <div><h2>Episodes</h2><span>{episodes.length} Episodes</span></div>
-        <button type="button" className="secondary-button tv-season-watch-button" disabled={isUpdatingEpisodes || isSeasonWatched || seasonAiredEpisodes.length === 0} onClick={handleMarkSeasonWatched}>
-          <CheckIcon /><span>{isSeasonWatched ? 'Season watched' : isUpdatingEpisodes ? 'Updating...' : 'Mark season watched'}</span>
-        </button>
-      </div>
-      <div className="tv-season-tabs">{show.seasons.map((item) => <button type="button" key={item.id} className={`filter-pill${item.seasonNumber === season?.seasonNumber ? ' active' : ''}`} onClick={() => setSeasonNumber(item.seasonNumber)}>{item.name}</button>)}</div>
-      <div className="tv-episode-list">{episodes.map((episode) => <article className="tv-episode-row" key={episode.id}><div className="tv-episode-still">{episode.stillUrl ? <img src={episode.stillUrl} alt="" /> : null}</div><div className="tv-episode-copy"><span>S{season?.seasonNumber} E{episode.episodeNumber} · {episode.airDateLabel} · {episode.runtimeLabel}</span><h3>{episode.name}</h3><p>{episode.overview || 'Episode overview is not available.'}</p></div>{episode.watched ? <button type="button" className="tv-episode-rate" onClick={() => handleOpenEpisodeRating(episode)} aria-label={`${episode.yourScore === null ? 'Rate' : 'Update rating for'} ${episode.name}`}><StarOutlineIcon /></button> : null}<button type="button" disabled={!episode.isAired || isUpdatingEpisodes} className={`tv-episode-toggle${episode.watched ? ' watched' : ''}`} aria-label={episode.isAired ? `${episode.watched ? 'Mark unwatched' : 'Mark watched'} ${episode.name}` : `${episode.name} has not aired yet`} onClick={() => handleEpisodeToggle(episode)}><CheckIcon /></button></article>)}</div>
-    </section>
-    <div className="movie-detail-grid"><section className="content-section movie-detail-panel"><div className="section-header"><h2>Cast &amp; Crew</h2></div><div className="movie-detail-cast">{show.credits.map((member) => <button type="button" className="movie-detail-cast-card movie-detail-cast-card-button" key={`${member.id}-${member.role}`} aria-label={`Open ${member.name}`} onClick={() => onOpenPerson?.(member)} disabled={!Number.isInteger(Number(member.id))}><div className="movie-detail-cast-avatar" style={buildMovieCreditAvatarStyle(member.profileUrl)} aria-label={member.name}>{!member.profileUrl ? getMovieCreditInitials(member.name) : null}</div><h3>{member.name}</h3><p>{member.role}</p></button>)}</div></section><section className="content-section movie-detail-panel movie-detail-activity"><div className="section-header"><h2>Your Activity</h2></div><div className="movie-detail-activity-grid"><div className="movie-detail-activity-item"><ProgressIcon /><div><span>Completion</span><div className="movie-detail-progress"><span style={{ width: totalEpisodes ? `${(watchedCount / totalEpisodes) * 100}%` : '0%' }} /></div></div><strong>{totalEpisodes ? Math.round((watchedCount / totalEpisodes) * 100) : 0}%</strong></div><div className="movie-detail-activity-item"><CheckIcon /><div><span>Episodes watched</span><strong>{watchedCount} of {totalEpisodes}</strong></div></div></div></section><section className="content-section movie-detail-panel"><div className="section-header"><h2>More Like This</h2></div><div className="tv-recommendations">{show.recommendations.map((item) => <button key={item.id} type="button" onClick={() => onOpenTv(item)} className="tv-recommendation"><img src={item.posterUrl} alt="" /><span>{item.title}</span><small>{item.rating}</small></button>)}</div></section><section className="content-section movie-detail-panel movie-detail-facts"><div className="movie-detail-facts-list"><DetailFactRow icon={DirectorIcon} label="Created by" value={show.creatorsLabel} /><DetailFactRow icon={LanguageIcon} label="Language" value={show.languagesLabel} /><DetailFactRow icon={TvIcon} label="Status" value={show.status} /></div></section><section className="content-section movie-detail-panel movie-detail-reviews"><div className="section-header"><h2>Community Reviews</h2></div>{tvReviewsState.status === 'loading' ? <SectionMessage message="Loading live community reviews..." /> : tvReviewsState.status === 'error' ? <SectionMessage tone="error" message={tvReviewsState.error} /> : tvReviewsState.reviews.length ? <div className="movie-detail-review-grid">{tvReviewsState.reviews.map((review) => <article key={review.id} className="movie-detail-review-card"><strong>{review.author}</strong><span className="movie-detail-stars">{review.rating ? `★ ${review.rating}` : 'No score'}</span><p>{review.copy}</p><small>{review.date}</small></article>)}</div> : <SectionMessage message="No community reviews available right now." />}</section></div>
+    <nav className="tv-detail-tabs" aria-label="TV show sections"><button type="button" className="active" onClick={() => scrollToSection('tv-episodes')}>Episodes</button><button type="button" onClick={() => scrollToSection('tv-cast')}>Cast &amp; Crew</button><button type="button" onClick={() => scrollToSection('tv-recommendations')}>More Like This</button><button type="button" onClick={() => scrollToSection('tv-reviews')}>Reviews</button></nav>
+    <div className="tv-detail-layout">
+      <section id="tv-episodes" className="content-section tv-detail-panel tv-detail-episodes"><div className="tv-detail-section-heading"><h2>Episodes</h2></div><div className="tv-detail-season-controls"><label><span className="sr-only">Season</span><select value={season?.seasonNumber ?? ''} onChange={(event) => setSeasonNumber(Number(event.target.value))}>{show.seasons.map((item) => <option key={item.id} value={item.seasonNumber}>{item.name}</option>)}</select></label><span>{episodes.length} Episodes</span><button type="button" className="secondary-button tv-season-watch-button" disabled={isUpdatingEpisodes || isSeasonWatched || seasonAiredEpisodes.length === 0} onClick={handleMarkSeasonWatched}><CheckIcon /><span>{isSeasonWatched ? 'Season watched' : isUpdatingEpisodes ? 'Updating...' : 'Mark season watched'}</span></button></div><div className="tv-detail-episode-grid">{episodes.map((episode) => <article className="tv-detail-episode-card" key={episode.id}><div className="tv-detail-episode-still">{episode.stillUrl ? <img src={episode.stillUrl} alt="" /> : null}<span>E{episode.episodeNumber}</span></div><div className="tv-detail-episode-copy"><h3>{episode.name}</h3><p>{episode.overview || 'Episode overview is not available.'}</p></div><div className="tv-detail-episode-actions"><span>{episode.runtimeLabel}</span>{episode.watched ? <button type="button" className="tv-episode-rate" onClick={() => handleOpenEpisodeRating(episode)} aria-label={`${episode.yourScore === null ? 'Rate' : 'Update rating for'} ${episode.name}`}><StarOutlineIcon /></button> : null}<button type="button" disabled={!episode.isAired || isUpdatingEpisodes} className={`tv-episode-toggle${episode.watched ? ' watched' : ''}`} aria-label={episode.isAired ? `${episode.watched ? 'Mark unwatched' : 'Mark watched'} ${episode.name}` : `${episode.name} has not aired yet`} onClick={() => handleEpisodeToggle(episode)}><CheckIcon /></button></div></article>)}</div></section>
+      <aside className="tv-detail-side"><section className="content-section tv-detail-panel tv-detail-activity"><div className="section-header"><h2>Your Activity</h2><span>{watchedCount} of {totalEpisodes} watched</span></div><div className="tv-detail-progress"><span style={{ width: `${watchedPercentage}%` }} /></div><div className="tv-detail-activity-footer"><span><StarOutlineIcon /> {yourEpisodeRating.ratingCount ? `${formatCommunityRating(yourEpisodeRating.average)} · Rated` : 'Not rated'}</span><button type="button" onClick={() => scrollToSection('tv-reviews')}>Rate show</button></div></section><section id="tv-cast" className="content-section tv-detail-panel tv-detail-cast"><div className="section-header"><h2>Cast &amp; Crew</h2><span>View all</span></div><div className="tv-detail-cast-list">{show.credits.map((member) => <button type="button" className="tv-detail-cast-card" key={`${member.id}-${member.role}`} aria-label={`Open ${member.name}`} onClick={() => onOpenPerson?.(member)} disabled={!Number.isInteger(Number(member.id))}><div className="tv-detail-cast-avatar" style={buildMovieCreditAvatarStyle(member.profileUrl)}>{!member.profileUrl ? getMovieCreditInitials(member.name) : null}</div><strong>{member.name}</strong><small>{member.role}</small></button>)}</div></section></aside>
+      <section id="tv-recommendations" className="content-section tv-detail-panel tv-detail-recommendations"><div className="section-header"><h2>More Like This</h2><span>View all</span></div><div className="tv-detail-recommendation-list">{show.recommendations.map((item) => <button key={item.id} type="button" onClick={() => onOpenTv(item)} className="tv-detail-recommendation"><img src={item.posterUrl} alt="" /><span>{item.title}</span><small>{item.rating}</small></button>)}</div></section>
+      <section className="content-section tv-detail-panel tv-detail-facts"><DetailFactRow icon={DirectorIcon} label="Created by" value={show.creatorsLabel} /><DetailFactRow icon={LanguageIcon} label="Language" value={show.languagesLabel} /><DetailFactRow icon={TvIcon} label="Status" value={show.status} /><DetailFactRow icon={CalendarIcon} label="First air date" value={show.firstAirDateLabel} /></section>
+      <section id="tv-reviews" className="content-section tv-detail-panel tv-detail-reviews"><div className="section-header"><h2>Community Reviews</h2></div>{tvReviewsState.status === 'loading' ? <SectionMessage message="Loading live community reviews..." /> : tvReviewsState.status === 'error' ? <SectionMessage tone="error" message={tvReviewsState.error} /> : tvReviewsState.reviews.length ? <div className="movie-detail-review-grid">{tvReviewsState.reviews.map((review) => <article key={review.id} className="movie-detail-review-card"><strong>{review.author}</strong><span className="movie-detail-stars">{review.rating ? `★ ${review.rating}` : 'No score'}</span><p>{review.copy}</p><small>{review.date}</small></article>)}</div> : <SectionMessage message="No community reviews available right now." />}</section></div>
     {trailer ? <MovieTrailerDialog movie={{ title: show.title }} trailer={trailer} onClose={() => setTrailer(null)} /> : null}
     {filelistState.open ? <FilelistDialog title={show.title} subtitle={filelistState.episode ? formatFilelistEpisodeLabel(filelistState.episode) : null} emptyMessage="No Filelist results found for this episode." state={filelistState} onClose={() => setFilelistState((state) => ({ ...state, open: false }))} /> : null}
     {catchUpEpisode ? <TvEpisodeCatchUpDialog episode={catchUpEpisode.episode} earlierCount={catchUpEpisode.earlierCount} isSaving={isUpdatingEpisodes} onCancel={() => setCatchUpEpisode(null)} onMarkCurrent={() => { setCatchUpEpisode(null); requestEpisodeWatch({ action: 'mark_episode', episodeId: catchUpEpisode.episode.id }, catchUpEpisode.episode) }} onMarkEarlier={() => { setCatchUpEpisode(null); requestEpisodeWatch({ action: 'mark_through_episode', episodeId: catchUpEpisode.episode.id }, catchUpEpisode.episode) }} /> : null}
