@@ -40,6 +40,9 @@ function isSchemaSetupQuery(sql) {
     sql.includes('CREATE UNIQUE INDEX IF NOT EXISTS movie_cast_unique_credit_idx') ||
     sql.includes('ALTER TABLE cast_members') ||
     sql.includes('CREATE TABLE IF NOT EXISTS users') ||
+    sql.includes('ALTER TABLE news_articles') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS news_article') ||
+    sql.includes('CREATE INDEX IF NOT EXISTS news_article') ||
     sql.includes('INSERT INTO users') ||
     sql.includes('CREATE TABLE IF NOT EXISTS watchlist_items') ||
     sql.includes('CREATE TABLE IF NOT EXISTS watched_movies') ||
@@ -60,6 +63,8 @@ function isSchemaSetupQuery(sql) {
     || sql.includes('CREATE TABLE IF NOT EXISTS user_section_preferences')
     || sql.includes('CREATE TABLE IF NOT EXISTS site_theme_preferences')
     || sql.includes('CREATE TABLE IF NOT EXISTS admin_job_executions')
+    || sql.includes('CREATE TABLE IF NOT EXISTS rss_sources')
+    || sql.includes('INSERT INTO rss_sources')
     || (sql.includes('INSERT INTO site_theme_preferences') && !sql.includes('RETURNING active_theme'))
     || sql.includes('CREATE TABLE IF NOT EXISTS igdb_credentials')
     || sql.includes('CREATE TABLE IF NOT EXISTS igdb_api_credentials')
@@ -75,6 +80,7 @@ function isSchemaSetupQuery(sql) {
     || sql.includes('CREATE TABLE IF NOT EXISTS user_achievement_unlocks')
     || sql.includes('INSERT INTO achievement_')
     || sql.includes('CREATE TABLE IF NOT EXISTS watch_together_')
+    || sql.includes('CREATE INDEX IF NOT EXISTS watch_together_')
     || sql.includes('CREATE UNIQUE INDEX IF NOT EXISTS watch_together_')
     || sql.includes('ALTER TABLE watch_together_')
   )
@@ -2341,6 +2347,95 @@ test('GET /api/seasonal-movies rejects requests without an active configured the
   }
 })
 
+test('GET /api/seasonal-movies combines resolved Halloween keywords and ignores missing ones', async () => {
+  const originalFetch = global.fetch
+  const tmdbRequests = []
+  const keywordIds = new Map([
+    ['halloween', 10],
+    ['haunted house', 20],
+    ['witch', 30],
+    ['ghost', 40],
+  ])
+  global.fetch = async (url, options) => {
+    const value = String(url)
+    if (!value.startsWith('https://example.test')) return originalFetch(url, options)
+    tmdbRequests.push(value)
+    const parsed = new URL(value)
+    if (parsed.pathname.endsWith('/search/keyword')) {
+      const query = parsed.searchParams.get('query')
+      const id = keywordIds.get(query)
+      return { ok: true, async json() { return { results: id ? [{ id, name: query }] : [] } } }
+    }
+    return {
+      ok: true,
+      async json() {
+        return {
+          results: Array.from({ length: 21 }, (_value, index) => ({
+            id: index === 20 ? 1 : index + 1,
+            title: `Halloween Movie ${index + 1}`,
+            release_date: '2026-10-20',
+            vote_average: 7.2,
+            poster_path: '/halloween.jpg',
+          })),
+        }
+      },
+    }
+  }
+  const pool = {
+    async query(sql) {
+      if (isSchemaSetupQuery(sql)) return { rowCount: null, rows: [] }
+      if (sql.includes('SELECT active_theme')) return { rows: [{ active_theme: 'halloween' }] }
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+  const app = await createApp(pool, { loadRuntimeConfig: () => ({ tmdbBearerToken: 'token', tmdbBaseUrl: 'https://example.test' }) })
+  const server = app.listen(0)
+
+  try {
+    const response = await originalFetch(`http://127.0.0.1:${server.address().port}/api/seasonal-movies`)
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.deepEqual(payload.theme, { key: 'halloween', name: 'Halloween', emoji: '🎃' })
+    assert.equal(payload.movies.length, 20)
+    assert.equal(new Set(payload.movies.map((movie) => movie.id)).size, 20)
+    assert.ok(tmdbRequests.some((url) => url.endsWith('/search/keyword?query=supernatural&page=1')))
+    assert.ok(tmdbRequests.some((url) => url.endsWith('/discover/movie?sort_by=popularity.desc&with_keywords=10%7C20%7C30%7C40&page=1')))
+  } finally {
+    global.fetch = originalFetch
+    await closeServer(server)
+  }
+})
+
+test('GET /api/seasonal-movies reports when no Halloween keywords resolve', async () => {
+  const originalFetch = global.fetch
+  let discoverRequested = false
+  global.fetch = async (url, options) => {
+    const value = String(url)
+    if (!value.startsWith('https://example.test')) return originalFetch(url, options)
+    if (value.includes('/discover/movie')) discoverRequested = true
+    return { ok: true, async json() { return { results: [] } } }
+  }
+  const pool = {
+    async query(sql) {
+      if (isSchemaSetupQuery(sql)) return { rowCount: null, rows: [] }
+      if (sql.includes('SELECT active_theme')) return { rows: [{ active_theme: 'halloween' }] }
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+  const app = await createApp(pool, { loadRuntimeConfig: () => ({ tmdbBearerToken: 'token', tmdbBaseUrl: 'https://example.test' }) })
+  const server = app.listen(0)
+
+  try {
+    const response = await originalFetch(`http://127.0.0.1:${server.address().port}/api/seasonal-movies`)
+    assert.equal(response.status, 404)
+    assert.deepEqual(await response.json(), { error: 'TMDB does not have matching keywords for Halloween.' })
+    assert.equal(discoverRequested, false)
+  } finally {
+    global.fetch = originalFetch
+    await closeServer(server)
+  }
+})
+
 test('GET /api/movies forwards the optional genre filter to the database query', async () => {
   const rows = [
     {
@@ -3692,8 +3787,9 @@ test('site theme persistence initializes, normalizes unknown values, and saves a
   await ensureSiteThemePreferencesTable(pool)
   assert.equal(await getActiveSiteTheme(pool), 'default')
   assert.equal(await saveActiveSiteTheme(pool, { activeTheme: 'autumn', updatedByUserId: 17 }), 'autumn')
+  assert.equal(await saveActiveSiteTheme(pool, { activeTheme: 'halloween', updatedByUserId: 17 }), 'halloween')
   assert.match(calls[0].sql, /CREATE TABLE IF NOT EXISTS site_theme_preferences/i)
-  assert.deepEqual(calls.at(-1).params, ['autumn', 17])
+  assert.deepEqual(calls.at(-1).params, ['halloween', 17])
 })
 
 test('global theme APIs are public for reads and validate authenticated updates', async () => {
@@ -3736,6 +3832,12 @@ test('global theme APIs are public for reads and validate authenticated updates'
     })
     assert.deepEqual(await activate.json(), { activeTheme: 'autumn' })
     assert.deepEqual(await (await fetch(`${baseUrl}/api/theme`)).json(), { activeTheme: 'autumn' })
+
+    const activateHalloween = await fetch(`${baseUrl}/api/admin/theme`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-watchvault-username': 'florin' }, body: JSON.stringify({ activeTheme: 'halloween' }),
+    })
+    assert.deepEqual(await activateHalloween.json(), { activeTheme: 'halloween' })
+    assert.deepEqual(await (await fetch(`${baseUrl}/api/theme`)).json(), { activeTheme: 'halloween' })
 
     const deactivate = await fetch(`${baseUrl}/api/admin/theme`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-watchvault-username': 'florin' }, body: JSON.stringify({ activeTheme: 'default' }),

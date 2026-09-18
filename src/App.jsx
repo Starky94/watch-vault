@@ -2750,7 +2750,9 @@ function App() {
         status: 'success',
         pendingTheme: null,
         error: '',
-        message: savedTheme === defaultThemeKey ? 'Seasonal theme deactivated.' : 'Autumn theme activated for everyone.',
+        message: savedTheme === defaultThemeKey
+          ? 'Seasonal theme deactivated.'
+          : `${seasonalThemes.find((theme) => theme.key === savedTheme)?.name ?? 'Seasonal theme'} activated for everyone.`,
       })
       return savedTheme
     } catch (error) {
@@ -11037,7 +11039,7 @@ function getMovieCreditInitials(name) {
 }
 
 function getSeasonalThemeWithMovies(themeKey) {
-  return seasonalThemes.find((theme) => theme.key === themeKey && typeof theme.tmdbKeyword === 'string' && theme.tmdbKeyword.trim()) ?? null
+  return seasonalThemes.find((theme) => theme.key === themeKey && Array.isArray(theme.tmdbKeywords) && theme.tmdbKeywords.length > 0) ?? null
 }
 
 function getSeasonalThemeLabel(theme) {

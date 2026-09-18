@@ -121,7 +121,8 @@ export async function searchMovieKeywords(fetchImpl, options) {
 }
 
 export async function discoverMoviesByKeyword(fetchImpl, options) {
-  const { token, baseUrl, keywordId, page = 1 } = options
+  const { token, baseUrl, keywordId, keywordIds, page = 1 } = options
+  const resolvedKeywordIds = Array.isArray(keywordIds) && keywordIds.length ? keywordIds : [keywordId]
 
   return tmdbRequest(fetchImpl, {
     token,
@@ -129,7 +130,7 @@ export async function discoverMoviesByKeyword(fetchImpl, options) {
     path: 'discover/movie',
     searchParams: {
       sort_by: 'popularity.desc',
-      with_keywords: keywordId,
+      with_keywords: resolvedKeywordIds.filter((value) => value !== undefined && value !== null).join('|'),
       page,
     },
   })

@@ -119,6 +119,22 @@ test('discoverMoviesByKeyword requests popular movie matches for one TMDB keywor
   assert.match(requestedUrl, /\/discover\/movie\?sort_by=popularity.desc&with_keywords=123&page=1$/)
 })
 
+test('discoverMoviesByKeyword joins multiple TMDB keywords with OR semantics', async () => {
+  let requestedUrl = ''
+  const fetchImpl = async (url) => {
+    requestedUrl = String(url)
+    return { ok: true, async json() { return { results: [] } } }
+  }
+
+  await discoverMoviesByKeyword(fetchImpl, {
+    token: 'token',
+    baseUrl: 'https://api.themoviedb.org/3',
+    keywordIds: [123, 456, 789],
+  })
+
+  assert.match(requestedUrl, /\/discover\/movie\?sort_by=popularity.desc&with_keywords=123%7C456%7C789&page=1$/)
+})
+
 test('searchPeople requests the TMDB person search endpoint', async () => {
   let requestedUrl = ''
   const fetchImpl = async (url) => {

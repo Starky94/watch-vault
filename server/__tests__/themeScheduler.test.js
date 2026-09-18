@@ -42,6 +42,17 @@ test('seasonal theme resolver honors Autumn boundaries in Bucharest', () => {
   assert.equal(resolveScheduledTheme({ date: date('2026-09-10T21:00:00Z') }), 'default')
 })
 
+test('seasonal theme resolver honors Halloween boundaries in Bucharest', () => {
+  assert.equal(resolveScheduledTheme({ date: date('2026-10-19T20:59:00Z') }), 'default')
+  assert.equal(resolveScheduledTheme({ date: date('2026-10-19T21:00:00Z') }), 'halloween')
+  assert.equal(resolveScheduledTheme({ date: date('2026-10-31T21:59:00Z') }), 'halloween')
+  assert.equal(resolveScheduledTheme({ date: date('2026-10-31T22:00:00Z') }), 'default')
+})
+
+test('available Autumn and Halloween schedules do not overlap', () => {
+  assert.doesNotThrow(() => validateScheduledThemes())
+})
+
 test('seasonal theme resolver uses the requested timezone and supports cross-year periods', () => {
   const instant = date('2026-08-31T22:30:00Z')
   assert.equal(resolveScheduledTheme({ date: instant, timeZone: 'UTC' }), 'default')

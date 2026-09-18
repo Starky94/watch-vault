@@ -480,29 +480,37 @@ export async function createApp(pool, options = {}) {
     try {
       const activeTheme = await getActiveSiteTheme(pool)
       const theme = getSeasonalTheme(activeTheme)
-      const keyword = theme?.tmdbKeyword
+      const keywords = Array.isArray(theme?.tmdbKeywords)
+        ? theme.tmdbKeywords.filter((keyword) => typeof keyword === 'string' && keyword.trim())
+        : []
 
-      if (!keyword) {
+      if (!keywords.length) {
         return response.status(404).json({ error: 'No seasonal movie collection is active.' })
       }
 
       const config = loadRuntimeConfig()
-      const keywordPayload = await searchMovieKeywords(fetch, {
-        token: config.tmdbBearerToken,
-        baseUrl: config.tmdbBaseUrl,
-        query: keyword,
+      const keywordPayloads = await Promise.all(keywords.map(async (keyword) => ({
+        keyword,
+        payload: await searchMovieKeywords(fetch, {
+          token: config.tmdbBearerToken,
+          baseUrl: config.tmdbBaseUrl,
+          query: keyword,
+        }),
+      })))
+      const keywordIds = keywordPayloads.flatMap(({ keyword, payload }) => {
+        const keywordId = (Array.isArray(payload?.results) ? payload.results : [])
+          .find((item) => Number.isInteger(item?.id) && String(item?.name || '').trim().toLocaleLowerCase() === keyword.toLocaleLowerCase())?.id
+        return Number.isInteger(keywordId) ? [keywordId] : []
       })
-      const keywordId = (Array.isArray(keywordPayload?.results) ? keywordPayload.results : [])
-        .find((item) => Number.isInteger(item?.id) && String(item?.name || '').trim().toLocaleLowerCase() === keyword.toLocaleLowerCase())?.id
 
-      if (!keywordId) {
-        return response.status(404).json({ error: `TMDB does not have a matching keyword for ${theme.name}.` })
+      if (!keywordIds.length) {
+        return response.status(404).json({ error: `TMDB does not have matching keywords for ${theme.name}.` })
       }
 
       const moviesPayload = await discoverMoviesByKeyword(fetch, {
         token: config.tmdbBearerToken,
         baseUrl: config.tmdbBaseUrl,
-        keywordId,
+        keywordIds,
       })
       const includedIds = new Set()
       const movies = []
