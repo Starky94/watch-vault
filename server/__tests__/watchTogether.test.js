@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildWatchTogetherStats, ensureWatchTogetherTables, evaluateWatchTogetherAchievementsForUser, getWatchTogetherAchievementsForUser } from '../database.js'
+import { buildWatchTogetherRelationshipSummary, buildWatchTogetherStats, calculateCurrentWatchTogetherStreak, ensureWatchTogetherTables, evaluateWatchTogetherAchievementsForUser, getWatchTogetherAchievementsForUser } from '../database.js'
 import { ACHIEVEMENTS } from '../achievements.js'
 import { WATCH_TOGETHER_ACHIEVEMENTS, WATCH_TOGETHER_AUTOMATIC_GENRE_RULES } from '../watchTogetherAchievements.js'
 
@@ -38,6 +38,25 @@ test('Watch Together schema enforces request, pairing, and shared-title constrai
   assert.equal(queries.some((sql) => sql.includes('watch_together_watched_movies')), true)
   assert.equal(queries.some((sql) => sql.includes('watch_together_sessions')), true)
   assert.equal(queries.some((sql) => sql.includes('watch_together_achievement_unlocks')), true)
+  assert.equal(queries.some((sql) => sql.includes('watch_together_plans')), true)
+  assert.equal(queries.some((sql) => sql.includes('pair_id BIGINT NOT NULL UNIQUE')), true)
+  assert.equal(queries.some((sql) => sql.includes('watch_together_vote_rounds')), true)
+  assert.equal(queries.some((sql) => sql.includes("vote IN ('like', 'skip', 'veto')")), true)
+  assert.equal(queries.some((sql) => sql.includes('watch_together_one_active_vote_round_idx')), true)
+})
+
+test('Watch Together relationship summary counts titles and uses an active local-day streak', () => {
+  const summary = buildWatchTogetherRelationshipSummary({
+    members: [{ username: 'one', full_name: 'One Viewer' }, { username: 'two', full_name: 'Two Viewer' }],
+    watchedMovies: [{ watched_together_at: '2026-09-16T21:00:00.000Z', runtime_minutes: 125 }, { watched_together_at: '2026-09-15T21:00:00.000Z', runtime_minutes: null }],
+    watchedEpisodes: [{ show_id: 22, watched_together_at: '2026-09-16T22:00:00.000Z', runtime_minutes: 45 }, { show_id: 22, watched_together_at: '2026-09-14T22:00:00.000Z', runtime_minutes: -10 }, { show_id: 23, watched_together_at: '2026-09-15T22:00:00.000Z', runtime_minutes: 50 }],
+    timeZone: 'UTC', now: new Date('2026-09-17T09:00:00.000Z'),
+  })
+  assert.equal(summary.titles_watched, 4)
+  assert.equal(summary.time_watched_minutes, 220)
+  assert.equal(summary.current_streak_days, 3)
+  assert.equal(calculateCurrentWatchTogetherStreak(['2026-09-15', '2026-09-16'], 'UTC', new Date('2026-09-17T09:00:00.000Z')), 2)
+  assert.equal(calculateCurrentWatchTogetherStreak(['2026-09-16'], 'America/Los_Angeles', new Date('2026-09-17T01:00:00.000Z')), 1)
 })
 
 test('Watch Together catalog contains all 125 supplied achievements with stable ids', () => {

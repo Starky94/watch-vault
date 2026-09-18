@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import './App.css'
 import { defaultThemeKey, seasonalThemes } from '../shared/themes.js'
 import { applyActiveTheme, readCachedActiveTheme } from './theme.js'
@@ -104,6 +104,7 @@ const initialTvWatchedIds = []
 const mobileNavItems = [
   { label: 'Home', icon: HomeIcon, view: primaryViews.home },
   { label: 'Search', icon: SearchIcon, view: primaryViews.movies },
+  { label: 'TV Shows', icon: TvIcon, view: primaryViews.tvShows },
   { label: 'Books', icon: BookmarkIcon, view: primaryViews.books },
   { label: 'Games', icon: GamepadIcon, view: primaryViews.games },
   { label: 'News', icon: NewsIcon, view: primaryViews.news },
@@ -508,6 +509,8 @@ function App() {
   const [statsInitialTab, setStatsInitialTab] = useState('Overview')
   const [achievementsState, setAchievementsState] = useState({ status: 'idle', achievements: [], error: '' })
   const [achievementToast, setAchievementToast] = useState(null)
+  const [watchTogetherCelebration, setWatchTogetherCelebration] = useState(null)
+  const watchTogetherCelebrationTimerRef = useRef(null)
   const [continueWatchingState, setContinueWatchingState] = useState({ status: 'idle', shows: [], error: '' })
   const [continueWatchingPage, setContinueWatchingPage] = useState(1)
   const [continueWatchingPageState, setContinueWatchingPageState] = useState(() => createTvCollectionState())
@@ -515,7 +518,7 @@ function App() {
   const [tvWatchlistIds, setTvWatchlistIds] = useState(() => new Set(initialTvWatchlistIds))
   const [tvWatchlistShows, setTvWatchlistShows] = useState([])
   const [tvWatchedIds, setTvWatchedIds] = useState(() => new Set(initialTvWatchedIds))
-  const [watchTogetherState, setWatchTogetherState] = useState({ status: 'idle', partner: null, pendingRequest: null, users: [], items: [], watchedMovies: [], watchedEpisodes: [], inProgressShows: [], error: '' })
+  const [watchTogetherState, setWatchTogetherState] = useState({ status: 'idle', partner: null, relationship: null, voting: [], pendingRequest: null, users: [], items: [], watchedMovies: [], watchedEpisodes: [], inProgressShows: [], error: '' })
   const [watchTogetherSearch, setWatchTogetherSearch] = useState({ query: '', type: 'all', status: 'idle', items: [], error: '' })
   const [watchTogetherAction, setWatchTogetherAction] = useState({ status: 'idle', key: null, error: '' })
   const [watchTogetherTab, setWatchTogetherTab] = useState('movies')
@@ -780,6 +783,15 @@ function App() {
     setCurrentRoute(nextRoute)
     setCurrentScreen(appScreens.dashboard)
     setActiveView(nextView)
+  }
+
+  function handleOpenRelatedNews(filters) {
+    const nextFilters = { ...emptyNewsFilters, ...filters }
+    handleNavigateToPath(
+      buildNewsPath(nextFilters),
+      { kind: routeKinds.news, tab: 'news', filters: nextFilters },
+      primaryViews.news,
+    )
   }
 
   function saveRecentSearch(query) {
@@ -2004,15 +2016,15 @@ function App() {
 
   async function loadWatchTogetherForUser(nextUser) {
     if (!nextUser?.username) {
-      setWatchTogetherState({ status: 'idle', partner: null, pendingRequest: null, users: [], items: [], watchedMovies: [], watchedEpisodes: [], inProgressShows: [], error: '' })
+      setWatchTogetherState({ status: 'idle', partner: null, relationship: null, voting: [], pendingRequest: null, users: [], items: [], watchedMovies: [], watchedEpisodes: [], inProgressShows: [], error: '' })
       return
     }
     setWatchTogetherState((state) => ({ ...state, status: 'loading', error: '' }))
     try {
-      const response = await fetch('/api/watch-together', { headers: buildAuthHeaders(nextUser) })
+      const response = await fetch(`/api/watch-together?timeZone=${encodeURIComponent(resolveBrowserTimeZone())}`, { headers: buildAuthHeaders(nextUser) })
       const payload = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(payload.error || 'Unable to load Watch Together.')
-      setWatchTogetherState({ status: 'success', partner: payload.partner || null, pendingRequest: payload.pendingRequest || null, users: Array.isArray(payload.users) ? payload.users : [], items: Array.isArray(payload.items) ? payload.items : [], watchedMovies: Array.isArray(payload.watchedMovies) ? payload.watchedMovies : [], watchedEpisodes: Array.isArray(payload.watchedEpisodes) ? payload.watchedEpisodes : [], inProgressShows: Array.isArray(payload.inProgressShows) ? payload.inProgressShows : [], error: '' })
+      setWatchTogetherState({ status: 'success', partner: payload.partner || null, relationship: payload.relationship || null, voting: Array.isArray(payload.voting) ? payload.voting : [], pendingRequest: payload.pendingRequest || null, users: Array.isArray(payload.users) ? payload.users : [], items: Array.isArray(payload.items) ? payload.items : [], watchedMovies: Array.isArray(payload.watchedMovies) ? payload.watchedMovies : [], watchedEpisodes: Array.isArray(payload.watchedEpisodes) ? payload.watchedEpisodes : [], inProgressShows: Array.isArray(payload.inProgressShows) ? payload.inProgressShows : [], error: '' })
     } catch (error) {
       setWatchTogetherState((state) => ({ ...state, status: 'error', error: error instanceof Error ? error.message : 'Unable to load Watch Together.' }))
     }
@@ -2121,6 +2133,57 @@ function App() {
     } catch (error) { setWatchTogetherAction({ status: 'error', key, error: error instanceof Error ? error.message : 'Unable to update the shared shortlist.' }) }
   }
 
+  async function handleWatchTogetherPlan(plan = null) {
+    if (!user?.username) return false
+    const isClear = plan === null
+    setWatchTogetherAction({ status: 'loading', key: isClear ? 'clear-plan' : 'save-plan', error: '' })
+    try {
+      const body = isClear ? undefined : {
+        scheduledAt: plan.scheduledAt,
+        mediaType: plan.item?.mediaType ?? null,
+        mediaId: plan.item?.id ?? null,
+        episodeId: plan.item?.episodeId ?? null,
+      }
+      const response = await fetch('/api/watch-together/plan', {
+        method: isClear ? 'DELETE' : 'PUT',
+        headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...buildAuthHeaders(user) },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || 'Unable to update the planned session.')
+      await loadWatchTogetherForUser(user)
+      setWatchTogetherAction({ status: 'success', key: isClear ? 'clear-plan' : 'save-plan', error: '' })
+      return true
+    } catch (error) {
+      setWatchTogetherAction({ status: 'error', key: isClear ? 'clear-plan' : 'save-plan', error: error instanceof Error ? error.message : 'Unable to update the planned session.' })
+      return false
+    }
+  }
+
+  async function handleWatchTogetherVoting(action, mediaType, item = null, vote = null) {
+    if (!user?.username) return false
+    const key = `vote-${action}-${mediaType}${item ? `-${item.id}` : ''}`
+    setWatchTogetherAction({ status: 'loading', key, error: '' })
+    try {
+      let path = `/api/watch-together/votes/${mediaType}`; let method = 'POST'; let body
+      if (action === 'start') path += '/start'
+      if (action === 'cast') { path += `/items/${item.id}`; method = 'PUT'; body = { vote, ...(item.mediaType === 'tv' ? { episodeId: item.episodeId } : {}) } }
+      if (action === 'submit') path += '/submit'
+      if (action === 'choose') { path += `/matches/${item.id}/select`; body = item.mediaType === 'tv' ? { episodeId: item.episodeId } : {} }
+      if (action === 'cancel') method = 'DELETE'
+      const response = await fetch(path, { method, headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...buildAuthHeaders(user) }, ...(body ? { body: JSON.stringify(body) } : {}) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || 'Unable to update the shared vote.')
+      await loadWatchTogetherForUser(user)
+      if (action === 'submit' && payload.status === 'revealed' && Number(payload.matchCount) > 0) celebrateWatchTogether('match', 'It’s a match!', `${payload.matchCount} mutual ${Number(payload.matchCount) === 1 ? 'pick is' : 'picks are'} ready for tonight.`)
+      setWatchTogetherAction({ status: 'success', key, error: '' })
+      return true
+    } catch (error) {
+      setWatchTogetherAction({ status: 'error', key, error: error instanceof Error ? error.message : 'Unable to update the shared vote.' })
+      return false
+    }
+  }
+
   async function handleWatchTogetherEpisodeWatched(item, watchService) {
     if (!user?.username || !Number.isInteger(Number(item?.episodeId))) return false
     const key = `watch-tv-${item.episodeId}`
@@ -2134,6 +2197,7 @@ function App() {
       await Promise.all([loadTvLibraryForUser(user), loadTvWatchedHistoryForUser(user)])
       receiveAchievementUnlocks(payload.newlyUnlockedAchievements)
       const confirmationStatus = payload.watchTogether?.status || 'waiting_for_partner'
+      if (confirmationStatus === 'completed') celebrateWatchTogether('complete', 'Watched together!', `${item.title} is now part of your shared story.`)
       if (confirmationStatus !== 'completed') await loadWatchTogetherForUser(user)
       await loadWatchTogetherAchievements(user)
       setWatchTogetherAction({ status: 'success', key, error: '' })
@@ -2266,6 +2330,12 @@ function App() {
     window.setTimeout(() => setAchievementToast(null), 4500)
   }
 
+  function celebrateWatchTogether(kind, title, detail) {
+    if (watchTogetherCelebrationTimerRef.current) window.clearTimeout(watchTogetherCelebrationTimerRef.current)
+    setWatchTogetherCelebration({ kind, title, detail, id: `${kind}-${Date.now()}` })
+    watchTogetherCelebrationTimerRef.current = window.setTimeout(() => setWatchTogetherCelebration(null), 3600)
+  }
+
   async function handleAddMovieToWatched(movie, watchService = null, { deferWatchTogetherRefresh = false, watchTogether = false } = {}) {
     const normalizedMovieId = Number(movie?.id)
 
@@ -2334,6 +2404,7 @@ function App() {
       // rate it. The rating dialog refreshes the shared state when it closes.
       if (activeView === primaryViews.watchTogether && !deferWatchTogetherRefresh && payload.watchTogether?.status !== 'completed') void loadWatchTogetherForUser(user)
       if (payload.watchTogether?.status === 'completed') void loadWatchTogetherAchievements(user)
+      if (watchTogether && payload.watchTogether?.status === 'completed') celebrateWatchTogether('complete', 'Watched together!', `${movie.title} is now part of your shared story.`)
       return true
     } catch (error) {
       setWatchedActionState({
@@ -4033,6 +4104,7 @@ function App() {
                 onSubmitEpisodeRating={handleSubmitTvEpisodeRating}
                 onOpenTv={handleOpenTvDetail}
                 onOpenPerson={handleOpenPersonDetail}
+                onOpenRelatedNews={handleOpenRelatedNews}
                 onOpenLogin={handleOpenLogin}
                 isSignedIn={Boolean(user)}
                 watchlistIds={tvWatchlistIds}
@@ -4200,6 +4272,8 @@ function App() {
                 achievementsState={watchTogetherAchievementsState}
                 statsState={watchTogetherStatsState}
                 onSaveSession={handleSaveWatchTogetherSession}
+                onSavePlan={handleWatchTogetherPlan}
+                onVotingAction={handleWatchTogetherVoting}
               />
             ) : activeView === primaryViews.tvShows ? (
               <TvShowsScreen
@@ -4266,6 +4340,7 @@ function App() {
                 onOpenMovie={handleOpenMovieDetail}
                 onOpenTv={handleOpenTvDetail}
                 onOpenPerson={handleOpenPersonDetail}
+                onOpenRelatedNews={handleOpenRelatedNews}
                 isSignedIn={Boolean(user)}
                 onOpenLogin={handleOpenLogin}
                 onToggleMovieWatchlist={handleToggleMovieInWatchlist}
@@ -4281,6 +4356,7 @@ function App() {
                 similarMoviesState={similarMoviesState}
                 onBackToMovies={() => handleMovieViewSelection(primaryViews.movies)}
                 onOpenPerson={handleOpenPersonDetail}
+                onOpenRelatedNews={handleOpenRelatedNews}
                 onToggleWatched={handleToggleMovieWatched}
                 onToggleWatchlist={handleToggleMovieInWatchlist}
                 onToggleReleaseReminder={handleToggleMovieReleaseReminder}
@@ -4358,6 +4434,7 @@ function App() {
           </>
         )}
       </main>
+      {watchTogetherCelebration ? <div key={watchTogetherCelebration.id} className={`watch-together-celebration ${watchTogetherCelebration.kind}`} role="status"><SparklesIcon /><div><b>{watchTogetherCelebration.title}</b><span>{watchTogetherCelebration.detail}</span></div></div> : null}
       {achievementToast ? <div className="achievement-toast" role="status"><TrophyIcon /><div><b>Achievement unlocked</b><span>{achievementToast.name}</span></div></div> : null}
       {bookReadingFormatDialogBook ? <BookReadingFormatDialog book={bookReadingFormatDialogBook} isSaving={bookReadActionState.status === 'loading' && bookReadActionState.bookId === bookReadingFormatDialogBook.id} onCancel={() => setBookReadingFormatDialogBook(null)} onSelect={(readingFormat, metadata) => handleToggleBookRead({ ...bookReadingFormatDialogBook, metadata }, readingFormat)} /> : null}
     </div>
@@ -6938,8 +7015,9 @@ function TvShowsScreen({
   )
 }
 
-function WatchTogetherScreen({ isSignedIn, state, search, action, activeTab, onOpenLogin, onChoosePartner, onReset, onSearchChange, onSearch, onItemAction, onTabChange, onMarkWatched, onMarkEpisodeWatched, watchedActionState, onSubmitMovieRating, movieRatingActionState, onSubmitEpisodeRating, tvEpisodeRatingActionState, onOpenTvShow, onOpenMovie, onRefresh, achievementsState, statsState, onSaveSession }) {
+function WatchTogetherScreen({ isSignedIn, state, search, action, activeTab, onOpenLogin, onChoosePartner, onReset, onSearchChange, onSearch, onItemAction, onTabChange, onMarkWatched, onMarkEpisodeWatched, watchedActionState, onSubmitMovieRating, movieRatingActionState, onSubmitEpisodeRating, tvEpisodeRatingActionState, onOpenTvShow, onOpenMovie, onRefresh, achievementsState, statsState, onSaveSession, onSavePlan, onVotingAction }) {
   const [resetOpen, setResetOpen] = useState(false)
+  const [planOpen, setPlanOpen] = useState(false)
   const [historyTab, setHistoryTab] = useState('movies')
   const [movieHistoryPage, setMovieHistoryPage] = useState(1)
   const [showHistoryPage, setShowHistoryPage] = useState(1)
@@ -6957,10 +7035,11 @@ function WatchTogetherScreen({ isSignedIn, state, search, action, activeTab, onO
   if (!isSignedIn) return <section className="watch-together-screen"><div className="watch-together-hero"><div><h1>Watch Together</h1><p>Sign in to choose a partner and build a shared shortlist.</p></div></div><SectionMessage message="Sign in to start watching together." /><button type="button" className="primary-button" onClick={onOpenLogin}>Sign In</button></section>
 
   const selected = state.items.find((item) => item.selected)
-  const pendingPick = state.items.find((item) => item.pickVoteStatus)
   const movieItems = state.items.filter((item) => item.mediaType === 'movie')
   const tvItems = state.items.filter((item) => item.mediaType === 'tv')
-  const tabItems = activeTab === 'movies' ? movieItems : tvItems
+  const tabItems = activeTab === 'tv' ? tvItems : movieItems
+  const activeMediaType = activeTab === 'tv' ? 'tv' : 'movie'
+  const voteRound = (state.voting || []).find((round) => round.mediaType === activeMediaType) || null
   const searchItems = search.items.filter((item) => activeTab === 'movies' ? item.mediaType === 'movie' : item.mediaType === 'tv')
   const saved = new Set(tabItems.map((item) => `${item.mediaType}-${item.id}`))
   const pending = state.pendingRequest
@@ -6975,29 +7054,92 @@ function WatchTogetherScreen({ isSignedIn, state, search, action, activeTab, onO
     hasPreviousPage: historyPage > 1,
     hasNextPage: historyPage < historyPageCount,
   }
+  const recentMoments = [...state.watchedMovies, ...state.watchedEpisodes]
+    .sort((first, second) => new Date(second.watchedTogetherAt).valueOf() - new Date(first.watchedTogetherAt).valueOf())
+    .slice(0, 2)
   return <section className="watch-together-screen">
-    <div className="watch-together-hero">
+    {state.partner && state.relationship ? <WatchTogetherRelationshipHeader relationship={state.relationship} action={action} onPlan={() => setPlanOpen(true)} onClearPlan={() => onSavePlan(null)} onReset={() => setResetOpen(true)} /> : <div className="watch-together-hero">
       <div><span className="watch-together-eyebrow">ONE-ON-ONE</span><h1>Watch Together</h1><p>{state.partner ? `Build your next watch night with ${state.partner.fullName}.` : pending?.direction === 'outgoing' ? `Waiting for ${pending.user.fullName} to respond to your request.` : pending ? `${pending.user.fullName} invited you to Watch Together. Respond in Alerts.` : 'Choose someone to start a shared movie and TV shortlist.'}</p></div>
       {state.partner ? <button type="button" className="secondary-button watch-together-reset" disabled={isBusy} onClick={() => setResetOpen(true)}>Reset</button> : <label className="watch-together-partner"><span>Your partner</span><select value="" disabled={isBusy || Boolean(pending)} onChange={(event) => event.target.value && onChoosePartner(event.target.value)}><option value="">{pending ? 'Request pending…' : 'Choose a user…'}</option>{state.users.map((candidate) => <option key={candidate.username} value={candidate.username}>{candidate.fullName} (@{candidate.username})</option>)}</select></label>}
-    </div>
+    </div>}
     {state.status === 'loading' ? <SectionMessage message="Loading your shared watchlist..." /> : null}
     {state.status === 'error' ? <SectionMessage tone="error" message={state.error} /> : null}
     {action.status === 'error' ? <SectionMessage tone="error" message={action.error} /> : null}
     {!state.partner && state.status === 'success' ? <section className="watch-together-empty"><UserIcon /><h2>{pending?.direction === 'outgoing' ? 'Request sent' : pending ? 'Request awaiting your choice' : 'Pick your watch partner'}</h2><p>{pending?.direction === 'outgoing' ? `${pending.user.fullName} will receive an alert with options to accept or deny.` : pending ? `Open Alerts to accept or deny ${pending.user.fullName}'s request.` : 'Select another WatchVault user above to send them a Watch Together request.'}</p></section> : null}
     {state.partner ? <>
-      <section className="watch-together-picked">
-        <div><span>Tonight’s pick</span>{selected ? <><strong>{selected.title}</strong><p>{selected.mediaType === 'tv' ? `${formatWatchTogetherEpisode(selected)} · TV Episode` : `Movie · ${selected.year}`}</p></> : pendingPick ? <><strong>{pendingPick.title}</strong><p>{pendingPick.pickVoteStatus === 'proposed_by_current_user' ? 'Waiting for your partner to vote.' : 'Your partner proposed this title.'}</p></> : <p>No title selected yet.</p>}</div>
-        <div className="watch-together-picked-actions">{selected?.mediaType === 'movie' ? <WatchTogetherMarkWatched movie={selected} onMarkWatched={onMarkWatched} watchedActionState={watchedActionState} onSubmitMovieRating={onSubmitMovieRating} movieRatingActionState={movieRatingActionState} onRefresh={onRefresh} /> : null}{selected?.mediaType === 'tv' ? <WatchTogetherMarkEpisode episode={selected} onMarkWatched={onMarkEpisodeWatched} action={action} onSubmitRating={onSubmitEpisodeRating} ratingActionState={tvEpisodeRatingActionState} onRefresh={onRefresh} /> : null}{pendingPick?.pickVoteStatus === 'awaiting_current_user' ? <><button type="button" className="secondary-button" disabled={action.status === 'loading'} onClick={() => onItemAction('deny', pendingPick)}>Deny</button><button type="button" className="primary-button" disabled={action.status === 'loading'} onClick={() => onItemAction('accept', pendingPick)}>Accept</button></> : null}{(selected || pendingPick?.pickVoteStatus === 'proposed_by_current_user') ? <button type="button" className="secondary-button" disabled={action.status === 'loading'} onClick={() => onItemAction('clear')}>{selected ? 'Clear pick' : 'Cancel proposal'}</button> : null}</div>
-      </section>
-      <div className="watch-together-tabs" role="tablist" aria-label="Watch Together content"><button type="button" className={activeTab === 'movies' ? 'active' : ''} onClick={() => { onTabChange('movies'); onSearchChange({ type: 'movie' }) }}>Movies <span>{movieItems.length}</span></button><button type="button" className={activeTab === 'tv' ? 'active' : ''} onClick={() => { onTabChange('tv'); onSearchChange({ type: 'tv' }) }}>TV Episodes <span>{tvItems.length}</span></button><button type="button" className={activeTab === 'history' ? 'active' : ''} onClick={() => onTabChange('history')}>History <span>{state.watchedMovies.length + state.watchedEpisodes.length}</span></button><button type="button" className={activeTab === 'stats' ? 'active' : ''} onClick={() => onTabChange('stats')}>Stats</button><button type="button" className={activeTab === 'achievements' ? 'active' : ''} onClick={() => onTabChange('achievements')}>Achievements <span>{achievementsState?.achievements?.filter((item) => item.unlocked).length || 0}</span></button></div>
+      <WatchTogetherDecisionRail activeMediaType={activeMediaType} selected={selected} voteRound={voteRound} shortlistCount={tabItems.length} />
+      <WatchTogetherFocalPick selected={selected} voteRound={voteRound} shortlistCount={tabItems.length} action={action} onStartVote={() => onVotingAction('start', activeMediaType)} onChooseMatch={(item) => onVotingAction('choose', activeMediaType, item)} onClear={() => onItemAction('clear')} onMarkWatched={onMarkWatched} onMarkEpisodeWatched={onMarkEpisodeWatched} watchedActionState={watchedActionState} onSubmitMovieRating={onSubmitMovieRating} movieRatingActionState={movieRatingActionState} onSubmitEpisodeRating={onSubmitEpisodeRating} tvEpisodeRatingActionState={tvEpisodeRatingActionState} onRefresh={onRefresh} items={tabItems} />
+      <div className="watch-together-tabs" role="tablist" aria-label="Watch Together content"><button type="button" role="tab" aria-selected={activeTab === 'movies'} className={activeTab === 'movies' ? 'active' : ''} onClick={() => { onTabChange('movies'); onSearchChange({ type: 'movie' }) }}>Movies <span>{movieItems.length}</span></button><button type="button" role="tab" aria-selected={activeTab === 'tv'} className={activeTab === 'tv' ? 'active' : ''} onClick={() => { onTabChange('tv'); onSearchChange({ type: 'tv' }) }}>TV Episodes <span>{tvItems.length}</span></button><button type="button" role="tab" aria-selected={activeTab === 'history'} className={activeTab === 'history' ? 'active' : ''} onClick={() => onTabChange('history')}>History <span>{state.watchedMovies.length + state.watchedEpisodes.length}</span></button><button type="button" role="tab" aria-selected={activeTab === 'stats'} className={activeTab === 'stats' ? 'active' : ''} onClick={() => onTabChange('stats')}>Stats</button><button type="button" role="tab" aria-selected={activeTab === 'achievements'} className={activeTab === 'achievements' ? 'active' : ''} onClick={() => onTabChange('achievements')}>Achievements <span>{achievementsState?.achievements?.filter((item) => item.unlocked).length || 0}</span></button></div>
       {activeTab === 'stats' ? <WatchTogetherStatsTab state={statsState} onOpenMovie={onOpenMovie} onOpenTvShow={onOpenTvShow} /> : activeTab === 'achievements' ? <WatchTogetherAchievementsTab state={achievementsState} /> : activeTab === 'history' ? <section className="watch-together-history"><div className="section-heading"><div><h2>History</h2><p>Titles and episodes you both confirmed watching.</p></div></div><div className="watch-together-history-tabs" role="tablist" aria-label="Watch Together history"><button type="button" role="tab" aria-selected={historyTab === 'movies'} className={historyTab === 'movies' ? 'active' : ''} onClick={() => { setHistoryTab('movies'); setMovieHistoryPage(1) }}>Movies <span>{state.watchedMovies.length}</span></button><button type="button" role="tab" aria-selected={historyTab === 'shows'} className={historyTab === 'shows' ? 'active' : ''} onClick={() => { setHistoryTab('shows'); setShowHistoryPage(1) }}>Shows <span>{state.watchedEpisodes.length}</span></button></div>{visibleHistoryItems.length ? <><div className="watch-together-results">{visibleHistoryItems.map((item) => <WatchTogetherHistoryRow key={historyTab === 'movies' ? `movie-${item.id}` : `episode-${item.episodeId}`} item={item} achievements={achievementsState?.achievements || []} onLogSession={(ids, details) => onSaveSession(item, ids, details)} />)}</div><PaginationControls pagination={historyPagination} onPageChange={historyTab === 'movies' ? setMovieHistoryPage : setShowHistoryPage} /></> : <SectionMessage message={historyTab === 'movies' ? 'No shared movies yet.' : 'No shared episodes yet.'} />}</section> : <section className="watch-together-workspace">
-        <div className="watch-together-search-panel"><div className="section-heading"><div><h2>Find a {activeTab === 'movies' ? 'movie' : 'TV show'}</h2><p>{activeTab === 'movies' ? 'Add movies to your shared shortlist.' : 'Add a show to select your next shared episode.'}</p></div></div><form className="watch-together-search-form" onSubmit={(event) => { event.preventDefault(); onSearch() }}><input value={search.query} onChange={(event) => onSearchChange({ query: event.target.value, type: activeTab === 'movies' ? 'movie' : 'tv' })} placeholder={activeTab === 'movies' ? 'Search movies' : 'Search TV shows'} /><button type="submit" className="primary-button" disabled={!search.query.trim() || search.status === 'loading'}>{search.status === 'loading' ? 'Searching...' : 'Search'}</button></form>{search.status === 'error' ? <SectionMessage tone="error" message={search.error} /> : null}<div className="watch-together-results">{searchItems.map((item) => <WatchTogetherTitleRow key={`${item.mediaType}-${item.id}`} item={item} actionLabel={saved.has(`${item.mediaType}-${item.id}`) ? 'Added' : 'Add'} disabled={saved.has(`${item.mediaType}-${item.id}`) || action.status === 'loading'} onAction={() => onItemAction('add', item)} />)}</div></div>
-        <div className="watch-together-shortlist"><div className="section-heading"><div><h2>{activeTab === 'movies' ? 'Movie shortlist' : 'TV episode shortlist'}</h2><p>{activeTab === 'tv' ? 'Each entry is the next episode you can watch together.' : `${movieItems.length} movie${movieItems.length === 1 ? '' : 's'} to choose from.`}</p></div></div>{tabItems.length ? <div className="watch-together-results">{tabItems.map((item) => <WatchTogetherTitleRow key={`${item.mediaType}-${item.id}`} item={item} selected={item.selected} actionLabel={item.selected ? null : item.pickVoteStatus ? 'Proposal pending' : 'Propose tonight'} disabled={action.status === 'loading' || Boolean(selected) || Boolean(pendingPick)} onAction={() => onItemAction('select', item)} onRemove={!item.selected && !item.pickVoteStatus ? () => onItemAction('remove', item) : null} />)}</div> : <SectionMessage message={activeTab === 'movies' ? 'Search for a movie to start the shortlist.' : 'Search for a show to choose your next shared episode.'} />}</div>
+        <div className="watch-together-search-panel"><div className="section-heading"><div><h2>Find a {activeTab === 'movies' ? 'movie' : 'TV show'}</h2><p>{voteRound ? 'This shortlist is locked until the voting round is resolved.' : activeTab === 'movies' ? 'Add movies to your shared shortlist.' : 'Add a show to select your next shared episode.'}</p></div></div><form className="watch-together-search-form" onSubmit={(event) => { event.preventDefault(); onSearch() }}><label><SearchIcon /><span className="visually-hidden">Search titles</span><input value={search.query} disabled={Boolean(voteRound)} onChange={(event) => onSearchChange({ query: event.target.value, type: activeTab === 'movies' ? 'movie' : 'tv' })} placeholder={activeTab === 'movies' ? 'Search movies' : 'Search TV shows'} /></label><button type="submit" className="primary-button" disabled={Boolean(voteRound) || !search.query.trim() || search.status === 'loading'}>{search.status === 'loading' ? 'Searching...' : 'Search'}</button></form>{search.status === 'error' ? <SectionMessage tone="error" message={search.error} /> : null}<div className="watch-together-results">{searchItems.map((item) => <WatchTogetherTitleRow key={`${item.mediaType}-${item.id}`} item={item} actionLabel={saved.has(`${item.mediaType}-${item.id}`) ? 'Added' : 'Add'} disabled={Boolean(voteRound) || saved.has(`${item.mediaType}-${item.id}`) || action.status === 'loading'} onAction={() => onItemAction('add', item)} />)}</div></div>
+        <div className="watch-together-shortlist"><div className="section-heading"><div><h2>{voteRound ? 'Vote privately' : 'Shared shortlist'}</h2><p>{voteRound ? 'Your choices stay private until both ballots are submitted.' : activeTab === 'tv' ? `${tvItems.length} episode${tvItems.length === 1 ? '' : 's'} ready to decide.` : `${movieItems.length} movie${movieItems.length === 1 ? '' : 's'} ready to decide.`}</p></div></div>{voteRound ? <WatchTogetherVotingPanel round={voteRound} items={tabItems} action={action} onVote={(item, vote) => onVotingAction('cast', activeMediaType, item, vote)} onSubmit={() => onVotingAction('submit', activeMediaType)} onChoose={(item) => onVotingAction('choose', activeMediaType, item)} onCancel={() => onVotingAction('cancel', activeMediaType)} /> : tabItems.length ? <><div className="watch-together-shortlist-grid">{tabItems.map((item) => <WatchTogetherShortlistCard key={watchTogetherPlanItemKey(item)} item={item} selected={item.selected} disabled={action.status === 'loading' || Boolean(selected)} onRemove={!item.selected ? () => onItemAction('remove', item) : null} />)}</div>{!selected ? <button type="button" className="primary-button watch-together-start-vote" disabled={action.status === 'loading'} onClick={() => onVotingAction('start', activeMediaType)}><PlayIcon />Start private vote</button> : null}</> : <SectionMessage message={activeTab === 'movies' ? 'Search for a movie to start the shortlist.' : 'Search for a show to choose your next shared episode.'} />}</div>
         {activeTab === 'tv' ? <section className="watch-together-in-progress"><div className="section-heading"><div><h2>Jointly in progress</h2><p>Shows with at least one episode watched together.</p></div></div>{state.inProgressShows.length ? <div className="watch-together-results">{state.inProgressShows.map((show) => <WatchTogetherInProgressShowRow key={show.id} show={show} onOpen={() => onOpenTvShow(show)} />)}</div> : <SectionMessage message="Shared TV shows will appear here after your first episode together." />}</section> : null}
+        <WatchTogetherRecentMoments items={recentMoments} onViewHistory={() => onTabChange('history')} />
       </section>}
     </> : null}
     {resetOpen ? <WatchTogetherResetDialog isSaving={action.status === 'loading' && action.key === 'reset'} onCancel={() => setResetOpen(false)} onConfirm={async () => { if (await onReset()) setResetOpen(false) }} /> : null}
+    {planOpen ? <WatchTogetherPlanDialog items={state.items} plan={state.relationship?.nextSession} action={action} onCancel={() => setPlanOpen(false)} onSave={async (plan) => { if (await onSavePlan(plan)) setPlanOpen(false) }} /> : null}
   </section>
+}
+
+function WatchTogetherRelationshipHeader({ relationship, action, onPlan, onClearPlan, onReset }) {
+  const members = relationship.members || []
+  const plan = relationship.nextSession
+  const planTitle = plan?.title ? (plan.mediaType === 'tv' && plan.episodeTitle ? `${plan.title} · ${formatWatchTogetherEpisode(plan)}` : plan.title) : 'Title to be decided'
+  const savingPlan = action.status === 'loading' && (action.key === 'save-plan' || action.key === 'clear-plan')
+  return <section className="watch-together-relationship-header">
+    <div className="watch-together-relationship-main">
+      <div className="watch-together-member-avatars" aria-label={members.map((member) => member.fullName).join(' and ')}>{members.slice(0, 2).map((member, index) => <span key={member.username} className={`watch-together-member-avatar tone-${index}`}>{getUserInitials(member.fullName)}</span>)}</div>
+      <div><p className="watch-together-relationship-kicker">WATCHING TOGETHER</p><h1>{members.map((member) => getFirstName(member.fullName)).join(' & ') || 'Watch Together'}</h1><p className="watch-together-relationship-copy">Your shared watch story</p></div>
+    </div>
+    <div className="watch-together-relationship-metrics"><div><ClapperIcon /><p><strong>{relationship.titlesWatched || 0}</strong><span>titles</span></p></div><div><ClockIcon /><p><strong>{formatMinutesAsHoursAndMinutes(relationship.timeWatchedMinutes || 0)}</strong><span>watched</span></p></div></div>
+    <div className="watch-together-next-session"><CalendarIcon /><div><span>Next watch</span><strong>{plan ? formatWatchTogetherPlanDate(plan.scheduledAt) : 'Nothing planned yet'}</strong><small>{plan ? planTitle : 'Choose a time for your next watch night.'}</small></div><div className="watch-together-next-session-actions"><button type="button" className="primary-button" disabled={savingPlan} onClick={onPlan}><CalendarIcon />{plan ? 'Edit night' : 'Plan night'}</button>{plan ? <button type="button" className="watch-together-plan-clear" disabled={savingPlan} onClick={onClearPlan}>Cancel</button> : null}<button type="button" className="watch-together-overflow-button" onClick={onReset} aria-label="Reset Watch Together"><MoreIcon /></button></div></div>
+  </section>
+}
+
+function WatchTogetherPlanDialog({ items, plan, action, onCancel, onSave }) {
+  const [scheduledAt, setScheduledAt] = useState(() => formatLocalDateTimeInput(plan?.scheduledAt || new Date(Date.now() + 60 * 60 * 1000)))
+  const initialItem = plan?.mediaType ? items.find((item) => item.mediaType === plan.mediaType && Number(item.id) === Number(plan.mediaId) && (item.mediaType !== 'tv' || Number(item.episodeId) === Number(plan.episodeId))) : null
+  const [itemKey, setItemKey] = useState(initialItem ? watchTogetherPlanItemKey(initialItem) : '')
+  const selectedItem = items.find((item) => watchTogetherPlanItemKey(item) === itemKey) || null
+  const isSaving = action.status === 'loading' && action.key === 'save-plan'
+  return <div className="movie-rating-dialog-backdrop" role="presentation" onMouseDown={isSaving ? undefined : onCancel}><section className="movie-rating-dialog watch-together-plan-dialog" role="dialog" aria-modal="true" aria-labelledby="watch-together-plan-title" onMouseDown={(event) => event.stopPropagation()}><p className="movie-rating-dialog-kicker">Plan your watch night</p><h2 id="watch-together-plan-title">{plan ? 'Edit next session' : 'Schedule next session'}</h2><label className="watch-together-plan-field">When<input type="datetime-local" value={scheduledAt} min={formatLocalDateTimeInput(new Date(Date.now() + 60 * 1000))} onChange={(event) => setScheduledAt(event.target.value)} /></label><label className="watch-together-plan-field">Title <select value={itemKey} onChange={(event) => setItemKey(event.target.value)}><option value="">Decide later</option>{items.map((item) => <option key={watchTogetherPlanItemKey(item)} value={watchTogetherPlanItemKey(item)}>{item.mediaType === 'tv' ? `${item.title} · ${formatWatchTogetherEpisode(item)}` : item.title}</option>)}</select></label><div className="movie-rating-dialog-actions"><button type="button" className="secondary-button" onClick={onCancel} disabled={isSaving}>Cancel</button><button type="button" className="primary-button" disabled={isSaving || !scheduledAt} onClick={() => onSave({ scheduledAt: new Date(scheduledAt).toISOString(), item: selectedItem })}>{isSaving ? 'Saving...' : 'Save plan'}</button></div>{action.status === 'error' && action.key === 'save-plan' ? <p className="tmdb-search-error">{action.error}</p> : null}</section></div>
+}
+
+function watchTogetherPlanItemKey(item) { return `${item.mediaType}-${item.id}-${item.episodeId || ''}` }
+
+function WatchTogetherDecisionRail({ activeMediaType, selected, voteRound, shortlistCount }) {
+  const stage = selected ? 3 : voteRound ? 2 : shortlistCount ? 1 : 0
+  const steps = [
+    { label: 'Find titles', detail: activeMediaType === 'tv' ? 'Browse shows together' : 'Great choices ahead!' },
+    { label: 'Build shortlist', detail: `${shortlistCount} ${shortlistCount === 1 ? 'title' : 'titles'} added` },
+    { label: 'Vote privately', detail: voteRound?.currentUserSubmitted ? 'Your ballot is in' : 'Both of you vote' },
+    { label: 'Watch together', detail: selected ? 'Tonight’s pick is ready' : 'Enjoy the show!' },
+  ]
+  return <ol className="watch-together-decision-rail" aria-label={`${activeMediaType === 'tv' ? 'TV episode' : 'Movie'} decision process`}>{steps.map((step, index) => <li key={step.label} className={index < stage ? 'complete' : index === stage ? 'current' : ''}><span>{index < stage ? <CheckIcon /> : index + 1}</span><div><b>{step.label}</b><small>{step.detail}</small></div></li>)}</ol>
+}
+
+function WatchTogetherFocalPick({ selected, voteRound, shortlistCount, action, onStartVote, onChooseMatch, onClear, onMarkWatched, onMarkEpisodeWatched, watchedActionState, onSubmitMovieRating, movieRatingActionState, onSubmitEpisodeRating, tvEpisodeRatingActionState, onRefresh, items }) {
+  const matches = (voteRound?.matches || []).map((match) => items.find((item) => item.mediaType === match.mediaType && Number(item.id) === Number(match.mediaId) && (item.mediaType !== 'tv' || Number(item.episodeId) === Number(match.episodeId)))).filter(Boolean)
+  const focal = selected || matches[0] || null
+  const displayItems = (selected ? [selected, ...items.filter((item) => item !== selected)] : matches.length ? matches : items).slice(0, 3)
+  const backdrop = focal?.backdropUrl || displayItems.find((item) => item.backdropUrl)?.backdropUrl
+  const backdropStyle = backdrop ? { backgroundImage: `linear-gradient(90deg, rgba(8,10,24,.98) 0%, rgba(12,12,30,.82) 42%, rgba(8,10,22,.35) 100%), url(${backdrop})` } : undefined
+  const meta = focal ? [focal.mediaType === 'tv' ? `${formatWatchTogetherEpisode(focal)} · ${focal.episodeTitle}` : `Movie · ${focal.year || 'TBA'}`, focal.runtime, focal.streamingService, focal.rating ? `${Number(focal.rating).toFixed(1)} TMDB` : 'Rating TBA'].filter(Boolean) : []
+  const busy = action.status === 'loading'
+  return <section className={`watch-together-focal-pick${focal ? ' has-title' : ''}`} style={backdropStyle}>
+    <div className="watch-together-focal-content"><span>Tonight’s Pick</span><h2>{selected ? selected.title : voteRound?.status === 'revealed' && matches.length ? 'You matched!' : voteRound ? 'Private votes in progress' : shortlistCount ? 'Ready to choose together' : 'Build your shared shortlist'}</h2>{selected ? <p>{meta.join(' · ')}</p> : voteRound?.status === 'revealed' && matches.length ? <p>{matches.length === 1 ? `${matches[0].title} is a mutual match.` : `${matches.length} mutual matches are ready for you to choose.`}</p> : voteRound ? <p>{voteRound.currentUserSubmitted ? (voteRound.partnerSubmitted ? 'Revealing your matches…' : 'Your ballot is in. Waiting for your partner.') : 'Rate every title privately, then submit your ballot.'}</p> : <p>{shortlistCount ? `${shortlistCount} ${shortlistCount === 1 ? 'title is' : 'titles are'} waiting on your shortlist.` : 'Search for titles you both might enjoy.'}</p>}<div className="watch-together-focal-actions">{selected?.mediaType === 'movie' ? <WatchTogetherMarkWatched movie={selected} onMarkWatched={onMarkWatched} watchedActionState={watchedActionState} onSubmitMovieRating={onSubmitMovieRating} movieRatingActionState={movieRatingActionState} onRefresh={onRefresh} /> : null}{selected?.mediaType === 'tv' ? <WatchTogetherMarkEpisode episode={selected} onMarkWatched={onMarkEpisodeWatched} action={action} onSubmitRating={onSubmitEpisodeRating} ratingActionState={tvEpisodeRatingActionState} onRefresh={onRefresh} /> : null}{!selected && voteRound?.status === 'revealed' && matches.length === 1 ? <button type="button" className="primary-button" disabled={busy} onClick={() => onChooseMatch(matches[0])}><PlayIcon />Choose {matches[0].title}</button> : null}{!selected && !voteRound && shortlistCount ? <button type="button" className="primary-button" disabled={busy} onClick={onStartVote}><PlayIcon />Start private vote</button> : null}{selected ? <button type="button" className="secondary-button" disabled={busy} onClick={onClear}>Clear pick</button> : null}</div>{!selected && shortlistCount ? <small className="watch-together-private-note"><LockIcon />Votes stay private until both ballots are submitted.</small> : null}</div>
+    <div className="watch-together-focal-art" aria-label={displayItems.length ? `${displayItems.length} shortlisted titles` : 'No shortlisted titles yet'}>{displayItems.map((item, index) => <div key={watchTogetherPlanItemKey(item)} className={`watch-together-focal-card card-${index}`}>{item.posterUrl ? <img src={item.posterUrl} alt={`${item.title} poster`} loading="lazy" /> : <span>{getUserInitials(item.title)}</span>}</div>)}{!displayItems.length ? <div className="watch-together-focal-card empty"><ClapperIcon /></div> : null}</div>
+  </section>
+}
+
+function WatchTogetherVotingPanel({ round, items, action, onVote, onSubmit, onChoose, onCancel }) {
+  const voteByItem = new Map((round.votes || []).map((entry) => [`${entry.mediaType}-${entry.mediaId}-${entry.episodeId || ''}`, entry.vote]))
+  const matches = (round.matches || []).map((match) => items.find((item) => item.mediaType === match.mediaType && Number(item.id) === Number(match.mediaId) && (item.mediaType !== 'tv' || Number(item.episodeId) === Number(match.episodeId)))).filter(Boolean)
+  const isSaving = action.status === 'loading'
+  if (round.status === 'revealed') return <div className="watch-together-voting-results"><h3>{matches.length ? 'Your mutual matches' : 'No mutual matches this round'}</h3><p>{matches.length ? 'Choose one to make it Tonight’s Pick. Individual votes stay private.' : 'Your shortlist is still here—start another round whenever you are ready.'}</p>{matches.length ? <div className="watch-together-shortlist-grid">{matches.map((item) => <WatchTogetherShortlistCard key={watchTogetherPlanItemKey(item)} item={item} actionLabel="Choose tonight" disabled={isSaving} onAction={() => onChoose(item)} />)}</div> : null}<button type="button" className="secondary-button" disabled={isSaving} onClick={onCancel}>{matches.length ? 'Close matches' : 'Close round'}</button></div>
+  const votedCount = voteByItem.size
+  return <div className="watch-together-voting-panel"><div className="watch-together-vote-status"><strong>{round.currentUserSubmitted ? 'Your ballot is submitted' : `${votedCount} of ${round.itemCount} titles rated`}</strong><span>{round.currentUserSubmitted ? 'Waiting for your partner. Your choices remain private.' : 'Like it, skip it for now, or veto it from this round.'}</span></div><div className="watch-together-results">{items.map((item) => { const key = watchTogetherPlanItemKey(item); const currentVote = voteByItem.get(key); return <article className="watch-together-vote-row" key={key}><div><b>{item.title}</b><small>{item.mediaType === 'tv' ? `${formatWatchTogetherEpisode(item)} · ${item.episodeTitle}` : `${item.runtime} · ${item.rating?.toFixed?.(1) || item.rating || '—'} TMDB`}</small></div><div>{['like', 'skip', 'veto'].map((vote) => <button type="button" key={vote} className={currentVote === vote ? `active ${vote}` : ''} disabled={isSaving || round.currentUserSubmitted} onClick={() => onVote(item, vote)}>{vote}</button>)}</div></article>})}</div>{!round.currentUserSubmitted ? <button type="button" className="primary-button" disabled={isSaving || votedCount !== round.itemCount} onClick={onSubmit}>Submit private ballot</button> : null}{!round.currentUserSubmitted ? <button type="button" className="watch-together-plan-clear" disabled={isSaving} onClick={onCancel}>Cancel round</button> : null}</div>
 }
 
 function WatchTogetherResetDialog({ isSaving, onCancel, onConfirm }) {
@@ -7030,6 +7172,33 @@ function WatchTogetherStatsTab({ state, onOpenMovie, onOpenTvShow }) {
 function WatchTogetherTitleRow({ item, selected = false, actionLabel, disabled, onAction, onRemove }) {
   const pending = item.pickVoteStatus === 'proposed_by_current_user' ? ' · Waiting for partner' : item.pickVoteStatus === 'awaiting_current_user' ? ' · Your vote is needed' : ''
   return <article className={`watch-together-title${selected ? ' selected' : ''}`}><div className="watch-together-title-main"><span className={`watch-together-art${item.posterUrl ? ' has-image' : ''}`} style={item.posterUrl ? { backgroundImage: `url(${item.posterUrl})` } : undefined} /><span><b>{item.title}</b><small>{item.mediaType === 'tv' && item.episodeId ? `${formatWatchTogetherEpisode(item)} · ${item.episodeTitle}` : item.mediaType === 'tv' ? 'TV Show' : `Movie · ${item.year || 'TBA'}`}{pending}</small></span></div><div className="watch-together-title-actions">{actionLabel ? <button type="button" className={selected ? 'primary-button' : 'secondary-button'} disabled={disabled} onClick={onAction}>{actionLabel}</button> : null}{onRemove ? <button type="button" className="watch-together-remove" disabled={disabled} onClick={onRemove} aria-label={`Remove ${item.title}`}>×</button> : null}</div></article>
+}
+
+function WatchTogetherShortlistCard({ item, selected = false, actionLabel, disabled, onAction, onRemove }) {
+  const [imageUnavailable, setImageUnavailable] = useState(false)
+  const meta = [item.mediaType === 'tv' ? `${formatWatchTogetherEpisode(item)} · ${item.episodeTitle}` : item.year || 'Movie', item.runtime, item.rating ? `${Number(item.rating).toFixed(1)} TMDB` : 'Rating TBA', item.streamingService].filter(Boolean)
+  const showImage = Boolean(item.posterUrl) && !imageUnavailable
+  return <article className={`watch-together-shortlist-card${selected ? ' selected' : ''}${disabled ? ' disabled' : ''}`}>
+    <div className="watch-together-shortlist-card-art">{showImage ? <img src={item.posterUrl} alt={`${item.title} poster`} loading="lazy" onError={() => setImageUnavailable(true)} /> : <span>{getUserInitials(item.title)}</span>}{selected ? <b>Tonight’s Pick</b> : null}</div>
+    <div className="watch-together-shortlist-card-copy"><h3 title={item.title}>{item.title}</h3><p>{meta.map((entry) => <span key={entry}>{entry}</span>)}</p></div>
+    <div className="watch-together-shortlist-card-actions">{actionLabel ? <button type="button" className="primary-button" disabled={disabled} onClick={onAction}>{actionLabel}</button> : <span className="watch-together-shortlist-rating">★ {item.rating ? Number(item.rating).toFixed(1) : '—'}</span>}{onRemove ? <button type="button" className="watch-together-card-remove" disabled={disabled} onClick={onRemove} aria-label={`Remove ${item.title} from shortlist`}>×</button> : null}</div>
+  </article>
+}
+
+function WatchTogetherRecentMoments({ items, onViewHistory }) {
+  if (!items.length) return null
+  return <section className="watch-together-recent-moments">
+    <div className="section-heading"><div><h2>Recent shared moments</h2></div><button type="button" onClick={onViewHistory}>View history <ChevronRight /></button></div>
+    <div className="watch-together-moment-grid">{items.map((item) => {
+      const detail = item.mediaType === 'tv' ? `${formatWatchTogetherEpisode(item)} · ${item.episodeTitle}` : `Watched together · ${formatLongDate(item.watchedTogetherAt)}`
+      const note = typeof item.sessionDetails?.notes === 'string' ? item.sessionDetails.notes.trim() : ''
+      return <article key={`${item.mediaType}-${item.id}-${item.episodeId || ''}`} className="watch-together-moment-card">
+        <span className={`watch-together-moment-art${item.posterUrl ? ' has-image' : ''}`} style={item.posterUrl ? { backgroundImage: `url(${item.posterUrl})` } : undefined} />
+        <div><h3>{item.title}</h3><p>{detail}</p></div>
+        <aside><span>{note || (item.mediaType === 'tv' ? 'Another episode together' : 'Shared movie night')}</span><strong>★ {item.rating ? Number(item.rating).toFixed(1) : '—'}</strong></aside>
+      </article>
+    })}</div>
+  </section>
 }
 
 function formatWatchTogetherEpisode(item) {
@@ -7514,7 +7683,7 @@ function TvWatchlistPanel({ items, onOpenWatchlist, onSelectShow }) {
   )
 }
 
-function TvDetailPage({ tvDetailState, tvReviewsState, user, onBackToTv, onToggleWatchlist, onUpdateEpisodes, onSubmitEpisodeRating, onOpenTv, onOpenPerson, onOpenLogin, isSignedIn, watchlistIds, tvEpisodeRatingActionState }) {
+function TvDetailPage({ tvDetailState, tvReviewsState, user, onBackToTv, onToggleWatchlist, onUpdateEpisodes, onSubmitEpisodeRating, onOpenTv, onOpenPerson, onOpenRelatedNews, onOpenLogin, isSignedIn, watchlistIds, tvEpisodeRatingActionState }) {
   const [seasonNumber, setSeasonNumber] = useState(null)
   const [trailer, setTrailer] = useState(null)
   const [catchUpEpisode, setCatchUpEpisode] = useState(null)
@@ -7609,7 +7778,7 @@ function TvDetailPage({ tvDetailState, tvReviewsState, user, onBackToTv, onToggl
         <div className="tv-detail-main"><h1>{show.title}</h1><div className="tv-detail-meta"><span>{show.year}</span><span>{show.genresLabel}</span><span>{show.maturityRating}</span></div>
           <div className="tv-detail-statline"><span className="tv-detail-rating"><StarIcon /> {show.voteAverage}<small>TMDB</small></span><span>{totalEpisodes} Episodes</span><span>{show.seasons.length} {show.seasons.length === 1 ? 'Season' : 'Seasons'}</span><span><TvIcon /> {show.network || 'TBA'}</span></div>
           <p className={`tv-detail-summary${isOverviewExpanded ? ' expanded' : ''}`}>{show.overview}</p>{show.overview?.length > 150 ? <button type="button" className="tv-detail-more" onClick={() => setIsOverviewExpanded((expanded) => !expanded)}>{isOverviewExpanded ? 'Less' : 'More'}</button> : null}
-          <div className="tv-detail-actions"><button type="button" className={`primary-button tv-detail-primary${isWatchlist ? ' is-active' : ''}`} onClick={() => onToggleWatchlist(show)}><PlusIcon /><span>{isWatchlist ? 'In Watchlist' : 'Add to Watchlist'}</span></button><div className="tv-detail-secondary-actions">{show.trailer ? <button type="button" className="secondary-button" onClick={() => setTrailer(show.trailer)}><PlayIcon /><span>Trailer</span></button> : null}<button type="button" className="secondary-button" onClick={handleOpenFilelist} disabled={!filelistTarget} title={!filelistTarget ? 'You are caught up on all aired episodes.' : undefined}><BarsIcon /><span>Filelist</span></button></div></div>
+          <div className="tv-detail-actions"><button type="button" className={`primary-button tv-detail-primary${isWatchlist ? ' is-active' : ''}`} onClick={() => onToggleWatchlist(show)}><PlusIcon /><span>{isWatchlist ? 'In Watchlist' : 'Add to Watchlist'}</span></button><div className="tv-detail-secondary-actions">{show.trailer ? <button type="button" className="secondary-button" onClick={() => setTrailer(show.trailer)}><PlayIcon /><span>Trailer</span></button> : null}<button type="button" className="secondary-button" onClick={() => onOpenRelatedNews({ show: Number(show.id) })}><NewsIcon /><span>Related News</span></button><button type="button" className="secondary-button" onClick={handleOpenFilelist} disabled={!filelistTarget} title={!filelistTarget ? 'You are caught up on all aired episodes.' : undefined}><BarsIcon /><span>Filelist</span></button></div></div>
         </div>
       </div>
     </article>
@@ -7699,6 +7868,7 @@ function MovieDetailPage({
   similarMoviesState,
   onBackToMovies,
   onOpenPerson,
+  onOpenRelatedNews,
   onOpenMovie,
   onToggleWatched,
   onToggleWatchlist,
@@ -7721,16 +7891,19 @@ function MovieDetailPage({
   const [trailerState, setTrailerState] = useState({ status: 'idle', trailer: null, error: '' })
   const [filelistState, setFilelistState] = useState({ open: false, status: 'idle', results: [], error: '', minutesUntilReset: null })
   const [isOverflowOpen, setIsOverflowOpen] = useState(false)
+  const [overflowMenuOffset, setOverflowMenuOffset] = useState(0)
   const [isCastExpanded, setIsCastExpanded] = useState(false)
   const [isStickyHeaderVisible, setIsStickyHeaderVisible] = useState(false)
   const heroRef = useRef(null)
   const overflowRef = useRef(null)
+  const overflowMenuRef = useRef(null)
 
   useEffect(() => {
     setTrailerState({ status: 'idle', trailer: null, error: '' })
     setIsWatchServiceDialogOpen(false)
     setFilelistState({ open: false, status: 'idle', results: [], error: '', minutesUntilReset: null })
     setIsOverflowOpen(false)
+    setOverflowMenuOffset(0)
     setIsCastExpanded(false)
     setIsStickyHeaderVisible(false)
   }, [movieDetailState.movie?.id])
@@ -7755,6 +7928,29 @@ function MovieDetailPage({
       document.removeEventListener('keydown', handleDismiss)
       document.removeEventListener('mousedown', handleDismiss)
     }
+  }, [isOverflowOpen])
+
+  useLayoutEffect(() => {
+    if (!isOverflowOpen || !overflowMenuRef.current) {
+      setOverflowMenuOffset(0)
+      return undefined
+    }
+
+    const keepMenuInViewport = () => {
+      const menuBounds = overflowMenuRef.current?.getBoundingClientRect()
+      if (!menuBounds) return
+      const safeInset = 12
+      const shift = menuBounds.left < safeInset
+        ? safeInset - menuBounds.left
+        : menuBounds.right > window.innerWidth - safeInset
+          ? window.innerWidth - safeInset - menuBounds.right
+          : 0
+      if (shift) setOverflowMenuOffset((offset) => offset + shift)
+    }
+
+    keepMenuInViewport()
+    window.addEventListener('resize', keepMenuInViewport)
+    return () => window.removeEventListener('resize', keepMenuInViewport)
   }, [isOverflowOpen])
 
   if (movieDetailState.status === 'loading' || movieDetailState.status === 'idle') {
@@ -7902,7 +8098,7 @@ function MovieDetailPage({
           </button>
         </div>
 
-        <div className="movie-detail-main">
+        <div className={`movie-detail-main${isOverflowOpen ? ' is-overflow-open' : ''}`}>
           <h1>{movie.title}</h1>
           <div className="movie-detail-meta">
             <span>{detailYear}</span>
@@ -7948,9 +8144,13 @@ function MovieDetailPage({
               <PlayIcon />
               <span>{isTrailerLoading ? 'Loading...' : 'Trailer'}</span>
             </button>
+            <button type="button" className="secondary-button movie-detail-secondary ghost" onClick={() => onOpenRelatedNews({ movie: Number(movie.id) })}>
+              <NewsIcon />
+              <span>Related News</span>
+            </button>
             <div ref={overflowRef} className="movie-action-overflow">
-              <button type="button" className="secondary-button movie-detail-secondary ghost movie-action-overflow-trigger" aria-expanded={isOverflowOpen} aria-haspopup="menu" onClick={() => setIsOverflowOpen((open) => !open)}><MoreIcon /><span>More</span></button>
-              {isOverflowOpen ? <div className="movie-action-overflow-menu" role="menu">
+              <button type="button" className="secondary-button movie-detail-secondary ghost movie-action-overflow-trigger" aria-expanded={isOverflowOpen} aria-haspopup="menu" onClick={() => { setOverflowMenuOffset(0); setIsOverflowOpen((open) => !open) }}><MoreIcon /><span>More</span></button>
+              {isOverflowOpen ? <div ref={overflowMenuRef} className="movie-action-overflow-menu" role="menu" style={overflowMenuOffset ? { transform: `translateX(${overflowMenuOffset}px)` } : undefined}>
                 <button type="button" role="menuitem" className="mobile-only" onClick={() => { setIsOverflowOpen(false); void handleOpenTrailer() }} disabled={isTrailerLoading}><PlayIcon /><span>{isTrailerLoading ? 'Loading trailer...' : 'Trailer'}</span></button>
                 {isInWatchlist && !isWatched ? <button type="button" role="menuitem" onClick={() => { setIsOverflowOpen(false); onToggleWatchlist(movie) }}><BookmarkIcon /><span>Remove from Watchlist</span></button> : null}
                 {isWatched ? <button type="button" role="menuitem" onClick={() => { setIsOverflowOpen(false); onToggleWatched(movie) }}><ReplayIcon /><span>Mark as Unwatched</span></button> : null}
@@ -8326,7 +8526,7 @@ function MoviePosterFrame({ movie }) {
   )
 }
 
-function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOpenTv, onOpenPerson, isSignedIn, onOpenLogin, onToggleMovieWatchlist, onToggleMovieWatched, onToggleTvWatchlist, onToggleTvWatched, favoriteActorIds, onToggleFavorite }) {
+function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOpenTv, onOpenPerson, onOpenRelatedNews, isSignedIn, onOpenLogin, onToggleMovieWatchlist, onToggleMovieWatched, onToggleTvWatchlist, onToggleTvWatched, favoriteActorIds, onToggleFavorite }) {
   const filmographyPageSize = 5
   const [filmographyRole, setFilmographyRole] = useState('all')
   const [filmographyMedia, setFilmographyMedia] = useState('all')
@@ -8459,6 +8659,10 @@ function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOp
             <button type="button" className="secondary-button movie-detail-secondary" onClick={() => onToggleFavorite(person)}>
               <StarOutlineIcon />
               <span>{isFavorite ? 'Favorited' : isSignedIn ? 'Favorite' : 'Sign in to Favorite'}</span>
+            </button>
+            <button type="button" className="secondary-button movie-detail-secondary ghost" onClick={() => onOpenRelatedNews({ actor: Number(person.id) })}>
+              <NewsIcon />
+              <span>Related News</span>
             </button>
             <button type="button" className="secondary-button movie-detail-secondary ghost" onClick={handleShare}>
               <ShareIcon />
@@ -11283,6 +11487,25 @@ function getUserInitial(fullName) {
   }
 
   return fullName.trim().charAt(0).toUpperCase() || '?'
+}
+
+function getUserInitials(fullName) {
+  if (!fullName) return '?'
+  return fullName.trim().split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part.charAt(0).toUpperCase()).join('') || '?'
+}
+
+function formatLocalDateTimeInput(value) {
+  const date = new Date(value)
+  if (Number.isNaN(date.valueOf())) return ''
+  const offset = date.getTimezoneOffset() * 60_000
+  return new Date(date.valueOf() - offset).toISOString().slice(0, 16)
+}
+
+function formatWatchTogetherPlanDate(value) {
+  const date = new Date(value)
+  if (Number.isNaN(date.valueOf())) return 'Date to be confirmed'
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'local time'
+  return `${new Intl.DateTimeFormat(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(date)} · ${zone}`
 }
 
 function formatAdminTotal(value) {

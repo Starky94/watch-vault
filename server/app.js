@@ -72,6 +72,13 @@ import {
   resetWatchTogetherPartnerForUser,
   addWatchTogetherItemForUser,
   removeWatchTogetherItemForUser,
+  saveWatchTogetherPlanForUser,
+  clearWatchTogetherPlanForUser,
+  startWatchTogetherVoteRoundForUser,
+  castWatchTogetherVoteForUser,
+  submitWatchTogetherVotesForUser,
+  chooseWatchTogetherVoteMatchForUser,
+  cancelWatchTogetherVoteRoundForUser,
   proposeWatchTogetherItemForUser,
   respondToWatchTogetherPickForUser,
   clearWatchTogetherSelectionForUser,
@@ -706,12 +713,16 @@ export async function createApp(pool, options = {}) {
     try {
       const user = await getAuthenticatedUser(pool, request)
       if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const timeZone = readStatsTimeZone(request, response)
+      if (!timeZone) return
       const [state, users] = await Promise.all([
-        getWatchTogetherStateForUser(pool, user.username),
+        getWatchTogetherStateForUser(pool, user.username, { timeZone }),
         listWatchTogetherUsers(pool, user.username),
       ])
       response.json({
         partner: state.partner ? mapWatchTogetherUser(state.partner) : null,
+        relationship: state.relationship ? mapWatchTogetherRelationship(state.relationship) : null,
+        voting: state.voting.map(mapWatchTogetherVotingRound),
         pendingRequest: state.pendingRequest ? { id: state.pendingRequest.id, direction: state.pendingRequest.direction, user: mapWatchTogetherUser(state.pendingRequest.user) } : null,
         users: users.map(mapWatchTogetherUser),
         items: state.items.map(mapWatchTogetherItem),
@@ -838,9 +849,111 @@ export async function createApp(pool, options = {}) {
       if (result.status === 'no_pair') return response.status(409).json({ error: 'Choose a partner before adding titles' })
       if (result.status === 'missing_media') return response.status(404).json({ error: 'Title was not found' })
       if (result.status === 'already_watched') return response.status(409).json({ error: 'This movie has already been watched by you or your partner.' })
+      if (result.status === 'active_vote_round') return response.status(409).json({ error: 'Finish or cancel the active vote round before changing this shortlist.' })
       if (result.status === 'progress_mismatch') return response.status(409).json({ error: `Progress must match before sharing an episode. @${result.behindUsername} is behind on this show.` })
       if (result.status === 'no_next_episode') return response.status(409).json({ error: 'This show has no unwatched aired episode available to add.' })
       response.json({ added: result.added })
+    } catch (error) { next(error) }
+  })
+
+  app.post('/api/watch-together/votes/:mediaType/start', async (request, response, next) => {
+    const mediaType = request.params.mediaType
+    if (!['movie', 'tv'].includes(mediaType)) return response.status(400).json({ error: 'A valid media type is required' })
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const result = await startWatchTogetherVoteRoundForUser(pool, { username: user.username, mediaType })
+      if (result.status === 'no_pair') return response.status(409).json({ error: 'No active partner connection' })
+      if (result.status === 'empty_shortlist') return response.status(409).json({ error: 'Add at least one title before starting a vote' })
+      if (result.status === 'active_pick') return response.status(409).json({ error: 'Clear Tonight’s Pick before starting a new vote' })
+      if (result.status === 'active_round') return response.status(409).json({ error: 'A vote round is already active' })
+      response.status(201).json({ started: true })
+    } catch (error) { next(error) }
+  })
+
+  app.put('/api/watch-together/votes/:mediaType/items/:mediaId', async (request, response, next) => {
+    const mediaType = request.params.mediaType; const mediaId = Number.parseInt(request.params.mediaId, 10); const episodeId = request.body?.episodeId === null || request.body?.episodeId === undefined ? null : Number.parseInt(request.body.episodeId, 10); const vote = request.body?.vote
+    if (!['movie', 'tv'].includes(mediaType) || !Number.isInteger(mediaId) || !['like', 'skip', 'veto'].includes(vote) || (mediaType === 'tv' && !Number.isInteger(episodeId))) return response.status(400).json({ error: 'A valid private vote is required' })
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const result = await castWatchTogetherVoteForUser(pool, { username: user.username, mediaType, mediaId, episodeId, vote })
+      if (result.status === 'no_pair') return response.status(409).json({ error: 'No active partner connection' })
+      if (result.status === 'missing_round') return response.status(404).json({ error: 'No active voting round' })
+      if (result.status === 'already_submitted') return response.status(409).json({ error: 'Your ballot has already been submitted' })
+      if (result.status === 'missing_item') return response.status(404).json({ error: 'This title is not in the active voting round' })
+      response.json({ saved: true })
+    } catch (error) { next(error) }
+  })
+
+  app.post('/api/watch-together/votes/:mediaType/submit', async (request, response, next) => {
+    const mediaType = request.params.mediaType
+    if (!['movie', 'tv'].includes(mediaType)) return response.status(400).json({ error: 'A valid media type is required' })
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const result = await submitWatchTogetherVotesForUser(pool, { username: user.username, mediaType })
+      if (result.status === 'no_pair') return response.status(409).json({ error: 'No active partner connection' })
+      if (result.status === 'missing_round') return response.status(404).json({ error: 'No active voting round' })
+      if (result.status === 'incomplete_votes') return response.status(409).json({ error: 'Vote on every title before submitting your ballot' })
+      response.json({ status: result.status, ...(Number.isInteger(result.matchCount) ? { matchCount: result.matchCount } : {}) })
+    } catch (error) { next(error) }
+  })
+
+  app.post('/api/watch-together/votes/:mediaType/matches/:mediaId/select', async (request, response, next) => {
+    const mediaType = request.params.mediaType; const mediaId = Number.parseInt(request.params.mediaId, 10); const episodeId = request.body?.episodeId === null || request.body?.episodeId === undefined ? null : Number.parseInt(request.body.episodeId, 10)
+    if (!['movie', 'tv'].includes(mediaType) || !Number.isInteger(mediaId) || (mediaType === 'tv' && !Number.isInteger(episodeId))) return response.status(400).json({ error: 'A valid match is required' })
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const result = await chooseWatchTogetherVoteMatchForUser(pool, { username: user.username, mediaType, mediaId, episodeId })
+      if (result.status === 'no_pair') return response.status(409).json({ error: 'No active partner connection' })
+      if (result.status === 'missing_round') return response.status(404).json({ error: 'No revealed voting round' })
+      if (result.status === 'active_pick') return response.status(409).json({ error: 'Clear Tonight’s Pick before choosing another match' })
+      if (result.status === 'not_a_match') return response.status(409).json({ error: 'Choose one of your mutual matches' })
+      response.json({ selected: true })
+    } catch (error) { next(error) }
+  })
+
+  app.delete('/api/watch-together/votes/:mediaType', async (request, response, next) => {
+    const mediaType = request.params.mediaType
+    if (!['movie', 'tv'].includes(mediaType)) return response.status(400).json({ error: 'A valid media type is required' })
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const result = await cancelWatchTogetherVoteRoundForUser(pool, { username: user.username, mediaType })
+      if (result.status === 'no_pair') return response.status(409).json({ error: 'No active partner connection' })
+      if (result.status === 'missing_round') return response.status(404).json({ error: 'No active voting round' })
+      response.json({ cancelled: true })
+    } catch (error) { next(error) }
+  })
+
+  app.put('/api/watch-together/plan', async (request, response, next) => {
+    const scheduledAt = typeof request.body?.scheduledAt === 'string' ? request.body.scheduledAt : ''
+    const mediaType = request.body?.mediaType === null || request.body?.mediaType === undefined ? null : request.body.mediaType
+    const mediaId = request.body?.mediaId === null || request.body?.mediaId === undefined ? null : Number.parseInt(request.body.mediaId, 10)
+    const episodeId = request.body?.episodeId === null || request.body?.episodeId === undefined ? null : Number.parseInt(request.body.episodeId, 10)
+    if (!scheduledAt || (mediaType !== null && !['movie', 'tv'].includes(mediaType)) || (mediaType !== null && !Number.isInteger(mediaId)) || (mediaType === 'tv' && !Number.isInteger(episodeId)) || (mediaType !== 'tv' && episodeId !== null)) return response.status(400).json({ error: 'A future time and valid optional shortlist title are required' })
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const result = await saveWatchTogetherPlanForUser(pool, { username: user.username, scheduledAt, mediaType, mediaId, episodeId })
+      if (result.status === 'no_pair') return response.status(409).json({ error: 'No active partner connection' })
+      if (result.status === 'invalid_time') return response.status(400).json({ error: 'Choose a future date and time' })
+      if (result.status === 'missing_item') return response.status(409).json({ error: 'Choose a title from the current shared shortlist' })
+      if (result.status === 'invalid_media') return response.status(400).json({ error: 'Choose a valid optional shortlist title' })
+      response.json({ saved: true })
+    } catch (error) { next(error) }
+  })
+
+  app.delete('/api/watch-together/plan', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const result = await clearWatchTogetherPlanForUser(pool, user.username)
+      if (result.status === 'no_pair') return response.status(409).json({ error: 'No active partner connection' })
+      if (result.status === 'missing_plan') return response.status(404).json({ error: 'There is no planned session' })
+      response.json({ cleared: true })
     } catch (error) { next(error) }
   })
 
@@ -872,6 +985,8 @@ export async function createApp(pool, options = {}) {
       const result = await removeWatchTogetherItemForUser(pool, { username: user.username, mediaType, mediaId })
       if (result.status === 'no_pair') return response.status(409).json({ error: 'No active partner connection' })
       if (result.status === 'active_pick') return response.status(409).json({ error: 'Clear or resolve this Tonight’s pick before removing it' })
+      if (result.status === 'active_vote_round') return response.status(409).json({ error: 'Finish or cancel the active vote round before changing this shortlist.' })
+      if (result.status === 'planned_session') return response.status(409).json({ error: 'Change or clear the planned session before removing this title' })
       response.json({ removed: result.removed })
     } catch (error) { next(error) }
   })
@@ -3780,6 +3895,32 @@ function mapWatchTogetherUser(user) {
   return { username: user.username, fullName: user.full_name }
 }
 
+function mapWatchTogetherRelationship(relationship) {
+  return {
+    members: relationship.members.map(mapWatchTogetherUser),
+    titlesWatched: Number(relationship.titles_watched) || 0,
+    timeWatchedMinutes: Number(relationship.time_watched_minutes) || 0,
+    currentStreakDays: Number(relationship.current_streak_days) || 0,
+    nextSession: relationship.next_session ? {
+      id: Number(relationship.next_session.id), scheduledAt: relationship.next_session.scheduled_at,
+      mediaType: relationship.next_session.media_type, mediaId: relationship.next_session.media_id,
+      episodeId: relationship.next_session.tv_episode_id, title: relationship.next_session.title,
+      year: formatMovieYear(relationship.next_session.year), posterUrl: resolvePosterPath(relationship.next_session.poster_path),
+      episodeTitle: relationship.next_session.episode_name, seasonNumber: relationship.next_session.season_number,
+      episodeNumber: relationship.next_session.episode_number,
+    } : null,
+  }
+}
+
+function mapWatchTogetherVotingRound(round) {
+  return {
+    id: Number(round.id), mediaType: round.media_type, status: round.status, itemCount: Number(round.item_count) || 0,
+    currentUserSubmitted: Boolean(round.current_user_submitted), partnerSubmitted: Boolean(round.partner_submitted),
+    votes: (round.votes || []).map((vote) => ({ mediaType: vote.media_type, mediaId: Number(vote.media_id), episodeId: vote.tv_episode_id === null || vote.tv_episode_id === undefined ? null : Number(vote.tv_episode_id), vote: vote.vote })),
+    matches: (round.matches || []).map((match) => ({ mediaType: match.media_type, mediaId: Number(match.media_id), episodeId: match.tv_episode_id === null || match.tv_episode_id === undefined ? null : Number(match.tv_episode_id) })),
+  }
+}
+
 function mapWatchTogetherMovie(movie) {
   return {
     mediaType: 'movie',
@@ -3812,12 +3953,14 @@ function mapWatchTogetherItem(item) {
         posterUrl: resolvePosterPath(item.show_poster_path), backdropUrl: resolveBackdropPath(item.show_backdrop_path),
         episodeId: item.tv_episode_id === null || item.tv_episode_id === undefined ? null : Number(item.tv_episode_id),
         episodeTitle: item.episode_name || 'Episode', seasonNumber: Number(item.season_number) || 0, episodeNumber: Number(item.episode_number) || 0,
+        runtime: formatRuntime(item.episode_runtime_minutes), streamingService: item.show_network || 'Streaming TBA',
         selected: Boolean(item.is_selected), pickVoteStatus: item.pick_vote_status || null, pickProposedAt: item.pick_proposed_at ?? null, addedAt: item.created_at, confirmedByCurrentUser: Boolean(item.confirmed_by_current_user), confirmedByPartner: Boolean(item.confirmed_by_partner),
       }
     : {
         mediaType: 'movie', id: Number(item.media_id), title: item.title,
         year: formatMovieYear(item.release_date), rating: typeof item.vote_average === 'number' ? item.vote_average : 0,
         posterUrl: resolvePosterPath(item.poster_path), backdropUrl: resolveBackdropPath(item.backdrop_path),
+        runtime: formatRuntime(item.runtime_minutes), streamingService: readMovieStreamingService(item.detail_payload),
         selected: Boolean(item.is_selected), pickVoteStatus: item.pick_vote_status || null, pickProposedAt: item.pick_proposed_at ?? null, addedAt: item.created_at, confirmedByCurrentUser: Boolean(item.confirmed_by_current_user), confirmedByPartner: Boolean(item.confirmed_by_partner),
       }
 }
