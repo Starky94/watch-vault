@@ -28,6 +28,7 @@ import {
   evaluateAchievementsForUser,
   evaluateBookAchievementsForUser,
   getAchievementsForUser,
+  getAchievementProgressDetailsForUser,
   getBookAchievementsForUser,
   findUserByCredentials,
   findUserByUsername,
@@ -354,6 +355,16 @@ export async function createApp(pool, options = {}) {
       if (!user) return response.status(401).json({ error: 'Authentication required' })
       const [achievements, watchTogetherAchievements] = await Promise.all([getAchievementsForUser(pool, user.username), getWatchTogetherAchievementsForUser(pool, user.username)])
       response.json({ count: achievements.length + watchTogetherAchievements.length, achievements: [...achievements, ...watchTogetherAchievements] })
+    } catch (error) { next(error) }
+  })
+
+  app.get('/api/achievements/:achievementId/progress', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const result = await getAchievementProgressDetailsForUser(pool, user.username, request.params.achievementId)
+      if (result.status === 'missing_achievement') return response.status(404).json({ error: 'Achievement not found.' })
+      response.json({ achievement: result.achievement, contributors: result.contributors.map(mapAchievementContributor), count: result.contributors.length })
     } catch (error) { next(error) }
   })
 
@@ -1195,7 +1206,6 @@ export async function createApp(pool, options = {}) {
       const result = await toggleFavoriteAuthorForUser(pool, { username: user.username, authorId })
       if (result.status === 'missing_author') return response.status(404).json({ error: `Author ${authorId} was not found in the local database` })
       if (result.status === 'missing_user') return response.status(401).json({ error: 'Authentication required' })
-      if (result.status === 'limit_reached') return response.status(409).json({ error: `You can favorite up to ${result.limit} authors.` })
       response.json({ favorited: result.favorited })
     } catch (error) {
       next(error)
@@ -1260,13 +1270,6 @@ export async function createApp(pool, options = {}) {
         return
       }
 
-      if (result.status === 'limit_reached') {
-        response.status(409).json({
-          error: `You can save up to ${result.limit} movies in your watchlist.`,
-        })
-        return
-      }
-
       const movies = await listWatchlistMoviesForUser(pool, user.username)
       const savedMovie = movies.find((movie) => Number(movie.tmdb_id) === movieId) ?? null
       const newlyUnlockedAchievements = result.added && await recordAchievementEventForUser(pool, { username: user.username, eventType: 'movie_watchlist_added', mediaType: 'movie', entityId: result.entityId, baselineKind: 'movie_watchlist' }) ? await evaluateAchievementsForUser(pool, user.username) : []
@@ -1290,8 +1293,6 @@ export async function createApp(pool, options = {}) {
       const result = await addBookToWatchlistForUser(pool, { username: user.username, bookId })
       if (result.status === 'missing_book') return response.status(404).json({ error: `Book ${bookId} was not found in the local database` })
       if (result.status === 'missing_user') return response.status(401).json({ error: 'Authentication required' })
-      if (result.status === 'limit_reached') return response.status(409).json({ error: `You can save up to ${result.limit} books in your watchlist.` })
-
       const books = await listWatchlistBooksForUser(pool, user.username)
       const savedBook = books.find((book) => book.google_books_id === bookId) ?? null
       const newlyUnlockedBookAchievements = result.added && Number.isInteger(result.entityId) && await recordBookAchievementEventForUser(pool, { username: user.username, eventType: 'watchlisted', bookId: result.entityId }) ? await evaluateBookAchievementsForUser(pool, user.username) : []
@@ -1676,7 +1677,8 @@ export async function createApp(pool, options = {}) {
   app.post('/api/tv/library/:kind', async (request, response, next) => {
     const kind = request.params.kind
     const showId = Number.parseInt(request.body?.showId, 10)
-    if (!['watchlist', 'watched'].includes(kind) || !Number.isInteger(showId)) return response.status(400).json({ error: 'TV library updates must target watchlist or watched' })
+    if (kind === 'watched') return response.status(409).json({ error: 'TV shows are marked finished automatically after all episodes are watched and the series has ended' })
+    if (kind !== 'watchlist' || !Number.isInteger(showId)) return response.status(400).json({ error: 'TV library updates must target the watchlist' })
     try {
       const user = await getAuthenticatedUser(pool, request)
       if (!user) return response.status(401).json({ error: 'Authentication required' })
@@ -1768,7 +1770,6 @@ export async function createApp(pool, options = {}) {
           link: article.link,
           publishedAt: article.published_at,
           photoUrl: article.photo_url,
-          description: decodeHtmlEntities(article.description),
           likeCount: Number(article.like_count) || 0,
           likedByCurrentUser: Boolean(article.liked_by_current_user),
           savedByCurrentUser: Boolean(article.saved_by_current_user),
@@ -4200,4 +4201,8 @@ function mapWatchedMovie(movie) {
     watchedAt: movie.watched_at ?? null,
     runtimeMinutes: typeof movie.runtime_minutes === 'number' ? movie.runtime_minutes : 0,
   }
+}
+
+function mapAchievementContributor(contributor) {
+  return { ...contributor, posterUrl: resolvePosterPath(contributor.posterPath) }
 }

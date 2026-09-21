@@ -79,6 +79,7 @@ const routeKinds = {
   continueWatching: 'continueWatching',
   calendar: 'calendar',
   watchlist: 'watchlist',
+  achievementProgress: 'achievementProgress',
   movieDetail: 'movieDetail',
   tvDetail: 'tvDetail',
   bookDetail: 'bookDetail',
@@ -212,6 +213,8 @@ function App() {
         ? primaryViews.calendar
         : readAppRoute().kind === routeKinds.watchlist
           ? primaryViews.watchlist
+      : readAppRoute().kind === routeKinds.achievementProgress
+        ? primaryViews.achievements
       : readAppRoute().kind === routeKinds.bookDetail
         ? primaryViews.books
       : readAppRoute().kind === routeKinds.authorDetail
@@ -508,6 +511,7 @@ function App() {
   const [gameAchievementsState, setGameAchievementsState] = useState({ status: 'idle', achievements: [], error: '' })
   const [statsInitialTab, setStatsInitialTab] = useState('Overview')
   const [achievementsState, setAchievementsState] = useState({ status: 'idle', achievements: [], error: '' })
+  const [achievementProgressState, setAchievementProgressState] = useState({ status: 'idle', achievement: null, contributors: [], error: '' })
   const [achievementToast, setAchievementToast] = useState(null)
   const [watchTogetherCelebration, setWatchTogetherCelebration] = useState(null)
   const watchTogetherCelebrationTimerRef = useRef(null)
@@ -537,8 +541,10 @@ function App() {
             ? primaryViews.news
           : nextRoute.kind === routeKinds.calendar
             ? primaryViews.calendar
-            : nextRoute.kind === routeKinds.watchlist
+          : nextRoute.kind === routeKinds.watchlist
               ? primaryViews.watchlist
+          : nextRoute.kind === routeKinds.achievementProgress
+            ? primaryViews.achievements
           : nextRoute.kind === routeKinds.bookDetail
             ? primaryViews.books
             : nextRoute.kind === routeKinds.authorDetail
@@ -1392,8 +1398,6 @@ function App() {
   }
 
   function handleToggleTvWatchlist(show) { return handleToggleTvLibrary(show, 'watchlist') }
-
-  function handleToggleTvWatched(show) { return handleToggleTvLibrary(show, 'watched') }
 
   async function handleUpdateTvEpisodes(showId, { action, episodeId, seasonId, watchService = null }) {
     if (!user) return handleOpenLogin()
@@ -2298,6 +2302,23 @@ function App() {
       .catch((error) => { if (!cancelled) setAchievementsState({ status: 'error', achievements: [], error: error instanceof Error ? error.message : 'Unable to load achievements.' }) })
     return () => { cancelled = true }
   }, [activeView, user])
+
+  useEffect(() => {
+    if (currentRoute.kind !== routeKinds.achievementProgress || !user?.username) {
+      setAchievementProgressState({ status: 'idle', achievement: null, contributors: [], error: '' })
+      return
+    }
+    let cancelled = false
+    setAchievementProgressState({ status: 'loading', achievement: null, contributors: [], error: '' })
+    fetch(`/api/achievements/${encodeURIComponent(currentRoute.achievementId)}/progress`, { headers: buildAuthHeaders(user) })
+      .then(async (response) => ({ response, payload: await response.json().catch(() => ({})) }))
+      .then(({ response, payload }) => {
+        if (!response.ok) throw new Error(payload.error || 'Unable to load achievement progress.')
+        if (!cancelled) setAchievementProgressState({ status: 'success', achievement: payload.achievement ?? null, contributors: Array.isArray(payload.contributors) ? payload.contributors : [], error: '' })
+      })
+      .catch((error) => { if (!cancelled) setAchievementProgressState({ status: 'error', achievement: null, contributors: [], error: error instanceof Error ? error.message : 'Unable to load achievement progress.' }) })
+    return () => { cancelled = true }
+  }, [currentRoute, user])
 
   useEffect(() => {
     if (![primaryViews.games, primaryViews.stats].includes(activeView) || !user?.username) return
@@ -4077,7 +4098,6 @@ function App() {
                 onToggleMovieWatchlist={handleToggleMovieInWatchlist}
                 onToggleMovieWatched={handleToggleMovieWatched}
                 onToggleTvWatchlist={handleToggleTvWatchlist}
-                onToggleTvWatched={handleToggleTvWatched}
                 onToggleFavoriteActor={handleToggleFavoriteActor}
                 onOpenDiscover={handleOpenDiscover}
                 onSearchQuery={handleSearchSubmit}
@@ -4137,8 +4157,10 @@ function App() {
                 onOpenTvShow={handleOpenTvDetail}
                 onOpenLogin={handleOpenLogin}
               />
+            ) : currentRoute.kind === routeKinds.achievementProgress ? (
+              <AchievementProgressScreen isSignedIn={Boolean(user)} state={achievementProgressState} onBack={() => handleMovieViewSelection(primaryViews.achievements)} onOpenMovie={handleOpenMovieDetail} onOpenTvShow={handleOpenTvDetail} />
             ) : activeView === primaryViews.achievements ? (
-              <AchievementsScreen isSignedIn={Boolean(user)} state={achievementsState} />
+              <AchievementsScreen isSignedIn={Boolean(user)} state={achievementsState} onOpenAchievement={(achievement) => handleNavigateToPath(buildAchievementProgressPath(achievement.id), { kind: routeKinds.achievementProgress, achievementId: achievement.id }, primaryViews.achievements)} />
             ) : activeView === primaryViews.stats ? (
               <StatsScreen
                 initialTab={statsInitialTab}
@@ -4202,7 +4224,6 @@ function App() {
                 onToggleMovieWatchlist={handleToggleMovieInWatchlist}
                 onToggleMovieWatched={handleToggleMovieWatched}
                 onToggleTvWatchlist={handleToggleTvWatchlist}
-                onToggleTvWatched={handleToggleTvWatched}
                 onToggleBookWatchlist={handleToggleBookInWatchlist}
                 onToggleBookRead={handleToggleBookRead}
               />
@@ -4244,7 +4265,6 @@ function App() {
                 onToggleTvWatchlist={handleToggleTvWatchlist}
                 onMarkMovieWatched={handleToggleMovieWatched}
                 onMarkBookRead={handleToggleBookRead}
-                onMarkTvWatched={handleToggleTvWatched}
                 onSetPriority={handleSetWatchlistPriority}
               />
             ) : activeView === primaryViews.watchTogether ? (
@@ -4348,7 +4368,6 @@ function App() {
                 onToggleMovieWatchlist={handleToggleMovieInWatchlist}
                 onToggleMovieWatched={handleToggleMovieWatched}
                 onToggleTvWatchlist={handleToggleTvWatchlist}
-                onToggleTvWatched={handleToggleTvWatched}
                 favoriteActorIds={new Set(favoriteActorsState.actors.map((actor) => Number(actor.id)))}
                 onToggleFavorite={handleToggleFavoriteActor}
               />
@@ -4762,7 +4781,6 @@ function SearchResultsPage({
   onToggleGameFavorite,
   onToggleMovieWatched,
   onToggleMovieWatchlist,
-  onToggleTvWatched,
   onToggleTvWatchlist,
   query,
   searchResultsState,
@@ -4851,7 +4869,7 @@ function SearchResultsPage({
         {showingGoogleBooksResults && googleBooksSearchState.error ? <p className="search-source-error" role="alert">Could not save this Google Books title. {googleBooksSearchState.error}</p> : null}
         {hasNoLocalMatches ? <LocalSearchEmptyState booksEnabled={booksEnabled} gamesEnabled={gamesEnabled} query={query} onOpenDiscover={onOpenDiscover} onSearchQuery={onSearchQuery} onSelectSource={onSelectSearchSource} /> : null}
         {showingWatchVaultResults && localClusters.length ? <SearchResultGroup title="Shared title matches" isLoading={false} error="" items={localClusters}>
-          <div className="search-result-clusters">{localClusters.map((cluster) => <article className="search-result-cluster" key={cluster.key}><header><h3><HighlightedText text={cluster.title} query={query} /></h3><span>{cluster.items.length} formats</span></header><div className="search-result-cluster-items">{cluster.items.map((item) => item.kind === 'movie' ? <MovieCard key={`movie-${item.id}`} movie={item} matchQuery={query} onOpenMovie={onOpenMovie} isWatched={watchedMovieIds.has(Number(item.id))} isInWatchlist={watchlistMovieIds.has(Number(item.id))} onToggleWatchlist={onToggleMovieWatchlist} onToggleWatched={onToggleMovieWatched} /> : item.kind === 'tv' ? <TvShowPosterCard key={`tv-${item.id}`} show={item} matchQuery={query} onSelectShow={onOpenTvShow} isWatched={watchedTvIds.has(Number(item.id))} isInWatchlist={watchlistTvIds.has(Number(item.id))} onToggleWatchlist={onToggleTvWatchlist} onToggleWatched={onToggleTvWatched} /> : <BookCard key={`book-${item.id}`} book={item} matchQuery={query} onOpenBook={onOpenBook} />)}</div></article>)}</div>
+          <div className="search-result-clusters">{localClusters.map((cluster) => <article className="search-result-cluster" key={cluster.key}><header><h3><HighlightedText text={cluster.title} query={query} /></h3><span>{cluster.items.length} formats</span></header><div className="search-result-cluster-items">{cluster.items.map((item) => item.kind === 'movie' ? <MovieCard key={`movie-${item.id}`} movie={item} matchQuery={query} onOpenMovie={onOpenMovie} isWatched={watchedMovieIds.has(Number(item.id))} isInWatchlist={watchlistMovieIds.has(Number(item.id))} onToggleWatchlist={onToggleMovieWatchlist} onToggleWatched={onToggleMovieWatched} /> : item.kind === 'tv' ? <TvShowPosterCard key={`tv-${item.id}`} show={item} matchQuery={query} onSelectShow={onOpenTvShow} isWatched={watchedTvIds.has(Number(item.id))} isInWatchlist={watchlistTvIds.has(Number(item.id))} onToggleWatchlist={onToggleTvWatchlist} /> : <BookCard key={`book-${item.id}`} book={item} matchQuery={query} onOpenBook={onOpenBook} />)}</div></article>)}</div>
         </SearchResultGroup> : null}
         {!hasNoLocalMatches && !showingGoogleBooksResults ? <SearchResultGroup title="Movies" isLoading={isLoading} error={hasError ? activeSourceState.error : ''} items={visibleMovies} emptyMessage={showingTmdbResults ? 'No TMDB movies matched this search.' : 'No movies matched this search.'}>
           <div className="movie-card-grid popular-movies-catalog">
@@ -4861,7 +4879,7 @@ function SearchResultsPage({
 
         {!hasNoLocalMatches && !showingGoogleBooksResults ? <SearchResultGroup title="TV Shows" isLoading={isLoading} error={hasError ? activeSourceState.error : ''} items={visibleShows} emptyMessage={showingTmdbResults ? 'No TMDB TV shows matched this search.' : 'No TV shows matched this search.'}>
           <div className="tv-show-card-grid popular-movies-catalog">
-            {visibleShows.map((show) => <TvShowPosterCard key={show.id} show={show} matchQuery={query} onSelectShow={onOpenTvShow} isWatched={watchedTvIds.has(Number(show.id))} isInWatchlist={watchlistTvIds.has(Number(show.id))} onToggleWatchlist={showingWatchVaultResults ? onToggleTvWatchlist : null} onToggleWatched={showingWatchVaultResults ? onToggleTvWatched : null} />)}
+            {visibleShows.map((show) => <TvShowPosterCard key={show.id} show={show} matchQuery={query} onSelectShow={onOpenTvShow} isWatched={watchedTvIds.has(Number(show.id))} isInWatchlist={watchlistTvIds.has(Number(show.id))} onToggleWatchlist={showingWatchVaultResults ? onToggleTvWatchlist : null} />)}
           </div>
         </SearchResultGroup> : null}
 
@@ -4963,6 +4981,7 @@ function NewsScreen({ route, user, onNavigateNews, onOpenLogin }) {
   const [feed, setFeed] = useState({ status: 'loading', articles: [], hasNextPage: true, error: '' })
   const [likeAction, setLikeAction] = useState({ articleId: null, errorArticleId: null, error: '' })
   const [saveAction, setSaveAction] = useState({ articleId: null, errorArticleId: null, error: '' })
+  const [showScrollToTop, setShowScrollToTop] = useState(false)
   const sentinelRef = useRef(null)
   const loadingRef = useRef(false)
   const nextPageRef = useRef(1)
@@ -4972,6 +4991,13 @@ function NewsScreen({ route, user, onNavigateNews, onOpenLogin }) {
   useEffect(() => {
     mountedRef.current = true
     return () => { mountedRef.current = false; requestControllerRef.current?.abort() }
+  }, [])
+
+  useEffect(() => {
+    const updateScrollToTopVisibility = () => setShowScrollToTop(window.scrollY > 400)
+    updateScrollToTopVisibility()
+    window.addEventListener('scroll', updateScrollToTopVisibility, { passive: true })
+    return () => window.removeEventListener('scroll', updateScrollToTopVisibility)
   }, [])
 
   const filterKey = `${tab}:${filters.actor ?? ''}:${filters.movie ?? ''}:${filters.show ?? ''}`
@@ -5129,6 +5155,7 @@ function NewsScreen({ route, user, onNavigateNews, onOpenLogin }) {
       ) : null}
       {feed.articles.length > 0 && !feed.hasNextPage && feed.status === 'success' ? <p className="news-feed-end">You’re all caught up.</p> : null}
       <div ref={sentinelRef} className="news-feed-sentinel" aria-hidden="true" />
+      {showScrollToTop ? <button type="button" className="news-scroll-to-top" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })} aria-label="Scroll to top" title="Scroll to top"><ChevronUpIcon /></button> : null}
     </section>
   )
 }
@@ -5215,7 +5242,6 @@ function NewsArticleCard({ article, featured = false, filters, onFilter, isLikeP
           <a className="news-card-content-link" href={article.link} target="_blank" rel="noopener noreferrer" aria-label={`Read ${article.title} on ${source}`}>
             <p className="news-card-meta"><span>{source}</span><i aria-hidden="true" />{article.publishedAt ? <time dateTime={article.publishedAt}>{formatNewsDate(article.publishedAt)}</time> : <span>Date unavailable</span>}</p>
             <h2>{article.title}</h2>
-            {article.description ? <p className="news-card-description">{article.description}</p> : null}
             <span className="news-read-link"><GlobeIcon />Read article</span>
           </a>
           {(article.actors?.length || article.movies?.length || article.shows?.length) ? <div className="news-article-links" aria-label="Related people and titles">
@@ -5403,7 +5429,7 @@ function DiscoverResultCard({ item, onOpen }) {
   return <button type="button" className="discover-result-card" onClick={onOpen}><DiscoverResultArt item={item} /><div><h3>{item.title}</h3><p>{item.year} · {item.meta}</p><span className="star-rating"><StarIcon /> {item.rating}</span></div></button>
 }
 
-function HomeScreen({ user, onOpenMovie, onOpenPopularMovies, onOpenWatchlist, onOpenDiscover, seasonalTheme, onOpenSeasonalMovies, stats, statsPeriod, onStatsPeriodChange, watchlistState, popularMoviesState, continueWatchingState, onOpenContinueWatching, onOpenTvShow, onOpenBook, latestEpisodesState, onOpenLatestEpisodes, tvWatchlistShows, tvWatchlistIds, tvWatchedIds, watchedMovieIds, readBookIds, onToggleMovieWatchlist, onToggleMovieWatched, onToggleTvWatchlist, onToggleTvWatched, onToggleBookWatchlist, onToggleBookRead }) {
+function HomeScreen({ user, onOpenMovie, onOpenPopularMovies, onOpenWatchlist, onOpenDiscover, seasonalTheme, onOpenSeasonalMovies, stats, statsPeriod, onStatsPeriodChange, watchlistState, popularMoviesState, continueWatchingState, onOpenContinueWatching, onOpenTvShow, onOpenBook, latestEpisodesState, onOpenLatestEpisodes, tvWatchlistShows, tvWatchlistIds, tvWatchedIds, watchedMovieIds, readBookIds, onToggleMovieWatchlist, onToggleMovieWatched, onToggleTvWatchlist, onToggleBookWatchlist, onToggleBookRead }) {
   const greeting = user ? `Good evening, ${getFirstName(user.fullName)}! 🍿` : 'Good evening! 🍿'
   const homeWatchlistMovies = watchlistState.movies.slice(0, 5)
   const homeWatchlistItems = [
@@ -5529,7 +5555,7 @@ function HomeScreen({ user, onOpenMovie, onOpenPopularMovies, onOpenWatchlist, o
         {continueWatchingState.status === 'error' ? <SectionMessage message={continueWatchingState.error} tone="error" /> : null}
         {continueWatchingState.status === 'idle' ? <SectionMessage message="Sign in to view shows you are watching." /> : null}
         {continueWatchingState.status === 'success' && continueWatchingState.shows.length === 0 ? <SectionMessage message="Start watching a TV show to see it here." /> : null}
-        {continueWatchingState.shows.length > 0 ? <div className="feature-grid home-secondary-rail">{continueWatchingState.shows.map((item) => <ProgressCard key={item.id} item={item} onOpenTvShow={onOpenTvShow} isInWatchlist={tvWatchlistIds.has(Number(item.id))} isWatched={tvWatchedIds.has(Number(item.id))} onToggleWatchlist={onToggleTvWatchlist} onToggleWatched={onToggleTvWatched} />)}</div> : null}
+        {continueWatchingState.shows.length > 0 ? <div className="feature-grid home-secondary-rail">{continueWatchingState.shows.map((item) => <ProgressCard key={item.id} item={item} onOpenTvShow={onOpenTvShow} isInWatchlist={tvWatchlistIds.has(Number(item.id))} isWatched={tvWatchedIds.has(Number(item.id))} onToggleWatchlist={onToggleTvWatchlist} />)}</div> : null}
       </ContentSection>
 
       <section className="home-tertiary-stack" aria-label="More to explore">
@@ -5551,7 +5577,7 @@ function HomeScreen({ user, onOpenMovie, onOpenPopularMovies, onOpenWatchlist, o
                   isInWatchlist
                   isWatched={item.kind === 'movie' ? watchedMovieIds.has(Number(item.id)) : item.kind === 'tv' ? tvWatchedIds.has(Number(item.id)) : readBookIds.has(item.id)}
                   onToggleWatchlist={item.kind === 'movie' ? onToggleMovieWatchlist : item.kind === 'tv' ? onToggleTvWatchlist : onToggleBookWatchlist}
-                  onToggleWatched={item.kind === 'movie' ? onToggleMovieWatched : item.kind === 'tv' ? onToggleTvWatched : onToggleBookRead}
+                  onToggleWatched={item.kind === 'tv' ? null : item.kind === 'movie' ? onToggleMovieWatched : onToggleBookRead}
                 />
               ))}
             </div>
@@ -5578,7 +5604,7 @@ function HomeScreen({ user, onOpenMovie, onOpenPopularMovies, onOpenWatchlist, o
         </ContentSection>
 
         <ContentSection title="New Episodes" action="See all" onAction={onOpenLatestEpisodes} className="home-tertiary-section">
-          <TvShowsGrid tvState={latestEpisodesState} onSelectShow={onOpenTvShow} watchedIds={tvWatchedIds} watchlistIds={tvWatchlistIds} onToggleWatchlist={onToggleTvWatchlist} onToggleWatched={onToggleTvWatched} />
+          <TvShowsGrid tvState={latestEpisodesState} onSelectShow={onOpenTvShow} watchedIds={tvWatchedIds} watchlistIds={tvWatchlistIds} onToggleWatchlist={onToggleTvWatchlist} />
         </ContentSection>
       </section>
     </>
@@ -6604,6 +6630,8 @@ function GameDetailPage({ state, similarGamesState, favoriteGameIds, onBack, onT
   if (!state.game) return <section className="movie-detail-page"><SectionMessage message="Game detail is not available yet." /></section>
   const game = state.game
   const communityRating = game.communityRating ?? emptyCommunityRating
+  const trackingStatus = game.tracking?.status ?? null
+  const trackingStatusLabel = trackingStatus ? `${trackingStatus.charAt(0).toUpperCase()}${trackingStatus.slice(1)}` : 'Not tracked'
   const isFavorite = favoriteGameIds.has(game.id)
   const isUpdatingPlayed = playedActionState.status === 'loading' && playedActionState.gameId === game.id
   const isSavingRating = ratingActionState.status === 'loading' && ratingActionState.gameId === game.id
@@ -6629,7 +6657,7 @@ function GameDetailPage({ state, similarGamesState, favoriteGameIds, onBack, onT
     <article className="movie-detail-hero game-detail-hero" style={coverStyle}>
       <div className="movie-detail-hero-overlay" />
       <div className="movie-detail-poster-wrap"><div className="movie-detail-poster game-detail-cover">{game.coverUrl ? <img className="movie-detail-poster-image" src={game.coverUrl} alt={`${game.title} cover`} /> : <GamepadIcon />}</div></div>
-      <div className="movie-detail-main"><h1>{game.title}</h1><div className="movie-detail-meta"><span>{game.releaseDate ? formatGameReleaseDate(game.releaseDate) : 'Release date TBA'}</span><span>{game.genres.length ? game.genres.join(', ') : 'Genre TBA'}</span></div>
+      <div className="movie-detail-main"><h1>{game.title}</h1><div className="movie-detail-meta"><span>{game.releaseDate ? formatGameReleaseDate(game.releaseDate) : 'Release date TBA'}</span><span>{game.genres.length ? game.genres.join(', ') : 'Genre TBA'}</span><span className={`game-tracking-status${trackingStatus ? ` is-${trackingStatus}` : ''}`}>Status: {trackingStatusLabel}</span></div>
         <div className="movie-score-comparison"><div className="movie-score-source tmdb"><StarIcon /><div><span>IGDB</span><strong>{game.rating === null ? 'N/A' : game.rating.toFixed(1)}</strong></div><small>{game.ratingCount.toLocaleString()} ratings</small></div><div className="movie-score-source audience"><TrophyIcon /><div><span>Aggregate</span><strong>{game.aggregatedRating === null ? 'N/A' : game.aggregatedRating.toFixed(1)}</strong></div><small>{game.aggregatedRatingCount.toLocaleString()} ratings</small></div><div className="movie-score-source watchvault"><UserRatingIcon /><div><span>WatchVault</span><strong>{formatCommunityRating(communityRating.average)}</strong></div><small>{communityRating.voteCount} {communityRating.voteCount === 1 ? 'rating' : 'ratings'}</small></div></div>
         <p className="movie-detail-summary">{game.summary}</p>
         <div className="movie-detail-actions"><button type="button" className="primary-button movie-detail-primary" disabled={isUpdatingPlayed} onClick={() => isSignedIn ? setTrackingOpen(true) : onOpenLogin()}><CheckIcon /><span>{game.tracking?.status === 'completed' ? 'Update completion' : 'Log game progress'}</span></button><button type="button" className="secondary-button movie-detail-secondary ghost" onClick={() => isSignedIn ? setSessionOpen(true) : onOpenLogin()}>Log session</button><button type="button" className={`secondary-button movie-detail-secondary ghost${isFavorite ? ' is-active' : ''}`} onClick={() => onToggleFavorite(game)}><HeartIcon /><span>{isFavorite ? 'Remove Favorite' : 'Add to Favorites'}</span></button><button type="button" className="secondary-button movie-detail-secondary ghost" onClick={openRating}><StarOutlineIcon /><span>{communityRating.yourScore === null ? 'Rate' : 'Update Rating'}</span></button><button type="button" className="secondary-button movie-detail-secondary ghost" onClick={handleOpenTrailer} disabled={isTrailerLoading}><PlayIcon /><span>{isTrailerLoading ? 'Loading...' : 'Trailer'}</span></button>{game.igdbUrl ? <a className="secondary-button movie-detail-secondary ghost" href={game.igdbUrl} target="_blank" rel="noreferrer">IGDB</a> : null}</div>
@@ -7276,7 +7304,6 @@ function WatchlistScreen({
   onToggleTvWatchlist,
   onMarkMovieWatched,
   onMarkBookRead,
-  onMarkTvWatched,
   onSetPriority,
 }) {
   const [watchlistQuery, setWatchlistQuery] = useState('')
@@ -7290,7 +7317,7 @@ function WatchlistScreen({
   }).filter((item) => `${item.title} ${item.meta} ${item.categoriesLabel || ''}`.toLocaleLowerCase().includes(watchlistQuery.trim().toLocaleLowerCase()))
 
   function renderWatchlistCard(item) {
-    return <WatchlistCard key={`${item.type}-${item.id}`} item={item} compact onOpenItem={item.type === 'TV Shows' ? onOpenTvShow : item.type === 'Books' ? onOpenBook : onOpenMovie} onRemove={item.type === 'TV Shows' ? onToggleTvWatchlist : item.type === 'Books' ? onRemoveBook : onRemoveMovie} onMarkComplete={item.type === 'TV Shows' ? onMarkTvWatched : item.type === 'Books' ? onMarkBookRead : onMarkMovieWatched} onSetPriority={onSetPriority} />
+    return <WatchlistCard key={`${item.type}-${item.id}`} item={item} compact onOpenItem={item.type === 'TV Shows' ? onOpenTvShow : item.type === 'Books' ? onOpenBook : onOpenMovie} onRemove={item.type === 'TV Shows' ? onToggleTvWatchlist : item.type === 'Books' ? onRemoveBook : onRemoveMovie} onMarkComplete={item.type === 'TV Shows' ? null : item.type === 'Books' ? onMarkBookRead : onMarkMovieWatched} onSetPriority={onSetPriority} />
   }
 
   const watchlistGroups = [
@@ -7481,10 +7508,10 @@ function TvFeaturedCard({ show, isWatched, isInWatchlist, onToggleWatchlist, onO
   )
 }
 
-function TvShowPosterCard({ show, matchQuery, onSelectShow, isActive = false, isInWatchlist = false, isWatched = false, onToggleWatchlist, onToggleWatched }) {
+function TvShowPosterCard({ show, matchQuery, onSelectShow, isActive = false, isInWatchlist = false, isWatched = false, onToggleWatchlist }) {
   const [posterUnavailable, setPosterUnavailable] = useState(false)
   const showPosterImage = Boolean(show.posterUrl) && !posterUnavailable
-  const hasQuickActions = Boolean(onToggleWatchlist || onToggleWatched)
+  const hasQuickActions = Boolean(onToggleWatchlist)
 
   if (hasQuickActions) {
     return (
@@ -7494,7 +7521,7 @@ function TvShowPosterCard({ show, matchQuery, onSelectShow, isActive = false, is
           {isWatched ? <span className="movie-card-watched-badge" aria-hidden="true"><CheckCircleIcon /></span> : null}
           {isInWatchlist ? <span className="movie-card-watchlist-badge" aria-hidden="true"><BookmarkStatusIcon /></span> : null}
           {showPosterImage ? <img src={show.posterUrl} alt={`${show.title} poster`} className="movie-card-poster-image" loading="lazy" onError={() => setPosterUnavailable(true)} /> : null}
-          <QuickMediaActions title={show.title} isInWatchlist={isInWatchlist} isWatched={isWatched} onOpen={() => onSelectShow(show)} onToggleWatchlist={onToggleWatchlist ? () => onToggleWatchlist(show) : null} onToggleWatched={onToggleWatched ? () => onToggleWatched(show) : null} />
+          <QuickMediaActions title={show.title} isInWatchlist={isInWatchlist} isWatched={isWatched} onOpen={() => onSelectShow(show)} onToggleWatchlist={onToggleWatchlist ? () => onToggleWatchlist(show) : null} />
         </div>
         <div className="tv-show-card-copy">
           <h3><HighlightedText text={show.title} query={matchQuery} /></h3><SearchMatchLabel text={show.title} query={matchQuery} />
@@ -7583,7 +7610,6 @@ function TvShowsGrid({
           onSelectShow={onSelectShow}
           show={show}
           onToggleWatchlist={onToggleWatchlist}
-          onToggleWatched={onToggleWatched}
         />
       ))}
     </div>
@@ -7699,7 +7725,10 @@ function TvDetailPage({ tvDetailState, tvReviewsState, user, onBackToTv, onToggl
   if (tvDetailState.status === 'loading' || tvDetailState.status === 'idle') return <section className="movie-detail-page"><SectionMessage message="Loading TV series detail..." /></section>
   if (tvDetailState.status === 'error' || !tvDetailState.show) return <section className="movie-detail-page"><SectionMessage tone="error" message={tvDetailState.error || 'TV series detail is not available.'} /></section>
   const show = tvDetailState.show
-  const season = show.seasons.find((item) => item.seasonNumber === seasonNumber) ?? show.seasons.find((item) => item.seasonNumber > 0) ?? show.seasons[0]
+  const latestWatchedSeason = [...show.seasons]
+    .filter((item) => item.seasonNumber > 0 && item.episodes.some((episode) => episode.watched))
+    .sort((left, right) => right.seasonNumber - left.seasonNumber)[0]
+  const season = show.seasons.find((item) => item.seasonNumber === seasonNumber) ?? latestWatchedSeason ?? show.seasons.find((item) => item.seasonNumber > 0) ?? show.seasons[0]
   const episodes = season?.episodes ?? []
   const airedEpisodes = show.seasons.flatMap((item) => item.episodes).filter((episode) => episode.isAired)
   const watchedCount = airedEpisodes.filter((episode) => episode.watched).length
@@ -8528,7 +8557,7 @@ function MoviePosterFrame({ movie }) {
   )
 }
 
-function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOpenTv, onOpenPerson, onOpenRelatedNews, isSignedIn, onOpenLogin, onToggleMovieWatchlist, onToggleMovieWatched, onToggleTvWatchlist, onToggleTvWatched, favoriteActorIds, onToggleFavorite }) {
+function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOpenTv, onOpenPerson, onOpenRelatedNews, isSignedIn, onOpenLogin, onToggleMovieWatchlist, onToggleMovieWatched, onToggleTvWatchlist, favoriteActorIds, onToggleFavorite }) {
   const filmographyPageSize = 5
   const [filmographyRole, setFilmographyRole] = useState('all')
   const [filmographyMedia, setFilmographyMedia] = useState('all')
@@ -8728,7 +8757,7 @@ function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOp
         </section>
 
         <div className="person-detail-split">
-          <section className="content-section movie-detail-panel">
+          <section className="content-section movie-detail-panel person-detail-filmography-panel">
             <div className="section-header">
               <h2>Filmography <span className="person-detail-filmography-count">{visibleFilmography.length} of {filteredFilmography.length}</span></h2>
             </div>
@@ -8779,7 +8808,7 @@ function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOp
                       </div>
                       <div className="person-detail-filmography-quick-actions">
                         <button type="button" className={`quick-media-action${item.personal.watchlisted ? ' is-active' : ''}`} onClick={() => { if (!isSignedIn) return onOpenLogin(); return item.mediaType === 'tv' ? onToggleTvWatchlist(item) : onToggleMovieWatchlist(item) }} aria-label={`${item.personal.watchlisted ? 'Remove' : 'Save'} ${item.title}`} title={item.personal.watchlisted ? 'Remove from watchlist' : 'Save to watchlist'}><BookmarkIcon /></button>
-                        <button type="button" className={`quick-media-action${item.personal.watched ? ' is-active watched' : ''}`} onClick={() => { if (!isSignedIn) return onOpenLogin(); return item.mediaType === 'tv' ? onToggleTvWatched(item) : onToggleMovieWatched(item) }} aria-label={`${item.personal.watched ? 'Mark' : 'Mark'} ${item.title} as ${item.personal.watched ? 'unwatched' : 'watched'}`} title={item.personal.watched ? 'Mark as unwatched' : 'Mark as watched'}><CheckIcon /></button>
+                        {item.mediaType !== 'tv' ? <button type="button" className={`quick-media-action${item.personal.watched ? ' is-active watched' : ''}`} onClick={() => { if (!isSignedIn) return onOpenLogin(); return onToggleMovieWatched(item) }} aria-label={`${item.personal.watched ? 'Mark' : 'Mark'} ${item.title} as ${item.personal.watched ? 'unwatched' : 'watched'}`} title={item.personal.watched ? 'Mark as unwatched' : 'Mark as watched'}><CheckIcon /></button> : null}
                       </div>
                     </article>
                   ))}
@@ -8792,7 +8821,7 @@ function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOp
             )}
           </section>
 
-          <section className="content-section movie-detail-panel">
+          <section className="content-section movie-detail-panel person-detail-costars-panel">
             <div className="section-header">
               <h2>Co-stars</h2>
             </div>
@@ -8864,13 +8893,21 @@ function DetailFactRow({ icon: Icon, label, value }) {
   )
 }
 
-function AchievementsScreen({ isSignedIn, state }) {
+function AchievementsScreen({ isSignedIn, state, onOpenAchievement }) {
   const [category, setCategory] = useState('All')
   const [status, setStatus] = useState('all')
   if (!isSignedIn) return <section className="achievements-page"><h1>Achievements</h1><SectionMessage message="Sign in to start tracking achievements." /></section>
   const categories = ['All', ...new Set(state.achievements.map((item) => item.category))]
   const visible = state.achievements.filter((item) => (category === 'All' || item.category === category) && (status === 'all' || (status === 'unlocked' ? item.unlocked : !item.unlocked)))
-  return <section className="achievements-page"><div className="achievements-heading"><div><h1>Achievements</h1><p>Only activity recorded after achievement tracking began counts toward progress.</p></div><b>{state.achievements.filter((item) => item.unlocked).length} unlocked</b></div><div className="achievement-filters"><select value={category} onChange={(event) => setCategory(event.target.value)}>{categories.map((value) => <option key={value}>{value}</option>)}</select><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">All badges</option><option value="unlocked">Unlocked</option><option value="locked">Locked</option></select></div>{state.status === 'loading' ? <SectionMessage message="Loading achievements..." /> : state.status === 'error' ? <SectionMessage tone="error" message={state.error} /> : <div className="achievement-grid">{visible.map((item) => <article key={item.id} className={`achievement-card${item.unlocked ? ' unlocked' : ''}${item.availability === 'coming_soon' ? ' coming-soon' : ''}`}><div className="achievement-card-icon">{item.unlocked ? <TrophyIcon /> : <LockIcon />}</div><div><span className="achievement-category">{item.category} · {item.rarity}</span><h2>{item.secret && !item.unlocked ? item.name : item.name}</h2><p>{item.secret && !item.unlocked ? 'Keep watching to discover this secret achievement.' : item.description}</p>{item.availability === 'coming_soon' ? <em>Coming soon</em> : <><div className="achievement-progress"><i style={{ width: `${Math.min(100, ((item.progress?.current ?? 0) / Math.max(1, item.progress?.target ?? 1)) * 100)}%` }} /></div><small>{item.unlocked ? `Unlocked ${formatLongDate(item.unlockedAt)}` : `${item.progress?.current ?? 0} / ${item.progress?.target ?? 0}`}</small></>}</div></article>)}</div>}</section>
+  return <section className="achievements-page"><div className="achievements-heading"><div><h1>Achievements</h1><p>Only activity recorded after achievement tracking began counts toward progress.</p></div><b>{state.achievements.filter((item) => item.unlocked).length} unlocked</b></div><div className="achievement-filters"><select value={category} onChange={(event) => setCategory(event.target.value)}>{categories.map((value) => <option key={value}>{value}</option>)}</select><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">All badges</option><option value="unlocked">Unlocked</option><option value="locked">Locked</option></select></div>{state.status === 'loading' ? <SectionMessage message="Loading achievements..." /> : state.status === 'error' ? <SectionMessage tone="error" message={state.error} /> : <div className="achievement-grid">{visible.map((item) => <article key={item.id} className={`achievement-card${item.unlocked ? ' unlocked' : ''}${item.availability === 'coming_soon' ? ' coming-soon' : ''}`}><div className="achievement-card-icon">{item.unlocked ? <TrophyIcon /> : <LockIcon />}</div><div><span className="achievement-category">{item.category} · {item.rarity}</span>{item.availability === 'active' && Number(item.progress?.current) > 0 ? <h2><button type="button" className="achievement-title-link" onClick={() => onOpenAchievement(item)} aria-label={`View qualifying titles for ${item.name}`}>{item.name}</button></h2> : <h2>{item.name}</h2>}<p>{item.secret && !item.unlocked ? 'Keep watching to discover this secret achievement.' : item.description}</p>{item.availability === 'coming_soon' ? <em>Coming soon</em> : <><div className="achievement-progress"><i style={{ width: `${Math.min(100, ((item.progress?.current ?? 0) / Math.max(1, item.progress?.target ?? 1)) * 100)}%` }} /></div><small>{item.unlocked ? `Unlocked ${formatLongDate(item.unlockedAt)}` : `${item.progress?.current ?? 0} / ${item.progress?.target ?? 0}`}</small></>}</div></article>)}</div>}</section>
+}
+
+function AchievementProgressScreen({ isSignedIn, state, onBack, onOpenMovie, onOpenTvShow }) {
+  if (!isSignedIn) return <section className="achievements-page"><h1>Achievement progress</h1><SectionMessage message="Sign in to view achievement contributors." /></section>
+  if (state.status === 'loading' || state.status === 'idle') return <section className="achievements-page"><button type="button" className="secondary-button" onClick={onBack}>Back to achievements</button><SectionMessage message="Loading qualifying titles..." /></section>
+  if (state.status === 'error') return <section className="achievements-page"><button type="button" className="secondary-button" onClick={onBack}>Back to achievements</button><SectionMessage tone="error" message={state.error} /></section>
+  const achievement = state.achievement
+  return <section className="achievements-page achievement-progress-page"><button type="button" className="secondary-button" onClick={onBack}>Back to achievements</button><div className="achievements-heading"><div><h1>{achievement?.name || 'Achievement progress'}</h1><p>{achievement?.description}</p></div><b>{achievement?.progress?.current ?? 0} / {achievement?.progress?.target ?? 0}</b></div><h2>Titles that count</h2>{state.contributors.length ? <div className="popular-movies-catalog stats-watched-movies-grid achievement-contributor-grid">{state.contributors.map((item) => <div className="stats-watched-movie-card" key={`${item.mediaType}-${item.id}-${item.watchedAt}`}><MovieCard movie={{ id: item.id, title: item.title, year: item.year || 'Release TBA', posterUrl: item.posterUrl, meta: item.qualifier || (item.mediaType === 'tv' ? 'TV Show' : 'Movie'), rating: 0 }} onOpenMovie={item.mediaType === 'tv' ? onOpenTvShow : onOpenMovie} isWatched /><p>{item.qualifier ? `${item.qualifier} · ` : ''}{item.watchedAt ? formatLongDate(item.watchedAt) : 'Recorded activity'}</p></div>)}</div> : <SectionMessage message="No qualifying titles have been recorded yet." />}</section>
 }
 
 function StatsAchievementsTab({ isSignedIn, state }) {
@@ -11070,6 +11107,9 @@ function readAppRoute(pathname = window.location.pathname, search = window.locat
     return { kind: routeKinds.watchlist }
   }
 
+  const achievementProgressMatch = pathname.match(/^\/achievements\/([^/]+)\/?$/)
+  if (achievementProgressMatch) return { kind: routeKinds.achievementProgress, achievementId: decodeURIComponent(achievementProgressMatch[1]) }
+
   if (/^\/search\/?$/.test(pathname)) {
     return { kind: routeKinds.search, query: new URLSearchParams(search).get('q')?.trim() || '' }
   }
@@ -11163,6 +11203,10 @@ function buildNewsApiPath(page, filters = emptyNewsFilters, tab = 'news') {
 
 function buildSearchPath(query) {
   return `/search?q=${encodeURIComponent(query)}`
+}
+
+function buildAchievementProgressPath(achievementId) {
+  return `/achievements/${encodeURIComponent(achievementId)}`
 }
 
 function buildMovieDetailPath(movieId) {
@@ -11710,6 +11754,14 @@ function ChevronLeftIcon() {
   return (
     <IconBase>
       <path d="m14.5 6.5-6 5.5 6 5.5" />
+    </IconBase>
+  )
+}
+
+function ChevronUpIcon() {
+  return (
+    <IconBase>
+      <path d="m6.5 14.5 5.5-6 5.5 6" />
     </IconBase>
   )
 }

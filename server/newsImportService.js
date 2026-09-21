@@ -37,30 +37,6 @@ function imageFromHtml(value) {
   return match?.[1] ?? null
 }
 
-function decodeHtmlEntities(value) {
-  const namedEntities = { amp: '&', apos: "'", gt: '>', lt: '<', nbsp: ' ', quot: '"' }
-  return String(value || '').replace(/&(#(?:x[0-9a-f]+|\d+)|amp|apos|gt|lt|nbsp|quot);/gi, (match, entity) => {
-    if (entity[0] !== '#') return namedEntities[entity.toLocaleLowerCase()] ?? match
-    const hexadecimal = entity[1]?.toLocaleLowerCase() === 'x'
-    const codePoint = Number.parseInt(entity.slice(hexadecimal ? 2 : 1), hexadecimal ? 16 : 10)
-    try {
-      return Number.isInteger(codePoint) ? String.fromCodePoint(codePoint) : match
-    } catch {
-      return match
-    }
-  })
-}
-
-function descriptionFromHtml(value, title) {
-  const description = decodeHtmlEntities(textValue(value)
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<[^>]+>/g, ' '))
-    .replace(/\s+/g, ' ')
-    .trim()
-  return description && description !== title ? description : null
-}
-
 export function canonicalizeNewsLink(value) {
   const link = textValue(value)
   if (!link) return null
@@ -90,9 +66,8 @@ export function normalizeNewsItem(item) {
     ?? firstUrl(item?.image?.url ?? item?.image)
     ?? imageFromHtml(item?.['content:encoded'])
     ?? imageFromHtml(item?.description)
-  const description = descriptionFromHtml(item?.['content:encoded'] ?? item?.description ?? item?.summary, title)
   const categories = [...new Set(asArray(item?.category).map(normalizeNewsActorName).filter(Boolean))]
-  return { title, link, publishedAt, photoUrl, description, categories }
+  return { title, link, publishedAt, photoUrl, categories }
 }
 
 export function parseNewsFeed(xml) {
@@ -138,7 +113,6 @@ export async function importEntertainmentNews(pool, { fetchImpl = fetch, feeds }
             title: article.title || existing.title,
             publishedAt: article.publishedAt ?? existing.publishedAt,
             photoUrl: article.photoUrl ?? existing.photoUrl,
-            description: article.description ?? existing.description,
             categories: [...new Set([...existing.categories, ...article.categories])],
           }
         : article)

@@ -1040,7 +1040,7 @@ test('watchlist endpoints stay isolated per user and duplicate adds are idempote
   }
 })
 
-test('POST /api/watchlist rejects adds beyond the 30 movie limit', async () => {
+test('POST /api/watchlist allows adds beyond 30 movies', async () => {
   const watchlists = new Map([
     [
       'florind',
@@ -1124,10 +1124,8 @@ test('POST /api/watchlist rejects adds beyond the 30 movie limit', async () => {
     })
     const payload = await response.json()
 
-    assert.equal(response.status, 409)
-    assert.deepEqual(payload, {
-      error: 'You can save up to 30 movies in your watchlist.',
-    })
+    assert.equal(response.status, 200)
+    assert.equal(payload.movie, null)
   } finally {
     await closeServer(server)
   }
@@ -5643,7 +5641,7 @@ test('discover endpoints proxy TMDB suggestions and apply validated filters', as
   }
 })
 
-function createTvWatchUpdatePool({ episode = { id: 301, season_number: 2, episode_number: 4 }, season = { id: 71 }, watched = 3, total = 3 } = {}) {
+function createTvWatchUpdatePool({ episode = { id: 301, season_number: 2, episode_number: 4 }, season = { id: 71 }, watched = 3, total = 3, isEnded = false, completionInserted = false } = {}) {
   const calls = []
   const client = {
     async query(sql, params = []) {
@@ -5652,9 +5650,10 @@ function createTvWatchUpdatePool({ episode = { id: 301, season_number: 2, episod
       if (sql.includes('FROM users u CROSS JOIN tv_shows t')) return { rows: [{ user_id: 11, show_id: 22 }] }
       if (sql.includes('SELECT e.id, e.episode_number, s.season_number')) return { rows: [episode] }
       if (sql.includes('SELECT id FROM tv_seasons')) return { rows: [season] }
-      if (sql.includes('episode_totals AS')) return { rows: [{ user_id: 11, show_id: 22, watched, total }] }
+      if (sql.includes('episode_totals AS')) return { rows: [{ user_id: 11, show_id: 22, watched, total, is_ended: isEnded }] }
       if (sql.includes('INSERT INTO watched_tv_episodes') || sql.includes('DELETE FROM watched_tv_episodes')) return { rows: [], rowCount: 2 }
-      if (sql.includes('INSERT INTO watched_tv_shows') || sql.includes('DELETE FROM watched_tv_shows')) return { rows: [], rowCount: 1 }
+      if (sql.includes('INSERT INTO watched_tv_shows')) return { rows: completionInserted ? [{ tv_show_id: 22 }] : [], rowCount: 1 }
+      if (sql.includes('DELETE FROM watched_tv_shows')) return { rows: [], rowCount: 1 }
       throw new Error(`Unexpected query: ${sql}`)
     },
     release() {},
@@ -5709,6 +5708,22 @@ test('individual episode watch actions are idempotent and synchronize whole-show
   assert.equal(calls.some(({ sql }) => sql.includes('VALUES ($1, $2, $3) ON CONFLICT DO NOTHING')), true)
   assert.equal(calls.some(({ sql }) => sql.includes('DELETE FROM watched_tv_episodes WHERE user_id = $1 AND tv_episode_id = $2')), true)
   assert.equal(calls.filter(({ sql }) => sql.includes('DELETE FROM watched_tv_shows')).length, 2)
+})
+
+test('only ended TV shows become completed after every eligible episode is watched', async () => {
+  const ongoing = createTvWatchUpdatePool({ watched: 3, total: 3, isEnded: false })
+  const ended = createTvWatchUpdatePool({ watched: 3, total: 3, isEnded: true, completionInserted: true })
+
+  assert.deepEqual(await updateTvEpisodeWatchStateForUser(ongoing.pool, {
+    username: 'florind', showId: 900, action: 'mark_episode', episodeId: 301,
+  }), { status: 'ok', updatedCount: 2 })
+  assert.equal(ongoing.calls.some(({ sql }) => sql.includes('DELETE FROM watched_tv_shows')), true)
+
+  assert.deepEqual(await updateTvEpisodeWatchStateForUser(ended.pool, {
+    username: 'florind', showId: 900, action: 'mark_episode', episodeId: 301,
+  }), { status: 'ok', updatedCount: 2, newlyCompletedShowId: 22 })
+  const completionCheck = ended.calls.find(({ sql }) => sql.includes('episode_totals AS'))
+  assert.match(completionCheck.sql, /COALESCE\(detail_payload->>'status', raw_payload->>'status'\) = 'Ended'/)
 })
 
 test('special episodes cannot be marked through the episode watch API', async () => {

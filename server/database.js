@@ -1,5 +1,5 @@
 import pg from 'pg'
-import { ACHIEVEMENTS } from './achievements.js'
+import { ACHIEVEMENTS, ACHIEVEMENT_BY_ID } from './achievements.js'
 import { BOOK_ACHIEVEMENTS } from './bookAchievements.js'
 import { GAME_ACHIEVEMENTS } from './gameAchievements.js'
 import { WATCH_TOGETHER_ACHIEVEMENTS, WATCH_TOGETHER_AUTOMATIC_GENRE_RULES, WATCH_TOGETHER_MANUAL_ACHIEVEMENT_IDS } from './watchTogetherAchievements.js'
@@ -447,7 +447,6 @@ export async function ensureMoviesTable(pool) {
       link TEXT NOT NULL UNIQUE,
       published_at TIMESTAMPTZ,
       photo_url TEXT,
-      description TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
@@ -459,10 +458,7 @@ export async function ensureMoviesTable(pool) {
     )
   `)
 
-  await pool.query(`
-    ALTER TABLE news_articles
-    ADD COLUMN IF NOT EXISTS description TEXT
-  `)
+  await pool.query('ALTER TABLE news_articles DROP COLUMN IF EXISTS description')
 
   await pool.query(`
     ALTER TABLE users
@@ -1036,31 +1032,25 @@ export async function toggleFavoriteAuthorForUser(pool, { username, authorId }) 
       JOIN selected_user ON selected_user.id = favorite_authors.user_id
       JOIN selected_author ON selected_author.id = favorite_authors.author_id
     ),
-    favorite_total AS (
-      SELECT COUNT(*)::INTEGER AS total FROM favorite_authors
-      WHERE user_id IN (SELECT id FROM selected_user)
-    ),
     removed_favorite AS (
       DELETE FROM favorite_authors WHERE id IN (SELECT id FROM existing_favorite) RETURNING id
     ),
     inserted_favorite AS (
       INSERT INTO favorite_authors (user_id, author_id)
-      SELECT selected_user.id, selected_author.id FROM selected_user CROSS JOIN selected_author CROSS JOIN favorite_total
-      WHERE NOT EXISTS (SELECT 1 FROM existing_favorite) AND favorite_total.total < 30
+      SELECT selected_user.id, selected_author.id FROM selected_user CROSS JOIN selected_author
+      WHERE NOT EXISTS (SELECT 1 FROM existing_favorite)
       ON CONFLICT (user_id, author_id) DO NOTHING
       RETURNING id
     )
     SELECT
       EXISTS (SELECT 1 FROM selected_user) AS has_user,
       EXISTS (SELECT 1 FROM selected_author) AS has_author,
-      (SELECT total FROM favorite_total) AS favorite_total,
       EXISTS (SELECT 1 FROM existing_favorite) AS already_favorited,
       EXISTS (SELECT 1 FROM inserted_favorite) AS favorited
   `, [username, authorId])
   const row = result.rows[0] ?? {}
   if (!row.has_user) return { status: 'missing_user' }
   if (!row.has_author) return { status: 'missing_author' }
-  if (!row.already_favorited && Number(row.favorite_total) >= 30) return { status: 'limit_reached', limit: 30 }
   return { status: 'ok', favorited: Boolean(row.favorited) }
 }
 
@@ -1087,21 +1077,10 @@ export async function addBookToWatchlistForUser(pool, { username, bookId }) {
     selected_book AS (
       SELECT id FROM books WHERE google_books_id = $2 LIMIT 1
     ),
-    watchlist_total AS (
-      SELECT COUNT(*)::INTEGER AS total FROM book_watchlist_items
-      WHERE user_id IN (SELECT id FROM selected_user)
-    ),
-    existing_watchlist AS (
-      SELECT created_at FROM book_watchlist_items
-      WHERE user_id IN (SELECT id FROM selected_user)
-        AND book_id IN (SELECT id FROM selected_book)
-      LIMIT 1
-    ),
     inserted_watchlist AS (
       INSERT INTO book_watchlist_items (user_id, book_id, created_at)
       SELECT selected_user.id, selected_book.id, NOW()
-      FROM selected_user CROSS JOIN selected_book CROSS JOIN watchlist_total
-      WHERE watchlist_total.total < 30 OR EXISTS (SELECT 1 FROM existing_watchlist)
+      FROM selected_user CROSS JOIN selected_book
       ON CONFLICT (user_id, book_id) DO NOTHING
       RETURNING user_id, book_id, created_at
     )
@@ -1109,14 +1088,11 @@ export async function addBookToWatchlistForUser(pool, { username, bookId }) {
       EXISTS (SELECT 1 FROM selected_user) AS has_user,
       EXISTS (SELECT 1 FROM selected_book) AS has_book,
       (SELECT id FROM selected_book) AS entity_id,
-      (SELECT total FROM watchlist_total) AS watchlist_total,
-      EXISTS (SELECT 1 FROM existing_watchlist) AS already_saved,
       EXISTS (SELECT 1 FROM inserted_watchlist) AS added
   `, [username, bookId])
   const row = result.rows[0] ?? {}
   if (!row.has_user) return { status: 'missing_user' }
   if (!row.has_book) return { status: 'missing_book' }
-  if (!row.already_saved && Number(row.watchlist_total) >= 30) return { status: 'limit_reached', limit: 30 }
   return { status: 'ok', ...(Number.isFinite(Number(row.entity_id)) ? { entityId: Number(row.entity_id) } : {}), added: Boolean(row.added) }
 }
 
@@ -1591,8 +1567,97 @@ export async function getAchievementsForUser(pool, username) {
   const unlockMap = new Map(unlocked.rows.map((row) => [row.achievement_id, row.unlocked_at]))
   return ACHIEVEMENTS.map((achievement) => {
     const progress = progressFor(achievement); const unlockedAt = unlockMap.get(achievement.id) ?? null
-    return { ...achievement, progress: { ...progress, target: achievement.target }, unlocked: Boolean(unlockedAt), unlockedAt }
+    return { ...achievement, progress: { ...progress, target: achievement.target }, unlocked: Boolean(unlockedAt), unlockedAt, hasContributorDetails: supportsAchievementContributorDetails(achievement) }
   })
+}
+
+// These rules are backed by a concrete movie or completed-show event. Rules that
+// aggregate score values or calendar buckets intentionally stay non-navigable
+// until they have an equally clear title-level explanation.
+function supportsAchievementContributorDetails(achievement) {
+  return achievement?.availability === 'active'
+}
+
+function mapAchievementMovieContributor(row, qualifier = null) {
+  return {
+    id: row.tmdb_id,
+    mediaType: 'movie',
+    title: row.title,
+    year: row.release_date ? new Date(row.release_date).getUTCFullYear() : null,
+    posterPath: row.poster_path ?? null,
+    watchedAt: row.occurred_at,
+    qualifier,
+  }
+}
+
+/**
+ * Returns the chronological contributors that initially satisfy a supported
+ * achievement.  This is deliberately event based (rather than using the
+ * current watched list) so it agrees with achievement progress accounting.
+ */
+export async function getAchievementProgressDetailsForUser(pool, username, achievementId) {
+  const achievement = ACHIEVEMENT_BY_ID.get(achievementId)
+  if (!achievement) return { status: 'missing_achievement' }
+
+  const achievements = await getAchievementsForUser(pool, username)
+  const currentAchievement = achievements.find((item) => item.id === achievementId)
+  if (!currentAchievement) return { status: 'missing_achievement' }
+
+  const [movies, shows] = await Promise.all([
+    pool.query(`WITH selected_user AS (SELECT id FROM users WHERE username=$1)
+      SELECT e.entity_id,e.occurred_at,e.event_type,e.metadata,m.tmdb_id,m.title,m.release_date,m.poster_path,m.runtime_minutes,m.original_language,
+        COALESCE(array_agg(DISTINCT g.name) FILTER (WHERE g.name IS NOT NULL), ARRAY[]::TEXT[]) AS genre_names,
+        EXISTS (SELECT 1 FROM achievement_events saved WHERE saved.user_id=e.user_id AND saved.event_type='movie_watchlist_added' AND saved.entity_id=e.entity_id AND saved.occurred_at <= e.occurred_at) AS was_watchlisted
+      FROM achievement_events e JOIN movies m ON m.id=e.entity_id
+      LEFT JOIN LATERAL unnest(m.genre_ids) gid ON TRUE LEFT JOIN genres g ON g.tmdb_genre_id=gid
+      WHERE e.user_id=(SELECT id FROM selected_user) AND e.event_type IN ('movie_watched','movie_rated')
+      GROUP BY e.id,e.entity_id,e.occurred_at,e.event_type,e.metadata,m.id
+      ORDER BY e.occurred_at ASC,e.id ASC`, [username]),
+    pool.query(`WITH selected_user AS (SELECT id FROM users WHERE username=$1)
+      SELECT e.entity_id,e.occurred_at,s.tmdb_id,s.name,s.first_air_date,s.poster_path
+      FROM achievement_events e JOIN tv_shows s ON s.id=e.entity_id
+      WHERE e.user_id=(SELECT id FROM selected_user) AND e.event_type='tv_show_completed'
+      ORDER BY e.occurred_at ASC,e.id ASC`, [username]),
+  ])
+
+  let qualifying = []
+  const watched = movies.rows.filter((row) => row.event_type === 'movie_watched')
+  const rated = movies.rows.filter((row) => row.event_type === 'movie_rated')
+  const { rule, target } = achievement
+  if (rule === 'movie_count') qualifying = watched.map((row) => mapAchievementMovieContributor(row))
+  else if (rule.startsWith('genre:')) {
+    const genre = rule.slice(6).toLocaleLowerCase()
+    qualifying = watched.filter((row) => row.genre_names.some((name) => name.toLocaleLowerCase() === genre)).map((row) => mapAchievementMovieContributor(row, rule.slice(6)))
+  } else if (rule === 'movie_watchlist_watched') qualifying = watched.filter((row) => row.was_watchlisted).map((row) => mapAchievementMovieContributor(row, 'From watchlist'))
+  else if (rule === 'movie_rating_count') qualifying = rated.map((row) => mapAchievementMovieContributor(row, `Rated ${row.metadata?.score ?? ''}/5`.trim()))
+  else if (rule === 'low_ratings' || rule === 'high_ratings') {
+    const score = rule === 'low_ratings' ? 1 : 5
+    qualifying = rated.filter((row) => Number(row.metadata?.score) === score).map((row) => mapAchievementMovieContributor(row, `Rated ${score}/5`))
+  } else if (rule === 'foreign_language') qualifying = watched.filter((row) => row.original_language && row.original_language !== 'en').map((row) => mapAchievementMovieContributor(row, row.original_language.toUpperCase()))
+  else if (rule === 'classic_movies') qualifying = watched.filter((row) => row.release_date && new Date(row.release_date) < new Date('1970-01-01')).map((row) => mapAchievementMovieContributor(row, 'Released before 1970'))
+  else if (rule === 'short_movie' || rule === 'long_movie') {
+    const isShort = rule === 'short_movie'
+    qualifying = watched.filter((row) => isShort ? Number(row.runtime_minutes) < 80 : Number(row.runtime_minutes) > 180).map((row) => mapAchievementMovieContributor(row, `${row.runtime_minutes} min`))
+  } else if (rule === 'movie_runtime') {
+    let minutes = 0
+    for (const row of watched) {
+      if (minutes >= target) break
+      minutes += Math.max(0, Number(row.runtime_minutes) || 0)
+      qualifying.push(mapAchievementMovieContributor(row, `${row.runtime_minutes || 0} min`))
+    }
+  } else if (rule === 'show_count') {
+    qualifying = shows.rows.map((row) => ({ id: row.tmdb_id, mediaType: 'tv', title: row.name, year: row.first_air_date ? new Date(row.first_air_date).getUTCFullYear() : null, posterPath: row.poster_path ?? null, watchedAt: row.occurred_at, qualifier: 'Completed' }))
+  }
+
+  // All active badges are navigable. For aggregate rules that do not yet have a
+  // narrower predicate, show the earliest recorded title activity rather than
+  // leaving an in-progress achievement as a dead end.
+  if (!qualifying.length) {
+    const fallback = achievement.media === 'tv' ? shows.rows.map((row) => ({ id: row.tmdb_id, mediaType: 'tv', title: row.name, year: row.first_air_date ? new Date(row.first_air_date).getUTCFullYear() : null, posterPath: row.poster_path ?? null, watchedAt: row.occurred_at, qualifier: 'Recorded TV activity' })) : watched.map((row) => mapAchievementMovieContributor(row, 'Recorded watch activity'))
+    qualifying = fallback.length ? fallback : rated.map((row) => mapAchievementMovieContributor(row, 'Recorded rating activity'))
+  }
+
+  return { status: 'ok', achievement: currentAchievement, contributors: qualifying.slice(0, target) }
 }
 
 export async function evaluateAchievementsForUser(pool, username) {
@@ -3398,16 +3463,12 @@ export async function ensureNewsTables(pool) {
       link TEXT NOT NULL UNIQUE,
       published_at TIMESTAMPTZ,
       photo_url TEXT,
-      description TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `)
 
-  await pool.query(`
-    ALTER TABLE news_articles
-    ADD COLUMN IF NOT EXISTS description TEXT
-  `)
+  await pool.query('ALTER TABLE news_articles DROP COLUMN IF EXISTS description')
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS news_article_actors (
@@ -3519,16 +3580,15 @@ export async function upsertNewsArticles(pool, articles) {
     await client.query('BEGIN')
     for (const article of articles) {
       const result = await client.query(
-        `INSERT INTO news_articles (title, link, published_at, photo_url, description, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+        `INSERT INTO news_articles (title, link, published_at, photo_url, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, NOW(), NOW())
          ON CONFLICT (link) DO UPDATE SET
            title = EXCLUDED.title,
            published_at = COALESCE(EXCLUDED.published_at, news_articles.published_at),
            photo_url = COALESCE(EXCLUDED.photo_url, news_articles.photo_url),
-           description = COALESCE(EXCLUDED.description, news_articles.description),
            updated_at = NOW()
          RETURNING id, (xmax = 0) AS inserted`,
-        [article.title, article.link, article.publishedAt, article.photoUrl, article.description]
+        [article.title, article.link, article.publishedAt, article.photoUrl]
       )
       const row = result.rows[0]
       articleIdsByLink.set(article.link, row.id)
@@ -3662,7 +3722,7 @@ export async function listNewsArticles(pool, options = {}) {
   if (savedOnly) conditions.push(`EXISTS (SELECT 1 FROM news_article_saves saved_filter WHERE saved_filter.news_article_id = news_articles.id AND saved_filter.user_id = $${viewerUserParamIndex})`)
   params.push(normalizedLimit, offset)
   const result = await pool.query(
-    `SELECT news_articles.id, news_articles.title, news_articles.link, news_articles.published_at, news_articles.photo_url, news_articles.description,
+    `SELECT news_articles.id, news_articles.title, news_articles.link, news_articles.published_at, news_articles.photo_url,
       (SELECT COUNT(*)::INTEGER FROM news_article_likes WHERE news_article_likes.news_article_id = news_articles.id) AS like_count,
       ${viewerUserId === null ? 'FALSE' : `EXISTS (SELECT 1 FROM news_article_likes viewer_like WHERE viewer_like.news_article_id = news_articles.id AND viewer_like.user_id = $${viewerUserParamIndex})`} AS liked_by_current_user,
       ${viewerUserId === null ? 'FALSE' : `EXISTS (SELECT 1 FROM news_article_saves viewer_save WHERE viewer_save.news_article_id = news_articles.id AND viewer_save.user_id = $${viewerUserParamIndex})`} AS saved_by_current_user,
@@ -5425,10 +5485,10 @@ export async function updateTvEpisodeWatchStateForUser(pool, { username, showId,
 }
 
 async function syncTvShowWatchCompletion(client, username, showId) {
-  const result = await client.query(`WITH selected_user AS (SELECT id FROM users WHERE username=$1), selected_show AS (SELECT id FROM tv_shows WHERE tmdb_id=$2 OR id=$2 LIMIT 1), episode_totals AS (SELECT COUNT(*)::integer total, COUNT(w.id)::integer watched FROM tv_episodes e JOIN tv_seasons s ON s.id=e.tv_season_id LEFT JOIN watched_tv_episodes w ON w.tv_episode_id=e.id AND w.user_id=(SELECT id FROM selected_user) WHERE s.tv_show_id=(SELECT id FROM selected_show) AND s.season_number > 0 AND (e.air_date IS NULL OR e.air_date <= CURRENT_DATE)) SELECT (SELECT id FROM selected_user) user_id, (SELECT id FROM selected_show) show_id, total, watched FROM episode_totals`, [username, showId])
+  const result = await client.query(`WITH selected_user AS (SELECT id FROM users WHERE username=$1), selected_show AS (SELECT id, COALESCE(detail_payload->>'status', raw_payload->>'status') = 'Ended' AS is_ended FROM tv_shows WHERE tmdb_id=$2 OR id=$2 LIMIT 1), episode_totals AS (SELECT COUNT(*)::integer total, COUNT(w.id)::integer watched FROM tv_episodes e JOIN tv_seasons s ON s.id=e.tv_season_id LEFT JOIN watched_tv_episodes w ON w.tv_episode_id=e.id AND w.user_id=(SELECT id FROM selected_user) WHERE s.tv_show_id=(SELECT id FROM selected_show) AND s.season_number > 0 AND (e.air_date IS NULL OR e.air_date <= CURRENT_DATE)) SELECT (SELECT id FROM selected_user) user_id, (SELECT id FROM selected_show) show_id, (SELECT is_ended FROM selected_show) is_ended, total, watched FROM episode_totals`, [username, showId])
   const row = result.rows[0]
   if (!row?.user_id || !row?.show_id) return null
-  if (row.total > 0 && row.total === row.watched) {
+  if (row.is_ended && row.total > 0 && row.total === row.watched) {
     const inserted = await client.query('INSERT INTO watched_tv_shows (user_id,tv_show_id) VALUES ($1,$2) ON CONFLICT DO NOTHING RETURNING tv_show_id', [row.user_id, row.show_id])
     return { newlyCompletedShowId: inserted.rows[0]?.tv_show_id ?? null }
   }
@@ -5987,11 +6047,6 @@ export async function addMovieToWatchlistForUser(pool, { username, movieId }) {
         ORDER BY CASE WHEN tmdb_id = $2 THEN 0 ELSE 1 END
         LIMIT 1
       ),
-      watchlist_total AS (
-        SELECT COUNT(*)::INTEGER AS total
-        FROM watchlist_items
-        WHERE user_id IN (SELECT id FROM selected_user)
-      ),
       existing_watchlist AS (
         SELECT watchlist_items.created_at
         FROM watchlist_items
@@ -6011,9 +6066,6 @@ export async function addMovieToWatchlistForUser(pool, { username, movieId }) {
           NOW()
         FROM selected_user
         CROSS JOIN selected_movie
-        CROSS JOIN watchlist_total
-        WHERE watchlist_total.total < 30
-          OR EXISTS(SELECT 1 FROM existing_watchlist)
         ON CONFLICT (user_id, movie_id) DO NOTHING
         RETURNING user_id, movie_id, created_at
       )
@@ -6021,7 +6073,6 @@ export async function addMovieToWatchlistForUser(pool, { username, movieId }) {
         EXISTS(SELECT 1 FROM selected_user) AS has_user,
         EXISTS(SELECT 1 FROM selected_movie) AS has_movie,
         (SELECT id FROM selected_movie) AS entity_id,
-        (SELECT total FROM watchlist_total) AS watchlist_total,
         EXISTS(SELECT 1 FROM existing_watchlist) AS already_saved,
         COALESCE(
           (SELECT created_at FROM inserted_watchlist),
@@ -6046,13 +6097,6 @@ export async function addMovieToWatchlistForUser(pool, { username, movieId }) {
   if (!row.has_movie) {
     return {
       status: 'missing_movie',
-    }
-  }
-
-  if (!row.already_saved && Number(row.watchlist_total) >= 30) {
-    return {
-      status: 'limit_reached',
-      limit: 30,
     }
   }
 
@@ -6857,6 +6901,33 @@ function formatStatsWeekLabel(start, end) {
 export async function getTvLibraryForUser(pool, username) {
   const result = await pool.query(
     `
+      WITH selected_user AS (SELECT id FROM users WHERE users.username=$1 LIMIT 1), qualifying_shows AS (
+        SELECT tv_shows.id
+        FROM tv_shows
+        WHERE COALESCE(tv_shows.detail_payload->>'status', tv_shows.raw_payload->>'status') = 'Ended'
+          AND EXISTS (
+            SELECT 1 FROM tv_episodes
+            JOIN tv_seasons ON tv_seasons.id = tv_episodes.tv_season_id
+            WHERE tv_seasons.tv_show_id = tv_shows.id AND tv_seasons.season_number > 0
+              AND (tv_episodes.air_date IS NULL OR tv_episodes.air_date <= CURRENT_DATE)
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM tv_episodes
+            JOIN tv_seasons ON tv_seasons.id = tv_episodes.tv_season_id
+            LEFT JOIN watched_tv_episodes ON watched_tv_episodes.tv_episode_id = tv_episodes.id
+              AND watched_tv_episodes.user_id IN (SELECT id FROM selected_user)
+            WHERE tv_seasons.tv_show_id = tv_shows.id AND tv_seasons.season_number > 0
+              AND (tv_episodes.air_date IS NULL OR tv_episodes.air_date <= CURRENT_DATE)
+              AND watched_tv_episodes.id IS NULL
+          )
+      ), deleted AS (
+        DELETE FROM watched_tv_shows
+        WHERE user_id IN (SELECT id FROM selected_user) AND tv_show_id NOT IN (SELECT id FROM qualifying_shows)
+      ), inserted AS (
+        INSERT INTO watched_tv_shows (user_id, tv_show_id)
+        SELECT selected_user.id, qualifying_shows.id FROM selected_user CROSS JOIN qualifying_shows
+        ON CONFLICT DO NOTHING
+      )
       SELECT
         COALESCE(ARRAY(SELECT tv_shows.tmdb_id FROM watched_tv_shows JOIN tv_shows ON tv_shows.id = watched_tv_shows.tv_show_id WHERE watched_tv_shows.user_id = users.id), '{}') AS watched_ids,
         COALESCE(ARRAY(SELECT tv_shows.tmdb_id FROM tv_watchlist_items JOIN tv_shows ON tv_shows.id = tv_watchlist_items.tv_show_id WHERE tv_watchlist_items.user_id = users.id), '{}') AS watchlist_ids
@@ -7054,8 +7125,8 @@ export async function getTvStatsForUser(pool, username, period = 'month') {
 }
 
 export async function toggleTvLibraryItemForUser(pool, { username, showId, kind }) {
-  if (!['watchlist', 'watched'].includes(kind)) return { status: 'unsupported_kind' }
-  const table = kind === 'watchlist' ? 'tv_watchlist_items' : 'watched_tv_shows'
+  if (kind !== 'watchlist') return { status: 'unsupported_kind' }
+  const table = 'tv_watchlist_items'
   const column = 'tv_show_id'
   const result = await pool.query(
     `

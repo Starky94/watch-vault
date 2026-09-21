@@ -22,7 +22,7 @@ function createPool() {
         const [, link] = params
         const existing = articles.get(link)
         const row = { id: existing?.id ?? nextArticleId++, inserted: !existing }
-        articles.set(link, { id: row.id, title: params[0], publishedAt: params[2], photoUrl: params[3], description: params[4] })
+        articles.set(link, { id: row.id, title: params[0], publishedAt: params[2], photoUrl: params[3] })
         return { rows: [row], rowCount: 1 }
       }
       if (sql.includes('INSERT INTO news_article_actors')) {
@@ -67,7 +67,7 @@ test('RSS parser normalizes requested fields and standard media image sources', 
   </item></channel></rss>`)
   assert.deepEqual(article, {
     title: 'Actor headline', link: 'https://example.test/story', publishedAt: '2026-09-01T12:00:00.000Z',
-    photoUrl: 'https://images.example.test/photo.jpg', description: 'A short summary & more.', categories: ['ada actor'],
+    photoUrl: 'https://images.example.test/photo.jpg', categories: ['ada actor'],
   })
   assert.equal(normalizeNewsItem({ title: 'Enclosure', link: 'https://example.test/e', enclosure: { '@_url': 'https://example.test/e.jpg' } }).photoUrl, 'https://example.test/e.jpg')
   assert.equal(normalizeNewsItem({ title: 'HTML image', link: 'https://example.test/h', description: '<img src="https://example.test/h.jpg">' }).photoUrl, 'https://example.test/h.jpg')
@@ -257,13 +257,13 @@ test('public news API maps stored rows and exposes batches for infinite scrollin
       if (!sql.includes('FROM news_articles') || !sql.includes('ORDER BY COALESCE')) return { rows: [], rowCount: 0 }
       newsQueries.push(params)
       if (params[1] === 0) {
-        return { rows: [{ id: '11', title: 'First &#8216;story&#8217;', link: 'https://variety.com/first', published_at: '2026-09-14T08:00:00.000Z', photo_url: 'https://images.test/first.jpg', description: 'A &amp; brief description', actors: [{ id: 7, name: 'Ada Actor' }], movies: [{ id: 8, name: 'Example Movie' }], shows: [{ id: 9, name: 'Example Show' }] }] }
+        return { rows: [{ id: '11', title: 'First &#8216;story&#8217;', link: 'https://variety.com/first', published_at: '2026-09-14T08:00:00.000Z', photo_url: 'https://images.test/first.jpg', actors: [{ id: 7, name: 'Ada Actor' }], movies: [{ id: 8, name: 'Example Movie' }], shows: [{ id: 9, name: 'Example Show' }] }] }
       }
       if (params[1] === 3) {
         return { rows: [
-          { id: '8', title: 'Story eight', link: 'https://deadline.com/eight', published_at: '2026-09-13T08:00:00.000Z', photo_url: null, description: null },
-          { id: '7', title: 'Story seven', link: 'https://deadline.com/seven', published_at: null, photo_url: null, description: null },
-          { id: '6', title: 'Lookahead story', link: 'https://deadline.com/six', published_at: null, photo_url: null, description: null },
+          { id: '8', title: 'Story eight', link: 'https://deadline.com/eight', published_at: '2026-09-13T08:00:00.000Z', photo_url: null },
+          { id: '7', title: 'Story seven', link: 'https://deadline.com/seven', published_at: null, photo_url: null },
+          { id: '6', title: 'Lookahead story', link: 'https://deadline.com/six', published_at: null, photo_url: null },
         ] }
       }
       return { rows: [] }
@@ -280,7 +280,7 @@ test('public news API maps stored rows and exposes batches for infinite scrollin
     assert.equal(firstResponse.status, 200)
     assert.deepEqual(firstPayload, {
       count: 1,
-      articles: [{ id: 11, title: 'First ‘story’', link: 'https://variety.com/first', publishedAt: '2026-09-14T08:00:00.000Z', photoUrl: 'https://images.test/first.jpg', description: 'A & brief description', likeCount: 0, likedByCurrentUser: false, savedByCurrentUser: false, actors: [{ id: 7, name: 'Ada Actor' }], movies: [{ id: 8, name: 'Example Movie' }], shows: [{ id: 9, name: 'Example Show' }] }],
+      articles: [{ id: 11, title: 'First ‘story’', link: 'https://variety.com/first', publishedAt: '2026-09-14T08:00:00.000Z', photoUrl: 'https://images.test/first.jpg', likeCount: 0, likedByCurrentUser: false, savedByCurrentUser: false, actors: [{ id: 7, name: 'Ada Actor' }], movies: [{ id: 8, name: 'Example Movie' }], shows: [{ id: 9, name: 'Example Show' }] }],
       pagination: { page: 1, pageSize: 20, hasNextPage: false, hasPreviousPage: false },
     })
 
@@ -404,7 +404,7 @@ test('news like API requires a user and reports the authenticated user state', a
         return { rows: [], rowCount: 1 }
       }
       if (sql.includes('FROM news_articles') && sql.includes('ORDER BY COALESCE')) {
-        return { rows: [{ id: '11', title: 'Liked story', link: 'https://example.test/liked', published_at: null, photo_url: null, description: null, like_count: likes.size, liked_by_current_user: likes.has('11:7'), actors: [], movies: [], shows: [] }] }
+        return { rows: [{ id: '11', title: 'Liked story', link: 'https://example.test/liked', published_at: null, photo_url: null, like_count: likes.size, liked_by_current_user: likes.has('11:7'), actors: [], movies: [], shows: [] }] }
       }
       return { rows: [], rowCount: 0 }
     },
@@ -444,7 +444,7 @@ test('news save API persists the viewer state and serves the saved feed', async 
       }
       if (sql.includes('FROM news_articles') && sql.includes('ORDER BY')) {
         const isSavedFeed = sql.includes('news_article_saves saved_filter')
-        return { rows: !isSavedFeed || saves.has('11:7') ? [{ id: '11', title: 'Saved story', link: 'https://example.test/saved', published_at: null, photo_url: null, description: null, like_count: 0, liked_by_current_user: false, saved_by_current_user: saves.has('11:7'), actors: [], movies: [], shows: [] }] : [] }
+        return { rows: !isSavedFeed || saves.has('11:7') ? [{ id: '11', title: 'Saved story', link: 'https://example.test/saved', published_at: null, photo_url: null, like_count: 0, liked_by_current_user: false, saved_by_current_user: saves.has('11:7'), actors: [], movies: [], shows: [] }] : [] }
       }
       return { rows: [], rowCount: 0 }
     },

@@ -120,7 +120,7 @@ test('upsertBooks reports inserted and refreshed volumes without duplicating the
   assert.deepEqual(result, { insertedCount: 1, updatedCount: 1 })
 })
 
-test('book watchlist schema and helpers use a per-user, 30-book collection', async () => {
+test('book watchlist schema and helpers allow an unlimited per-user collection', async () => {
   const schemaQueries = []
   await ensureBooksTable({ query: async (sql) => { schemaQueries.push(sql); return { rows: [] } } })
   const schema = schemaQueries.find((sql) => sql.includes('CREATE TABLE IF NOT EXISTS book_watchlist_items'))
@@ -130,13 +130,13 @@ test('book watchlist schema and helpers use a per-user, 30-book collection', asy
   const pool = {
     async query(sql) {
       executedSql = sql
-      if (sql.includes('INSERT INTO book_watchlist_items')) return { rows: [{ has_user: true, has_book: true, watchlist_total: 0, already_saved: false, added: true }] }
+      if (sql.includes('INSERT INTO book_watchlist_items')) return { rows: [{ has_user: true, has_book: true, already_saved: false, added: true }] }
       if (sql.includes('DELETE FROM book_watchlist_items')) return { rows: [{ has_user: true, has_book: true, removed: true }] }
       return { rows: [{ google_books_id: 'volume-id', title: 'Example Book' }] }
     },
   }
   assert.deepEqual(await addBookToWatchlistForUser(pool, { username: 'reader', bookId: 'volume-id' }), { status: 'ok', added: true })
-  assert.match(executedSql, /watchlist_total\.total < 30/i)
+  assert.doesNotMatch(executedSql, /watchlist_total|< 30/i)
   assert.deepEqual(await removeBookFromWatchlistForUser(pool, { username: 'reader', bookId: 'volume-id' }), { status: 'ok', removed: true })
   assert.match(executedSql, /DELETE FROM book_watchlist_items/i)
   assert.deepEqual(await listWatchlistBooksForUser(pool, 'reader'), [{ google_books_id: 'volume-id', title: 'Example Book' }])
@@ -280,15 +280,15 @@ test('book rating API validates scores, authenticates users, and returns refresh
   }
 })
 
-test('book watchlist helpers report missing books and capacity limits', async () => {
+test('book watchlist helpers report missing books without a capacity limit', async () => {
   const responses = [
     { has_user: true, has_book: false },
-    { has_user: true, has_book: true, watchlist_total: 30, already_saved: false },
-    { has_user: true, has_book: true, watchlist_total: 30, already_saved: true, added: false },
+    { has_user: true, has_book: true, already_saved: false, added: true },
+    { has_user: true, has_book: true, already_saved: true, added: false },
   ]
   const pool = { query: async () => ({ rows: [responses.shift()] }) }
   assert.deepEqual(await addBookToWatchlistForUser(pool, { username: 'reader', bookId: 'missing' }), { status: 'missing_book' })
-  assert.deepEqual(await addBookToWatchlistForUser(pool, { username: 'reader', bookId: 'volume-id' }), { status: 'limit_reached', limit: 30 })
+  assert.deepEqual(await addBookToWatchlistForUser(pool, { username: 'reader', bookId: 'volume-id' }), { status: 'ok', added: true })
   assert.deepEqual(await addBookToWatchlistForUser(pool, { username: 'reader', bookId: 'already-saved' }), { status: 'ok', added: false })
 })
 
@@ -301,8 +301,8 @@ test('book watchlist API authenticates and returns saved books', async () => {
     async query(sql, params) {
       if (sql.includes('INSERT INTO book_watchlist_items')) {
         return { rows: [params[1] === 'full-book'
-          ? { has_user: true, has_book: true, watchlist_total: 30, already_saved: false, added: false }
-          : { has_user: true, has_book: true, watchlist_total: 0, already_saved: false, added: true }] }
+          ? { has_user: true, has_book: true, already_saved: false, added: true }
+          : { has_user: true, has_book: true, already_saved: false, added: true }] }
       }
       if (sql.includes('DELETE FROM book_watchlist_items')) return { rows: [{ has_user: true, has_book: true, removed: true }] }
       if (sql.includes('FROM book_watchlist_items') && sql.includes('JOIN users')) return { rows: [savedBook] }
@@ -326,9 +326,8 @@ test('book watchlist API authenticates and returns saved books', async () => {
       type: 'Books', posterUrl: 'https://example.test/cover.jpg', watchlistedAt: '2026-07-21T00:00:00.000Z',
     })
 
-    const limitReached = await fetch(`http://127.0.0.1:${port}/api/watchlist/books`, { method: 'POST', headers, body: JSON.stringify({ bookId: 'full-book' }) })
-    assert.equal(limitReached.status, 409)
-    assert.match((await limitReached.json()).error, /up to 30 books/i)
+    const additionalBook = await fetch(`http://127.0.0.1:${port}/api/watchlist/books`, { method: 'POST', headers, body: JSON.stringify({ bookId: 'full-book' }) })
+    assert.equal(additionalBook.status, 200)
 
     const removed = await fetch(`http://127.0.0.1:${port}/api/watchlist/books/volume-id`, { method: 'DELETE', headers: { 'x-watchvault-username': 'reader' } })
     assert.equal(removed.status, 200)
