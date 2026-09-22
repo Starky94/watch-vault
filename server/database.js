@@ -1600,7 +1600,7 @@ export async function getAchievementProgressDetailsForUser(pool, username, achie
   if (!achievement) return { status: 'missing_achievement' }
 
   const achievements = await getAchievementsForUser(pool, username)
-  const currentAchievement = achievements.find((item) => item.id === achievementId)
+  let currentAchievement = achievements.find((item) => item.id === achievementId)
   if (!currentAchievement) return { status: 'missing_achievement' }
 
   const [movies, shows] = await Promise.all([
@@ -1610,7 +1610,7 @@ export async function getAchievementProgressDetailsForUser(pool, username, achie
         EXISTS (SELECT 1 FROM achievement_events saved WHERE saved.user_id=e.user_id AND saved.event_type='movie_watchlist_added' AND saved.entity_id=e.entity_id AND saved.occurred_at <= e.occurred_at) AS was_watchlisted
       FROM achievement_events e JOIN movies m ON m.id=e.entity_id
       LEFT JOIN LATERAL unnest(m.genre_ids) gid ON TRUE LEFT JOIN genres g ON g.tmdb_genre_id=gid
-      WHERE e.user_id=(SELECT id FROM selected_user) AND e.event_type IN ('movie_watched','movie_rated')
+      WHERE e.user_id=(SELECT id FROM selected_user) AND e.event_type IN ('movie_watched','movie_rated','movie_watchlist_added')
       GROUP BY e.id,e.entity_id,e.occurred_at,e.event_type,e.metadata,m.id
       ORDER BY e.occurred_at ASC,e.id ASC`, [username]),
     pool.query(`WITH selected_user AS (SELECT id FROM users WHERE username=$1)
@@ -1623,12 +1623,37 @@ export async function getAchievementProgressDetailsForUser(pool, username, achie
   let qualifying = []
   const watched = movies.rows.filter((row) => row.event_type === 'movie_watched')
   const rated = movies.rows.filter((row) => row.event_type === 'movie_rated')
+  const watchlistAdded = movies.rows.filter((row) => row.event_type === 'movie_watchlist_added')
   const { rule, target } = achievement
+  if (rule === 'daily_runtime') {
+    const dayKey = (value) => {
+      const date = new Date(value)
+      return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 10)
+    }
+    const minutesByDay = new Map()
+    for (const row of watched) {
+      const day = dayKey(row.occurred_at)
+      if (!day) continue
+      minutesByDay.set(day, (minutesByDay.get(day) || 0) + Math.max(0, Number(row.runtime_minutes) || 0))
+    }
+    const [qualifyingDay, qualifyingMinutes] = [...minutesByDay.entries()].sort((a, b) => b[1] - a[1] || b[0].localeCompare(a[0]))[0] || [null, 0]
+    currentAchievement = { ...currentAchievement, progress: { ...currentAchievement.progress, current: qualifyingMinutes, complete: qualifyingMinutes >= target } }
+    if (qualifyingDay) {
+      qualifying = watched
+        .filter((row) => dayKey(row.occurred_at) === qualifyingDay)
+        .map((row) => mapAchievementMovieContributor(row, `${Math.max(0, Number(row.runtime_minutes) || 0)} min · ${qualifyingDay}`))
+    }
+  }
+  if (rule === 'decade_diversity') {
+    const releaseDecades = new Set(watched.map((row) => Number(String(row.release_date || '').slice(0, 4))).filter(Number.isInteger).map((year) => Math.floor(year / 10) * 10))
+    currentAchievement = { ...currentAchievement, progress: { ...currentAchievement.progress, current: releaseDecades.size, complete: releaseDecades.size >= target } }
+  }
   if (rule === 'movie_count') qualifying = watched.map((row) => mapAchievementMovieContributor(row))
   else if (rule.startsWith('genre:')) {
     const genre = rule.slice(6).toLocaleLowerCase()
     qualifying = watched.filter((row) => row.genre_names.some((name) => name.toLocaleLowerCase() === genre)).map((row) => mapAchievementMovieContributor(row, rule.slice(6)))
   } else if (rule === 'movie_watchlist_watched') qualifying = watched.filter((row) => row.was_watchlisted).map((row) => mapAchievementMovieContributor(row, 'From watchlist'))
+  else if (rule === 'movie_watchlist_count') qualifying = watchlistAdded.map((row) => mapAchievementMovieContributor(row, 'Added to watchlist'))
   else if (rule === 'movie_rating_count') qualifying = rated.map((row) => mapAchievementMovieContributor(row, `Rated ${row.metadata?.score ?? ''}/5`.trim()))
   else if (rule === 'low_ratings' || rule === 'high_ratings') {
     const score = rule === 'low_ratings' ? 1 : 5
@@ -1638,12 +1663,54 @@ export async function getAchievementProgressDetailsForUser(pool, username, achie
   else if (rule === 'short_movie' || rule === 'long_movie') {
     const isShort = rule === 'short_movie'
     qualifying = watched.filter((row) => isShort ? Number(row.runtime_minutes) < 80 : Number(row.runtime_minutes) > 180).map((row) => mapAchievementMovieContributor(row, `${row.runtime_minutes} min`))
+  } else if (rule === 'decade_diversity') {
+    const decades = new Set()
+    qualifying = watched.filter((row) => {
+      const year = Number(String(row.release_date || '').slice(0, 4))
+      if (!Number.isInteger(year)) return false
+      const decade = Math.floor(year / 10) * 10
+      if (decades.has(decade)) return false
+      decades.add(decade)
+      return true
+    }).map((row) => mapAchievementMovieContributor(row, `${String(row.release_date).slice(0, 3)}0s`))
   } else if (rule === 'movie_runtime') {
     let minutes = 0
     for (const row of watched) {
       if (minutes >= target) break
       minutes += Math.max(0, Number(row.runtime_minutes) || 0)
       qualifying.push(mapAchievementMovieContributor(row, `${row.runtime_minutes || 0} min`))
+    }
+  } else if (rule === 'movie_streak') {
+    // The progress page should explain the current/latest streak, not the
+    // first seven movies ever recorded for the user.
+    const latestWatchedAt = watched.reduce((latest, row) => {
+      const timestamp = new Date(row.occurred_at).getTime()
+      return Number.isNaN(timestamp) ? latest : Math.max(latest, timestamp)
+    }, Number.NEGATIVE_INFINITY)
+    if (Number.isFinite(latestWatchedAt)) {
+      const windowStart = latestWatchedAt - (target - 1) * 86400000
+      qualifying = watched
+        .filter((row) => {
+          const timestamp = new Date(row.occurred_at).getTime()
+          return Number.isFinite(timestamp) && timestamp >= windowStart && timestamp <= latestWatchedAt
+        })
+        .map((row) => mapAchievementMovieContributor(row, 'Within the latest 7-day window'))
+    }
+  } else if (rule === 'weekend_movies') {
+    // Keep the progress page focused on the latest weekend that contributed to
+    // the achievement instead of the first three movies ever recorded.
+    const weekendStart = (value) => {
+      const date = new Date(value)
+      if (Number.isNaN(date.getTime()) || ![0, 6].includes(date.getUTCDay())) return null
+      const monday = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()))
+      monday.setUTCDate(monday.getUTCDate() - ((date.getUTCDay() + 6) % 7))
+      return monday.getTime()
+    }
+    const latestWeekend = watched.reduce((latest, row) => Math.max(latest, weekendStart(row.occurred_at) ?? Number.NEGATIVE_INFINITY), Number.NEGATIVE_INFINITY)
+    if (Number.isFinite(latestWeekend)) {
+      qualifying = watched
+        .filter((row) => weekendStart(row.occurred_at) === latestWeekend)
+        .map((row) => mapAchievementMovieContributor(row, 'Latest weekend'))
     }
   } else if (rule === 'show_count') {
     qualifying = shows.rows.map((row) => ({ id: row.tmdb_id, mediaType: 'tv', title: row.name, year: row.first_air_date ? new Date(row.first_air_date).getUTCFullYear() : null, posterPath: row.poster_path ?? null, watchedAt: row.occurred_at, qualifier: 'Completed' }))

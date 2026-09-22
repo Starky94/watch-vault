@@ -2749,7 +2749,7 @@
 .tv-episode-rate { display:grid; place-items:center; width:34px; height:34px; padding:0; border:0; background:transparent; color:#ffd05e; cursor:pointer; }.tv-episode-rate svg { width:18px; }
 .tv-recommendations { display:flex; gap:10px; overflow-x:auto; }.tv-recommendation { width:100px; flex:0 0 100px; padding:0; border:0; background:transparent; color:var(--text-primary); text-align:left; cursor:pointer; }.tv-recommendation img { width:100%; aspect-ratio:.68; object-fit:cover; border-radius:10px; background:#20263b; }.tv-recommendation span,.tv-recommendation small { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.tv-recommendation span { margin-top:6px; font-size:.82rem; }.tv-recommendation small { color:#ffd05e; }
 @media (max-width: 720px) { .tv-episode-row { grid-template-columns: 82px minmax(0,1fr) auto 34px; gap:9px; }.tv-episode-still { height:54px; }.tv-episode-copy p { display:none; }.tv-detail-page .movie-detail-back { margin-bottom:12px; } }
-@media (max-width: 520px) { .tv-episodes-header { align-items: flex-start; flex-direction: column; }.tv-season-watch-button { margin-left: 0; }.tv-catch-up-dialog .movie-rating-dialog-actions { flex-wrap: wrap; }.tv-catch-up-dialog .movie-rating-dialog-actions .primary-button { width: 100%; } }
+@media (max-width: 520px) { .tv-episodes-header { align-items: flex-start; flex-direction: column; }.tv-season-watch-button { margin-left: 0; }.tv-catch-up-dialog .movie-rating-dialog-actions .primary-button { flex-basis: 100%; width: 100%; } }
 
 .person-detail-page {
   margin-top: 18px;
@@ -3368,6 +3368,18 @@
   justify-content: flex-end;
   gap: 10px;
   margin-top: 22px;
+}
+
+.tv-catch-up-dialog .movie-rating-dialog-actions {
+  flex-wrap: wrap;
+}
+
+.tv-catch-up-dialog .movie-rating-dialog-actions button {
+  flex: 1 1 145px;
+  justify-content: center;
+  min-width: 0;
+  white-space: normal;
+  text-align: center;
 }
 
 .movie-trailer-error {
