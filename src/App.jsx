@@ -4290,6 +4290,7 @@ function App() {
                 tvEpisodeRatingActionState={tvEpisodeRatingActionState}
                 onOpenMovie={handleOpenMovieDetail}
                 onOpenTvShow={handleOpenTvDetail}
+                onOpenAchievement={(achievement) => handleNavigateToPath(buildAchievementProgressPath(achievement.id), { kind: routeKinds.achievementProgress, achievementId: achievement.id }, primaryViews.achievements)}
                 onRefresh={() => loadWatchTogetherForUser(user)}
                 achievementsState={watchTogetherAchievementsState}
                 statsState={watchTogetherStatsState}
@@ -6541,7 +6542,7 @@ function GamesScreen({ activeTab, dashboardState, favoriteGames, gameActivitySta
     <section className="games-page">
       <header className="games-heading">
         <h1>Games</h1>
-        <p>Play, compete, and discover movie &amp; TV inspired games.</p>
+        <p>Discover, track, and favorite games.</p>
       </header>
 
       <div className="games-tabs" role="tablist" aria-label="Game collections">
@@ -6550,7 +6551,7 @@ function GamesScreen({ activeTab, dashboardState, favoriteGames, gameActivitySta
 
       <div className="games-layout">
         <div className="games-main">
-          {activeTab === 'all' ? <GamesDashboard dashboardState={dashboardState} gameAchievementsState={gameAchievementsState} favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} onOpenGameAchievements={onOpenGameAchievements} /> : activeTab === 'favorites' ? <section className="games-catalog">
+          {activeTab === 'all' ? <GamesDashboard dashboardState={dashboardState} gameActivityState={gameActivityState} gameAchievementsState={gameAchievementsState} favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} onOpenGameAchievements={onOpenGameAchievements} onTabChange={onTabChange} /> : activeTab === 'favorites' ? <section className="games-catalog">
             <div className="games-shelf-heading"><h2>Favorite Games</h2></div>
             {favoriteGames.length ? <GameCardsGrid className="games-catalog-grid" games={favoriteGames} label="Favorite" favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} /> : <SectionMessage message="No favorite games yet. Use the heart on a game to add it here." />}
           </section> : <section className="games-catalog">
@@ -6562,9 +6563,7 @@ function GamesScreen({ activeTab, dashboardState, favoriteGames, gameActivitySta
           </section>}
         </div>
 
-        <aside className="games-sidebar">
-          <GameActivityPanel state={gameActivityState} />
-        </aside>
+        {activeTab !== 'all' ? <GameActivityPanel state={gameActivityState} /> : null}
       </div>
     </section>
   )
@@ -6575,43 +6574,64 @@ function GameActivityPanel({ state }) {
   const activity = state.activity || emptyGameActivity
   const isLoading = state.status === 'loading'
   const value = (resolved) => isLoading ? '—' : resolved
-  return <section className="games-side-card"><h2>Your Game Activity</h2><GameMetric icon={<GamepadIcon />} label="Games Played" value={value(String(activity.gamesPlayed))} detail={isSignedIn ? 'Games marked played' : 'Sign in to see activity'} /><GameMetric icon={<ClockIcon />} label="Hours Played" value={value(formatMinutesAsHoursAndMinutes(activity.playtimeMinutes))} detail={isSignedIn ? 'From your game tracker' : 'Sign in to see activity'} /><GameMetric icon={<CalendarIcon />} label="Last Completed" value={value(activity.lastCompletedAt ? formatLongDate(activity.lastCompletedAt) : '—')} detail={isSignedIn ? (activity.lastCompletedAt ? 'Latest completed game' : 'No completed games yet') : 'Sign in to see activity'} /></section>
+  return <section className="games-side-card games-activity-strip"><h2><GamepadIcon />Your Game Activity</h2><GameMetric icon={<GamepadIcon />} label="Games Played" value={value(String(activity.gamesPlayed))} /><GameMetric icon={<ClockIcon />} label="Hours Played" value={value(formatMinutesAsHoursAndMinutes(activity.playtimeMinutes))} /><GameMetric icon={<CalendarIcon />} label="Last Completed" value={value(activity.lastCompletedAt ? formatLongDate(activity.lastCompletedAt) : '—')} detail={!isSignedIn ? 'Sign in to see activity' : undefined} /></section>
 }
 
-function GamesDashboard({ dashboardState, gameAchievementsState, favoriteGameIds, onToggleFavorite, onOpenGame, onOpenGameAchievements }) {
-  const featuredGame = dashboardState.popularGames[0]
+function GamesDashboard({ dashboardState, gameActivityState, gameAchievementsState, favoriteGameIds, onToggleFavorite, onOpenGame, onOpenGameAchievements, onTabChange }) {
+  const [featuredIndex, setFeaturedIndex] = useState(0)
+  const featuredGames = dashboardState.popularGames.slice(0, 3)
+  const activeFeaturedIndex = Math.min(featuredIndex, Math.max(0, featuredGames.length - 1))
+  const featuredGame = featuredGames[activeFeaturedIndex]
   if (dashboardState.status === 'loading' || dashboardState.status === 'idle') return <SectionMessage message="Loading games from your local database..." />
   if (dashboardState.status === 'error') return <SectionMessage message={`Could not load the games dashboard. ${dashboardState.error}`} tone="error" />
   if (!featuredGame) return <SectionMessage message="No games are available in the local database yet." />
-  return <><article className="games-featured-card"><div className="games-featured-copy"><span className="games-kicker">Featured game</span><h2>{featuredGame.title}</h2><p style={{ display: '-webkit-box', overflow: 'hidden', WebkitBoxOrient: 'vertical', WebkitLineClamp: 4 }}>{featuredGame.summary}</p><div className="games-featured-meta"><span><StarIcon /> {featuredGame.rating}</span><span>◉ {featuredGame.playersLabel}</span></div><div className="games-featured-actions"><button type="button" className="games-play-button" onClick={() => onOpenGame(featuredGame)}><PlayIcon /> View game</button><button type="button" className="games-favorite-button" onClick={() => onToggleFavorite(featuredGame)}><HeartIcon /> {favoriteGameIds.has(featuredGame.id) ? 'Remove Favorite' : 'Add to Favorites'}</button></div></div><button type="button" className="games-featured-art-button" onClick={() => onOpenGame(featuredGame)} aria-label={`Open ${featuredGame.title}`}><GameArt game={featuredGame} featured /></button></article><GamesShelf title="Popular Right Now" games={dashboardState.popularGames} label="Popular" favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} />{dashboardState.recentGames.length ? <GamesShelf title="Recently Released" games={dashboardState.recentGames} label="Recent" favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} /> : null}{dashboardState.upcomingGames.length ? <GamesShelf title="Upcoming Games" games={dashboardState.upcomingGames} label="Upcoming" favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} /> : null}<GameAchievementsPanel state={gameAchievementsState} onViewAll={onOpenGameAchievements} /></>
+  return <>
+    <article className="games-featured-card" style={featuredGame.coverUrl ? { '--games-hero-image': `url("${featuredGame.coverUrl}")` } : undefined}>
+      <div className="games-featured-copy">
+        <span className="games-kicker">Popular</span>
+        <h2>{featuredGame.title}</h2>
+        <p>{featuredGame.summary}</p>
+        <div className="games-featured-meta"><span><StarIcon /> {featuredGame.rating}</span>{featuredGame.playersLabel ? <><span aria-hidden="true">•</span><span>24h Steam peak: {featuredGame.playersLabel}</span></> : null}</div>
+        <div className="games-featured-actions"><button type="button" className="games-play-button" onClick={() => onOpenGame(featuredGame)}><PlayIcon /> View game</button><button type="button" className={`games-favorite-button${favoriteGameIds.has(featuredGame.id) ? ' active' : ''}`} onClick={() => onToggleFavorite(featuredGame)} aria-pressed={favoriteGameIds.has(featuredGame.id)}><HeartIcon /> {favoriteGameIds.has(featuredGame.id) ? 'Remove Favorite' : 'Add to Favorites'}</button></div>
+      </div>
+      {featuredGames.length > 1 ? <div className="games-featured-pagination" aria-label="Featured games">{featuredGames.map((game, index) => <button type="button" key={game.id} className={index === activeFeaturedIndex ? 'active' : ''} aria-label={`Feature ${game.title}`} aria-current={index === activeFeaturedIndex ? 'true' : undefined} onClick={() => setFeaturedIndex(index)} />)}</div> : null}
+    </article>
+    <GameActivityPanel state={gameActivityState} />
+    <GamesShelf title="Popular Right Now" games={dashboardState.popularGames} label="Popular" tab="popular" onViewAll={onTabChange} favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} />
+    {dashboardState.recentGames.length ? <GamesShelf title="Recently Released" games={dashboardState.recentGames.slice(0, 4)} label="Recent" tab="recent" onViewAll={onTabChange} favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} /> : null}
+    <div className="games-bottom-row">
+      {dashboardState.upcomingGames.length ? <GamesShelf title="Upcoming Games" games={dashboardState.upcomingGames.slice(0, 4)} label="Upcoming" tab="upcoming" onViewAll={onTabChange} favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} /> : null}
+      <GameAchievementsPanel state={gameAchievementsState} onViewAll={onOpenGameAchievements} />
+    </div>
+  </>
 }
 
-function GamesShelf({ title, games, label, favoriteGameIds, onToggleFavorite, onOpenGame }) {
-  return <section className="games-shelf"><div className="games-shelf-heading"><h2>{title}</h2></div><GameCardsGrid className="games-card-grid" games={games} label={label} favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} /></section>
+function GamesShelf({ title, games, label, tab, onViewAll, favoriteGameIds, onToggleFavorite, onOpenGame }) {
+  return <section className={`games-shelf games-shelf-${tab}`}><div className="games-shelf-heading"><h2>{title}</h2><button type="button" onClick={() => onViewAll(tab)}>View all <span aria-hidden="true">→</span></button></div><GameCardsGrid className="games-card-grid games-dashboard-grid" games={games} label={label} favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} dashboard /></section>
 }
 
-function GameCardsGrid({ className, games, label, favoriteGameIds, onToggleFavorite, onOpenGame }) {
-  return <div className={className}>{games.map((game) => <article className={`games-card games-art-${game.art || 'trivia'}`} key={game.id || game.title}><button type="button" className={`games-favorite-toggle${favoriteGameIds.has(game.id) ? ' active' : ''}`} onClick={() => onToggleFavorite(game)} aria-label={favoriteGameIds.has(game.id) ? `Remove ${game.title} from favorites` : `Add ${game.title} to favorites`}><HeartIcon /></button><button type="button" className="games-card-open" onClick={() => onOpenGame(game)} aria-label={`Open ${game.title}`}><GameArt game={game} showLabel /><h3>{game.title}</h3><small>{game.playersLabel || game.meta}</small><div><span><StarIcon /> {game.rating}</span><em>{label}</em></div></button></article>)}</div>
+function GameCardsGrid({ className, games, label, favoriteGameIds, onToggleFavorite, onOpenGame, dashboard = false }) {
+  return <div className={className}>{games.map((game) => <article className={`games-card games-art-${game.art || 'trivia'}`} key={game.id || game.title}><button type="button" className={`games-favorite-toggle${favoriteGameIds.has(game.id) ? ' active' : ''}`} onClick={() => onToggleFavorite(game)} aria-label={favoriteGameIds.has(game.id) ? `Remove ${game.title} from favorites` : `Add ${game.title} to favorites`} aria-pressed={favoriteGameIds.has(game.id)}><HeartIcon /></button><button type="button" className="games-card-open" onClick={() => onOpenGame(game)} aria-label={`Open ${game.title}`}><GameArt game={game} showLabel={!game.coverUrl} /><h3>{game.title}</h3>{dashboard ? null : <small>{game.playersLabel || game.meta}</small>}<div><span><StarIcon /> {game.rating}</span>{dashboard ? null : <em>{label}</em>}</div></button></article>)}</div>
 }
 
 function GameArt({ game, featured = false, showLabel = true }) {
   const fallbackLabel = game.art === 'television' ? 'TV SHOW\nTRIVIA' : game.art === 'character' ? 'GUESS THE\nCHARACTER' : game.art === 'poster' ? 'POSTER\nPUZZLE' : game.art === 'quote' ? 'QUOTE\nMATCH' : game.art === 'choice' ? 'THIS OR\nTHAT' : game.title
   const className = featured ? 'games-neon-art' : 'games-card-art'
-  return <div className={`${className}${game.coverUrl ? ' has-cover' : ''}`} style={game.coverUrl ? { backgroundImage: `linear-gradient(rgba(12, 10, 28, .2), rgba(12, 10, 28, .6)), url(${game.coverUrl})`, backgroundPosition: 'center', backgroundRepeat: 'no-repeat', backgroundSize: 'cover' } : undefined} aria-hidden="true">{showLabel ? <span>{fallbackLabel}</span> : null}{featured ? <i>✦</i> : null}</div>
+  return <div className={`${className}${game.coverUrl ? ' has-cover' : ''}`} style={game.coverUrl ? { backgroundImage: `url("${game.coverUrl}")` } : undefined} aria-hidden="true">{showLabel ? <span>{fallbackLabel}</span> : null}{featured ? <i>✦</i> : null}</div>
 }
 
 function GameMetric({ icon, label, value, detail }) {
-  return <div className="games-metric"><span>{typeof icon === 'string' ? icon : icon}</span><p>{label}<b>{value}</b><small>{detail}</small></p></div>
+  return <div className="games-metric"><span>{icon}</span><p>{label}<b>{value}</b>{detail ? <small>{detail}</small> : null}</p></div>
 }
 
 function GameAchievementsPanel({ state, onViewAll }) {
   const achievements = Array.isArray(state?.achievements) ? state.achievements : []
   const latest = achievements.filter((achievement) => achievement.unlocked && achievement.unlockedAt).sort((left, right) => new Date(right.unlockedAt) - new Date(left.unlockedAt)).slice(0, 4)
-  return <section className="games-achievements"><div className="games-shelf-heading"><h2>Achievements</h2><button type="button" onClick={onViewAll}>View All</button></div>{state?.status === 'loading' || state?.status === 'idle' ? <SectionMessage message="Loading achievements..." /> : state?.status === 'error' ? <SectionMessage tone="error" message={state.error || 'Unable to load achievements right now.'} /> : latest.length ? <div>{latest.map((achievement) => <GameBadge key={achievement.id} achievement={achievement} />)}</div> : <SectionMessage message="No game achievements earned yet." />}</section>
+  return <section className="games-achievements"><div className="games-shelf-heading"><h2>Achievements</h2><button type="button" onClick={onViewAll}>View all <span aria-hidden="true">→</span></button></div>{state?.status === 'loading' ? <SectionMessage message="Loading achievements..." /> : state?.status === 'error' ? <SectionMessage tone="error" message={state.error || 'Unable to load achievements right now.'} /> : <div className="games-achievement-badges">{latest.map((achievement) => <GameBadge key={achievement.id} achievement={achievement} />)}{Array.from({ length: Math.max(0, 4 - latest.length) }, (_, index) => <span className="games-badge games-badge-locked" key={`locked-${index}`} title="Achievement not yet unlocked"><i><LockIcon /></i></span>)}</div>}</section>
 }
 
 function GameBadge({ achievement }) {
-  return <span className="games-badge"><i><TrophyIcon /></i><b>{achievement.name}</b><small>Unlocked {formatLongDate(achievement.unlockedAt)}</small></span>
+  return <span className="games-badge" title={achievement.name}><i><TrophyIcon /></i><b>{achievement.name}</b><small>Unlocked {formatLongDate(achievement.unlockedAt)}</small></span>
 }
 
 function GameDetailPage({ state, similarGamesState, favoriteGameIds, onBack, onToggleFavorite, onSubmitRating, onSaveTracking, onSaveSession, onOpenLogin, onOpenGame, isSignedIn, playedActionState, ratingActionState, trackingActionState }) {
@@ -7045,7 +7065,7 @@ function TvShowsScreen({
   )
 }
 
-function WatchTogetherScreen({ isSignedIn, state, search, action, activeTab, onOpenLogin, onChoosePartner, onReset, onSearchChange, onSearch, onItemAction, onTabChange, onMarkWatched, onMarkEpisodeWatched, watchedActionState, onSubmitMovieRating, movieRatingActionState, onSubmitEpisodeRating, tvEpisodeRatingActionState, onOpenTvShow, onOpenMovie, onRefresh, achievementsState, statsState, onSaveSession, onSavePlan, onVotingAction }) {
+function WatchTogetherScreen({ isSignedIn, state, search, action, activeTab, onOpenLogin, onChoosePartner, onReset, onSearchChange, onSearch, onItemAction, onTabChange, onMarkWatched, onMarkEpisodeWatched, watchedActionState, onSubmitMovieRating, movieRatingActionState, onSubmitEpisodeRating, tvEpisodeRatingActionState, onOpenTvShow, onOpenMovie, onOpenAchievement, onRefresh, achievementsState, statsState, onSaveSession, onSavePlan, onVotingAction }) {
   const [resetOpen, setResetOpen] = useState(false)
   const [planOpen, setPlanOpen] = useState(false)
   const [historyTab, setHistoryTab] = useState('movies')
@@ -7100,7 +7120,7 @@ function WatchTogetherScreen({ isSignedIn, state, search, action, activeTab, onO
       <WatchTogetherDecisionRail activeMediaType={activeMediaType} selected={selected} voteRound={voteRound} shortlistCount={tabItems.length} />
       <WatchTogetherFocalPick selected={selected} voteRound={voteRound} shortlistCount={tabItems.length} action={action} onStartVote={() => onVotingAction('start', activeMediaType)} onChooseMatch={(item) => onVotingAction('choose', activeMediaType, item)} onClear={() => onItemAction('clear')} onMarkWatched={onMarkWatched} onMarkEpisodeWatched={onMarkEpisodeWatched} watchedActionState={watchedActionState} onSubmitMovieRating={onSubmitMovieRating} movieRatingActionState={movieRatingActionState} onSubmitEpisodeRating={onSubmitEpisodeRating} tvEpisodeRatingActionState={tvEpisodeRatingActionState} onRefresh={onRefresh} items={tabItems} />
       <div className="watch-together-tabs" role="tablist" aria-label="Watch Together content"><button type="button" role="tab" aria-selected={activeTab === 'movies'} className={activeTab === 'movies' ? 'active' : ''} onClick={() => { onTabChange('movies'); onSearchChange({ type: 'movie' }) }}>Movies <span>{movieItems.length}</span></button><button type="button" role="tab" aria-selected={activeTab === 'tv'} className={activeTab === 'tv' ? 'active' : ''} onClick={() => { onTabChange('tv'); onSearchChange({ type: 'tv' }) }}>TV Episodes <span>{tvItems.length}</span></button><button type="button" role="tab" aria-selected={activeTab === 'history'} className={activeTab === 'history' ? 'active' : ''} onClick={() => onTabChange('history')}>History <span>{state.watchedMovies.length + state.watchedEpisodes.length}</span></button><button type="button" role="tab" aria-selected={activeTab === 'stats'} className={activeTab === 'stats' ? 'active' : ''} onClick={() => onTabChange('stats')}>Stats</button><button type="button" role="tab" aria-selected={activeTab === 'achievements'} className={activeTab === 'achievements' ? 'active' : ''} onClick={() => onTabChange('achievements')}>Achievements <span>{achievementsState?.achievements?.filter((item) => item.unlocked).length || 0}</span></button></div>
-      {activeTab === 'stats' ? <WatchTogetherStatsTab state={statsState} onOpenMovie={onOpenMovie} onOpenTvShow={onOpenTvShow} /> : activeTab === 'achievements' ? <WatchTogetherAchievementsTab state={achievementsState} /> : activeTab === 'history' ? <section className="watch-together-history"><div className="section-heading"><div><h2>History</h2><p>Titles and episodes you both confirmed watching.</p></div></div><div className="watch-together-history-tabs" role="tablist" aria-label="Watch Together history"><button type="button" role="tab" aria-selected={historyTab === 'movies'} className={historyTab === 'movies' ? 'active' : ''} onClick={() => { setHistoryTab('movies'); setMovieHistoryPage(1) }}>Movies <span>{state.watchedMovies.length}</span></button><button type="button" role="tab" aria-selected={historyTab === 'shows'} className={historyTab === 'shows' ? 'active' : ''} onClick={() => { setHistoryTab('shows'); setShowHistoryPage(1) }}>Shows <span>{state.watchedEpisodes.length}</span></button></div>{visibleHistoryItems.length ? <><div className="watch-together-results">{visibleHistoryItems.map((item) => <WatchTogetherHistoryRow key={historyTab === 'movies' ? `movie-${item.id}` : `episode-${item.episodeId}`} item={item} achievements={achievementsState?.achievements || []} onLogSession={(ids, details) => onSaveSession(item, ids, details)} />)}</div><PaginationControls pagination={historyPagination} onPageChange={historyTab === 'movies' ? setMovieHistoryPage : setShowHistoryPage} /></> : <SectionMessage message={historyTab === 'movies' ? 'No shared movies yet.' : 'No shared episodes yet.'} />}</section> : <section className="watch-together-workspace">
+      {activeTab === 'stats' ? <WatchTogetherStatsTab state={statsState} onOpenMovie={onOpenMovie} onOpenTvShow={onOpenTvShow} /> : activeTab === 'achievements' ? <WatchTogetherAchievementsTab state={achievementsState} onOpenAchievement={onOpenAchievement} /> : activeTab === 'history' ? <section className="watch-together-history"><div className="section-heading"><div><h2>History</h2><p>Titles and episodes you both confirmed watching.</p></div></div><div className="watch-together-history-tabs" role="tablist" aria-label="Watch Together history"><button type="button" role="tab" aria-selected={historyTab === 'movies'} className={historyTab === 'movies' ? 'active' : ''} onClick={() => { setHistoryTab('movies'); setMovieHistoryPage(1) }}>Movies <span>{state.watchedMovies.length}</span></button><button type="button" role="tab" aria-selected={historyTab === 'shows'} className={historyTab === 'shows' ? 'active' : ''} onClick={() => { setHistoryTab('shows'); setShowHistoryPage(1) }}>Shows <span>{state.watchedEpisodes.length}</span></button></div>{visibleHistoryItems.length ? <><div className="watch-together-results">{visibleHistoryItems.map((item) => <WatchTogetherHistoryRow key={historyTab === 'movies' ? `movie-${item.id}` : `episode-${item.episodeId}`} item={item} achievements={achievementsState?.achievements || []} onLogSession={(ids, details) => onSaveSession(item, ids, details)} />)}</div><PaginationControls pagination={historyPagination} onPageChange={historyTab === 'movies' ? setMovieHistoryPage : setShowHistoryPage} /></> : <SectionMessage message={historyTab === 'movies' ? 'No shared movies yet.' : 'No shared episodes yet.'} />}</section> : <section className="watch-together-workspace">
         <div className="watch-together-search-panel"><div className="section-heading"><div><h2>Find a {activeTab === 'movies' ? 'movie' : 'TV show'}</h2><p>{voteRound ? 'This shortlist is locked until the voting round is resolved.' : activeTab === 'movies' ? 'Add movies to your shared shortlist.' : 'Add a show to select your next shared episode.'}</p></div></div><form className="watch-together-search-form" onSubmit={(event) => { event.preventDefault(); onSearch() }}><label><SearchIcon /><span className="visually-hidden">Search titles</span><input value={search.query} disabled={Boolean(voteRound)} onChange={(event) => onSearchChange({ query: event.target.value, type: activeTab === 'movies' ? 'movie' : 'tv' })} placeholder={activeTab === 'movies' ? 'Search movies' : 'Search TV shows'} /></label><button type="submit" className="primary-button" disabled={Boolean(voteRound) || !search.query.trim() || search.status === 'loading'}>{search.status === 'loading' ? 'Searching...' : 'Search'}</button></form>{search.status === 'error' ? <SectionMessage tone="error" message={search.error} /> : null}<div className="watch-together-results">{searchItems.map((item) => <WatchTogetherTitleRow key={`${item.mediaType}-${item.id}`} item={item} actionLabel={saved.has(`${item.mediaType}-${item.id}`) ? 'Added' : 'Add'} disabled={Boolean(voteRound) || saved.has(`${item.mediaType}-${item.id}`) || action.status === 'loading'} onAction={() => onItemAction('add', item)} />)}</div></div>
         <div className="watch-together-shortlist"><div className="section-heading"><div><h2>{voteRound ? 'Vote privately' : 'Shared shortlist'}</h2><p>{voteRound ? 'Your choices stay private until both ballots are submitted.' : activeTab === 'tv' ? `${tvItems.length} episode${tvItems.length === 1 ? '' : 's'} ready to decide.` : `${movieItems.length} movie${movieItems.length === 1 ? '' : 's'} ready to decide.`}</p></div></div>{voteRound ? <WatchTogetherVotingPanel round={voteRound} items={tabItems} action={action} onVote={(item, vote) => onVotingAction('cast', activeMediaType, item, vote)} onSubmit={() => onVotingAction('submit', activeMediaType)} onChoose={(item) => onVotingAction('choose', activeMediaType, item)} onCancel={() => onVotingAction('cancel', activeMediaType)} /> : tabItems.length ? <><div className="watch-together-shortlist-grid">{tabItems.map((item) => <WatchTogetherShortlistCard key={watchTogetherPlanItemKey(item)} item={item} selected={item.selected} disabled={action.status === 'loading' || Boolean(selected)} onRemove={!item.selected ? () => onItemAction('remove', item) : null} />)}</div>{!selected ? <button type="button" className="primary-button watch-together-start-vote" disabled={action.status === 'loading'} onClick={() => onVotingAction('start', activeMediaType)}><PlayIcon />Start private vote</button> : null}</> : <SectionMessage message={activeTab === 'movies' ? 'Search for a movie to start the shortlist.' : 'Search for a show to choose your next shared episode.'} />}</div>
         {activeTab === 'tv' ? <section className="watch-together-in-progress"><div className="section-heading"><div><h2>Jointly in progress</h2><p>Shows with at least one episode watched together.</p></div></div>{state.inProgressShows.length ? <div className="watch-together-results">{state.inProgressShows.map((show) => <WatchTogetherInProgressShowRow key={show.id} show={show} onOpen={() => onOpenTvShow(show)} />)}</div> : <SectionMessage message="Shared TV shows will appear here after your first episode together." />}</section> : null}
@@ -7169,7 +7189,13 @@ function WatchTogetherVotingPanel({ round, items, action, onVote, onSubmit, onCh
   const isSaving = action.status === 'loading'
   if (round.status === 'revealed') return <div className="watch-together-voting-results"><h3>{matches.length ? 'Your mutual matches' : 'No mutual matches this round'}</h3><p>{matches.length ? 'Choose one to make it Tonight’s Pick. Individual votes stay private.' : 'Your shortlist is still here—start another round whenever you are ready.'}</p>{matches.length ? <div className="watch-together-shortlist-grid">{matches.map((item) => <WatchTogetherShortlistCard key={watchTogetherPlanItemKey(item)} item={item} actionLabel="Choose tonight" disabled={isSaving} onAction={() => onChoose(item)} />)}</div> : null}<button type="button" className="secondary-button" disabled={isSaving} onClick={onCancel}>{matches.length ? 'Close matches' : 'Close round'}</button></div>
   const votedCount = voteByItem.size
-  return <div className="watch-together-voting-panel"><div className="watch-together-vote-status"><strong>{round.currentUserSubmitted ? 'Your ballot is submitted' : `${votedCount} of ${round.itemCount} titles rated`}</strong><span>{round.currentUserSubmitted ? 'Waiting for your partner. Your choices remain private.' : 'Like it, skip it for now, or veto it from this round.'}</span></div><div className="watch-together-results">{items.map((item) => { const key = watchTogetherPlanItemKey(item); const currentVote = voteByItem.get(key); return <article className="watch-together-vote-row" key={key}><div><b>{item.title}</b><small>{item.mediaType === 'tv' ? `${formatWatchTogetherEpisode(item)} · ${item.episodeTitle}` : `${item.runtime} · ${item.rating?.toFixed?.(1) || item.rating || '—'} TMDB`}</small></div><div>{['like', 'skip', 'veto'].map((vote) => <button type="button" key={vote} className={currentVote === vote ? `active ${vote}` : ''} disabled={isSaving || round.currentUserSubmitted} onClick={() => onVote(item, vote)}>{vote}</button>)}</div></article>})}</div>{!round.currentUserSubmitted ? <button type="button" className="primary-button" disabled={isSaving || votedCount !== round.itemCount} onClick={onSubmit}>Submit private ballot</button> : null}{!round.currentUserSubmitted ? <button type="button" className="watch-together-plan-clear" disabled={isSaving} onClick={onCancel}>Cancel round</button> : null}</div>
+  return <div className="watch-together-voting-panel"><div className="watch-together-vote-status"><strong>{round.currentUserSubmitted ? 'Your ballot is submitted' : `${votedCount} of ${round.itemCount} titles rated`}</strong><span>{round.currentUserSubmitted ? 'Waiting for your partner. Your choices remain private.' : 'Like it, skip it for now, or veto it from this round.'}</span></div><div className="watch-together-results">{items.map((item) => { const key = watchTogetherPlanItemKey(item); const currentVote = voteByItem.get(key); return <article className="watch-together-vote-row" key={key}><div className="watch-together-vote-main"><WatchTogetherVoteArtwork item={item} /><div className="watch-together-vote-copy"><b>{item.title}</b><small>{item.mediaType === 'tv' ? `${formatWatchTogetherEpisode(item)} · ${item.episodeTitle}` : `${item.runtime} · ${item.rating?.toFixed?.(1) || item.rating || '—'} TMDB`}</small></div></div><div>{['like', 'skip', 'veto'].map((vote) => <button type="button" key={vote} className={currentVote === vote ? `active ${vote}` : ''} disabled={isSaving || round.currentUserSubmitted} onClick={() => onVote(item, vote)}>{vote}</button>)}</div></article>})}</div>{!round.currentUserSubmitted ? <button type="button" className="primary-button" disabled={isSaving || votedCount !== round.itemCount} onClick={onSubmit}>Submit private ballot</button> : null}{!round.currentUserSubmitted ? <button type="button" className="watch-together-plan-clear" disabled={isSaving} onClick={onCancel}>Cancel round</button> : null}</div>
+}
+
+function WatchTogetherVoteArtwork({ item }) {
+  const [imageUnavailable, setImageUnavailable] = useState(false)
+  const showImage = Boolean(item.posterUrl) && !imageUnavailable
+  return <span className="watch-together-vote-art" aria-hidden="true">{showImage ? <img src={item.posterUrl} alt="" loading="lazy" onError={() => setImageUnavailable(true)} /> : <span>{getUserInitials(item.title)}</span>}</span>
 }
 
 function WatchTogetherResetDialog({ isSaving, onCancel, onConfirm }) {
@@ -7269,12 +7295,12 @@ function WatchTogetherSessionDialog({ item, achievements, onCancel, onSave }) {
   return <div className="movie-rating-dialog-backdrop"><section className="movie-rating-dialog watch-together-session-dialog" role="dialog" aria-modal="true"><p className="movie-rating-dialog-kicker">Shared session</p><h2>What happened during {item.title}?</h2><p>Record any shared moments. The watch itself is already confirmed by both partners; progress for objective achievements updates automatically.</p><textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Optional notes, mood, snack, location, quiz or prediction details" /><div className="watch-together-session-badges">{manualAchievements.map((achievement) => <label key={achievement.id}><input type="checkbox" checked={selected.includes(achievement.id)} onChange={(event) => setSelected((ids) => event.target.checked ? [...ids, achievement.id] : ids.filter((id) => id !== achievement.id))} />{achievement.name}</label>)}</div><div className="movie-rating-dialog-actions"><button type="button" className="secondary-button" disabled={saving} onClick={onCancel}>Cancel</button><button type="button" className="primary-button" disabled={saving} onClick={async () => { setSaving(true); try { await onSave(selected, { notes }); } finally { setSaving(false) } }}>{saving ? 'Saving…' : 'Save session'}</button></div></section></div>
 }
 
-function WatchTogetherAchievementsTab({ state }) {
+function WatchTogetherAchievementsTab({ state, onOpenAchievement }) {
   const [category, setCategory] = useState('All'); const [status, setStatus] = useState('all')
   if (state?.status === 'loading' || state?.status === 'idle') return <SectionMessage message="Loading shared achievements..." />
   if (state?.status === 'error') return <SectionMessage tone="error" message={state.error} />
   const items = Array.isArray(state?.achievements) ? state.achievements : []; const categories = ['All', ...new Set(items.map((item) => item.category))]; const visible = items.filter((item) => (category === 'All' || item.category === category) && (status === 'all' || (status === 'unlocked' ? item.unlocked : !item.unlocked)))
-  return <section className="watch-together-history"><div className="section-heading"><div><h2>Achievements</h2><p>{items.filter((item) => item.unlocked).length} of {items.length} shared achievements unlocked.</p></div></div><div className="achievement-filters"><select value={category} onChange={(event) => setCategory(event.target.value)}>{categories.map((value) => <option key={value}>{value}</option>)}</select><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">All badges</option><option value="unlocked">Unlocked</option><option value="locked">Locked</option></select></div><div className="achievement-grid">{visible.map((item) => <AchievementCard key={item.id} item={item} />)}</div></section>
+  return <section className="watch-together-history"><div className="section-heading"><div><h2>Achievements</h2><p>{items.filter((item) => item.unlocked).length} of {items.length} shared achievements unlocked.</p></div></div><div className="achievement-filters"><select value={category} onChange={(event) => setCategory(event.target.value)}>{categories.map((value) => <option key={value}>{value}</option>)}</select><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">All badges</option><option value="unlocked">Unlocked</option><option value="locked">Locked</option></select></div><div className="achievement-grid">{visible.map((item) => <AchievementCard key={item.id} item={item} onOpenAchievement={onOpenAchievement} />)}</div></section>
 }
 
 function WatchTogetherInProgressShowRow({ show, onOpen }) {
@@ -8895,11 +8921,82 @@ function DetailFactRow({ icon: Icon, label, value }) {
 
 function AchievementsScreen({ isSignedIn, state, onOpenAchievement }) {
   const [category, setCategory] = useState('All')
+  const [rarity, setRarity] = useState('All')
   const [status, setStatus] = useState('all')
+  const [sortOrder, setSortOrder] = useState('newest')
   if (!isSignedIn) return <section className="achievements-page"><h1>Achievements</h1><SectionMessage message="Sign in to start tracking achievements." /></section>
-  const categories = ['All', ...new Set(state.achievements.map((item) => item.category))]
-  const visible = state.achievements.filter((item) => (category === 'All' || item.category === category) && (status === 'all' || (status === 'unlocked' ? item.unlocked : !item.unlocked)))
-  return <section className="achievements-page"><div className="achievements-heading"><div><h1>Achievements</h1><p>Only activity recorded after achievement tracking began counts toward progress.</p></div><b>{state.achievements.filter((item) => item.unlocked).length} unlocked</b></div><div className="achievement-filters"><select value={category} onChange={(event) => setCategory(event.target.value)}>{categories.map((value) => <option key={value}>{value}</option>)}</select><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">All badges</option><option value="unlocked">Unlocked</option><option value="locked">Locked</option></select></div>{state.status === 'loading' ? <SectionMessage message="Loading achievements..." /> : state.status === 'error' ? <SectionMessage tone="error" message={state.error} /> : <div className="achievement-grid">{visible.map((item) => <article key={item.id} className={`achievement-card${item.unlocked ? ' unlocked' : ''}${item.availability === 'coming_soon' ? ' coming-soon' : ''}`}><div className="achievement-card-icon">{item.unlocked ? <TrophyIcon /> : <LockIcon />}</div><div><span className="achievement-category">{item.category} · {item.rarity}</span>{item.availability === 'active' && Number(item.progress?.current) > 0 ? <h2><button type="button" className="achievement-title-link" onClick={() => onOpenAchievement(item)} aria-label={`View qualifying titles for ${item.name}`}>{item.name}</button></h2> : <h2>{item.name}</h2>}<p>{item.secret && !item.unlocked ? 'Keep watching to discover this secret achievement.' : item.description}</p>{item.availability === 'coming_soon' ? <em>Coming soon</em> : <><div className="achievement-progress"><i style={{ width: `${Math.min(100, ((item.progress?.current ?? 0) / Math.max(1, item.progress?.target ?? 1)) * 100)}%` }} /></div><small>{item.unlocked ? `Unlocked ${formatLongDate(item.unlockedAt)}` : `${item.progress?.current ?? 0} / ${item.progress?.target ?? 0}`}</small></>}</div></article>)}</div>}</section>
+  const items = Array.isArray(state?.achievements) ? state.achievements : []
+  const categories = ['All', ...new Set(items.map((item) => item.category).filter(Boolean))]
+  const rarities = ['All', ...new Set(items.map((item) => item.rarity).filter(Boolean))]
+  const unlockedCount = items.filter((item) => item.unlocked).length
+  const completion = items.length ? Math.round((unlockedCount / items.length) * 100) : 0
+  const getStatus = (item) => item.unlocked ? 'unlocked' : Number(item.progress?.current) > 0 ? 'in-progress' : 'locked'
+  const stableDateSort = (source, direction = -1) => source.map((item, index) => ({ item, index, time: item.unlockedAt ? new Date(item.unlockedAt).getTime() : Number.NaN }))
+    .sort((left, right) => {
+      const leftHasDate = Number.isFinite(left.time)
+      const rightHasDate = Number.isFinite(right.time)
+      if (leftHasDate && rightHasDate) return (left.time - right.time) * direction || left.index - right.index
+      if (leftHasDate !== rightHasDate) return leftHasDate ? -1 : 1
+      return left.index - right.index
+    }).map(({ item }) => item)
+  const recentlyUnlocked = stableDateSort(items.filter((item) => item.unlocked)).slice(0, 4)
+  const visible = stableDateSort(items.filter((item) =>
+    (category === 'All' || item.category === category) &&
+    (rarity === 'All' || item.rarity === rarity) &&
+    (status === 'all' || getStatus(item) === status)
+  ), sortOrder === 'oldest' ? 1 : -1)
+  const statusTabs = [
+    { value: 'all', label: 'All', count: items.length },
+    { value: 'unlocked', label: 'Unlocked', count: unlockedCount },
+    { value: 'in-progress', label: 'In Progress', count: items.filter((item) => getStatus(item) === 'in-progress').length },
+    { value: 'locked', label: 'Locked', count: items.filter((item) => getStatus(item) === 'locked').length },
+  ]
+
+  return (
+    <section className="achievements-page">
+      <header className="achievements-banner">
+        <div className="achievements-banner-art" aria-hidden="true"><span className="achievements-reel" /><span className="achievements-popcorn" /></div>
+        <div className="achievements-banner-copy">
+          <h1>Achievements</h1>
+          <p>Track your movie and TV journey. Only activity recorded after achievement tracking began counts.</p>
+        </div>
+      </header>
+
+      <div className="achievement-summary-grid" aria-label="Achievement summary">
+        <article className="achievement-summary-card">
+          <span className="achievement-summary-icon trophy"><TrophyIcon /></span>
+          <div><span>Total Unlocked</span><strong>{state?.status === 'loading' ? '—' : <>{unlockedCount}<small> / {items.length}</small></>}</strong></div>
+        </article>
+        <article className="achievement-summary-card">
+          <span className="achievement-completion-ring" style={{ '--completion': `${completion}%` }} aria-hidden="true"><span><BarsIcon /></span></span>
+          <div><span>Completion</span><strong>{state?.status === 'loading' ? '—' : `${completion}%`}</strong><small>{state?.status === 'loading' ? 'Loading achievements' : `${unlockedCount} of ${items.length} achievements`}</small></div>
+        </article>
+      </div>
+
+      {state?.status === 'loading' ? <SectionMessage message="Loading achievements..." /> : state?.status === 'error' ? <SectionMessage tone="error" message={state.error} /> : <>
+        <div className="achievement-toolbar">
+          <div className="achievement-status-tabs" role="tablist" aria-label="Achievement status">
+            {statusTabs.map((tab) => <button type="button" role="tab" key={tab.value} aria-selected={status === tab.value} className={status === tab.value ? 'active' : ''} onClick={() => setStatus(tab.value)}>{tab.label}<span>{tab.count}</span></button>)}
+          </div>
+          <div className="achievement-filters">
+            <label><span className="visually-hidden">Category</span><select value={category} onChange={(event) => setCategory(event.target.value)}>{categories.map((value) => <option key={value} value={value}>{value === 'All' ? 'All Categories' : value}</option>)}</select></label>
+            <label><span className="visually-hidden">Rarity</span><select value={rarity} onChange={(event) => setRarity(event.target.value)}>{rarities.map((value) => <option key={value} value={value}>{value === 'All' ? 'All Rarities' : value}</option>)}</select></label>
+            <label><span className="visually-hidden">Sort achievements</span><select value={sortOrder} onChange={(event) => setSortOrder(event.target.value)}><option value="newest">Newest First</option><option value="oldest">Oldest First</option></select></label>
+          </div>
+        </div>
+
+        <section className="achievement-recent-section">
+          <div className="achievement-section-heading"><h2><SparklesIcon />Recently Unlocked</h2><button type="button" onClick={() => setStatus('unlocked')}>View All <ChevronRight /></button></div>
+          {recentlyUnlocked.length ? <div className="achievement-recent-grid">{recentlyUnlocked.map((item) => <AchievementCard key={`recent-${item.id}`} item={item} onOpenAchievement={onOpenAchievement} />)}</div> : <p className="achievement-recent-empty">Your newly earned achievements will appear here.</p>}
+        </section>
+
+        <section className="achievement-catalog-section" aria-label="Achievement catalog">
+          <div className="achievement-section-heading"><h2>{status === 'all' ? 'All Achievements' : statusTabs.find((tab) => tab.value === status)?.label}</h2><span>{visible.length} achievements</span></div>
+          {visible.length ? <div className="achievement-grid">{visible.map((item) => <AchievementCard key={item.id} item={item} onOpenAchievement={onOpenAchievement} />)}</div> : <SectionMessage message="No achievements match these filters." />}
+        </section>
+      </>}
+    </section>
+  )
 }
 
 function AchievementProgressScreen({ isSignedIn, state, onBack, onOpenMovie, onOpenTvShow }) {
@@ -8907,7 +9004,7 @@ function AchievementProgressScreen({ isSignedIn, state, onBack, onOpenMovie, onO
   if (state.status === 'loading' || state.status === 'idle') return <section className="achievements-page"><button type="button" className="secondary-button" onClick={onBack}>Back to achievements</button><SectionMessage message="Loading qualifying titles..." /></section>
   if (state.status === 'error') return <section className="achievements-page"><button type="button" className="secondary-button" onClick={onBack}>Back to achievements</button><SectionMessage tone="error" message={state.error} /></section>
   const achievement = state.achievement
-  return <section className="achievements-page achievement-progress-page"><button type="button" className="secondary-button" onClick={onBack}>Back to achievements</button><div className="achievements-heading"><div><h1>{achievement?.name || 'Achievement progress'}</h1><p>{achievement?.description}</p></div><b>{achievement?.progress?.current ?? 0} / {achievement?.progress?.target ?? 0}</b></div><h2>Titles that count</h2>{state.contributors.length ? <div className="popular-movies-catalog stats-watched-movies-grid achievement-contributor-grid">{state.contributors.map((item) => <div className="stats-watched-movie-card" key={`${item.mediaType}-${item.id}-${item.watchedAt}`}><MovieCard movie={{ id: item.id, title: item.title, year: item.year || 'Release TBA', posterUrl: item.posterUrl, meta: item.qualifier || (item.mediaType === 'tv' ? 'TV Show' : 'Movie'), rating: 0 }} onOpenMovie={item.mediaType === 'tv' ? onOpenTvShow : onOpenMovie} isWatched /><p>{item.qualifier ? `${item.qualifier} · ` : ''}{item.watchedAt ? formatLongDate(item.watchedAt) : 'Recorded activity'}</p></div>)}</div> : <SectionMessage message="No qualifying titles have been recorded yet." />}</section>
+  return <section className="achievements-page achievement-progress-page"><button type="button" className="secondary-button" onClick={onBack}>Back to achievements</button><div className="achievements-heading"><div><h1>{achievement?.name || 'Achievement progress'}</h1><p>{achievement?.description}</p></div><b>{achievement?.progress?.current ?? 0} / {achievement?.progress?.target ?? 0}</b></div><h2>Titles that count</h2>{state.contributors.length ? <div className="popular-movies-catalog stats-watched-movies-grid achievement-contributor-grid">{state.contributors.map((item) => <div className="stats-watched-movie-card" key={`${item.mediaType}-${item.id}-${item.watchedAt}`}><MovieCard movie={{ id: item.id, title: item.title, year: item.year || 'Release TBA', posterUrl: item.posterUrl, meta: item.qualifier || (item.mediaType === 'tv' ? 'TV Show' : 'Movie'), rating: 0 }} onOpenMovie={item.mediaType === 'tv' ? onOpenTvShow : onOpenMovie} isWatched={Boolean(item.watched)} /><p>{item.qualifier ? `${item.qualifier} · ` : ''}{item.watchedAt ? formatLongDate(item.watchedAt) : 'Recorded activity'}</p></div>)}</div> : <SectionMessage message="No qualifying titles have been recorded yet." />}</section>
 }
 
 function StatsAchievementsTab({ isSignedIn, state }) {
@@ -8932,10 +9029,11 @@ function BookAchievementsTab({ isSignedIn, state }) {
   return <StatsAchievementsTab isSignedIn={isSignedIn} state={state} />
 }
 
-function AchievementCard({ item }) {
+function AchievementCard({ item, onOpenAchievement }) {
   const progress = item.progress ?? { current: 0, target: 0 }
   const progressPercent = Math.min(100, (Number(progress.current) / Math.max(1, Number(progress.target))) * 100)
-  return <article className={`achievement-card${item.unlocked ? ' unlocked' : ''}${item.availability === 'coming_soon' ? ' coming-soon' : ''}`}><div className="achievement-card-icon">{item.unlocked ? <TrophyIcon /> : <LockIcon />}</div><div><span className="achievement-category">{item.category} · {item.rarity}</span><h2>{item.name}</h2><p>{item.secret && !item.unlocked ? 'Keep watching to discover this secret achievement.' : item.description}</p>{item.availability === 'coming_soon' ? <em>Coming soon</em> : <><div className="achievement-progress"><i style={{ width: `${progressPercent}%` }} /></div><small>{item.unlocked ? `Unlocked ${formatLongDate(item.unlockedAt)}` : `${progress.current} / ${progress.target}`}</small></>}</div></article>
+  const canOpenProgress = typeof onOpenAchievement === 'function' && item.availability === 'active' && Number(progress.current) > 0
+  return <article className={`achievement-card${item.unlocked ? ' unlocked' : ''}${item.availability === 'coming_soon' ? ' coming-soon' : ''}`}><div className="achievement-card-icon">{item.unlocked ? <TrophyIcon /> : <LockIcon />}</div><div><span className="achievement-category">{item.category} · {item.rarity}</span><h2>{canOpenProgress ? <button type="button" className="achievement-title-link" onClick={() => onOpenAchievement(item)} aria-label={`View qualifying titles for ${item.name}`}>{item.name}</button> : item.name}</h2><p>{item.secret && !item.unlocked ? 'Keep watching to discover this secret achievement.' : item.description}</p>{item.availability === 'coming_soon' ? <em>Coming soon</em> : <><div className="achievement-progress"><i style={{ width: `${progressPercent}%` }} /></div><small>{item.unlocked ? `Unlocked ${formatLongDate(item.unlockedAt)}` : `${progress.current} / ${progress.target}`}</small></>}</div></article>
 }
 
 function StatsScreen({ initialTab = 'Overview', movieStats, movieStatsStatus, watchedState, readBooksState, tvWatchedHistoryState, playedGamesState, isSignedIn, statsPeriod, tvStats, tvStatsStatus, onStatsPeriodChange, insightsState, bookStatsState, achievementsState, bookAchievementsState, gameAchievementsState, onOpenMovie, onOpenPerson, onOpenTvShow, onOpenGame, onOpenBook, achievements = [], onOpenAchievements, enabledSections = defaultEnabledSections }) {

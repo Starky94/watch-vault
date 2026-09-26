@@ -148,6 +148,7 @@ import {
   countUnreadAlertsForUser,
   markAlertsReadForUser,
   recordAchievementEventForUser,
+  syncTvEpisodeAchievementEventsForUser,
   recordBookAchievementEventForUser,
   removeMovieFromWatchedForUser,
   removeMovieFromWatchlistForUser,
@@ -353,6 +354,7 @@ export async function createApp(pool, options = {}) {
     try {
       const user = await getAuthenticatedUser(pool, request)
       if (!user) return response.status(401).json({ error: 'Authentication required' })
+      await Promise.all([evaluateAchievementsForUser(pool, user.username), evaluateWatchTogetherAchievementsForUser(pool, user.username)])
       const [achievements, watchTogetherAchievements] = await Promise.all([getAchievementsForUser(pool, user.username), getWatchTogetherAchievementsForUser(pool, user.username)])
       response.json({ count: achievements.length + watchTogetherAchievements.length, achievements: [...achievements, ...watchTogetherAchievements] })
     } catch (error) { next(error) }
@@ -362,6 +364,8 @@ export async function createApp(pool, options = {}) {
     try {
       const user = await getAuthenticatedUser(pool, request)
       if (!user) return response.status(401).json({ error: 'Authentication required' })
+      if (request.params.achievementId.startsWith('watch-together-')) await evaluateWatchTogetherAchievementsForUser(pool, user.username)
+      else await evaluateAchievementsForUser(pool, user.username)
       const result = await getAchievementProgressDetailsForUser(pool, user.username, request.params.achievementId)
       if (result.status === 'missing_achievement') return response.status(404).json({ error: 'Achievement not found.' })
       response.json({ achievement: result.achievement, contributors: result.contributors.map(mapAchievementContributor), count: result.contributors.length })
@@ -2617,9 +2621,9 @@ export async function createApp(pool, options = {}) {
       const result = await updateTvEpisodeWatchStateForUser(pool, { username: user.username, showId, action, episodeId, seasonId, watchService: request.body?.watchService })
       if (result.status !== 'ok') return response.status(404).json({ error: action === 'mark_season' ? 'Season was not found' : 'Episode was not found' })
       const inserted = action !== 'unmark_episode' && result.updatedCount > 0
-      if (inserted && Number.isInteger(episodeId)) await recordAchievementEventForUser(pool, { username: user.username, eventType: 'tv_episode_watched', mediaType: 'tv', entityId: episodeId, baselineKind: 'tv_episode_watch' })
+      const newEpisodeEvents = inserted ? await syncTvEpisodeAchievementEventsForUser(pool, user.username) : []
       const didComplete = result.newlyCompletedShowId && await recordAchievementEventForUser(pool, { username: user.username, eventType: 'tv_show_completed', mediaType: 'tv', entityId: result.newlyCompletedShowId, baselineKind: 'tv_show' })
-      const newlyUnlockedAchievements = (inserted || didComplete) ? await evaluateAchievementsForUser(pool, user.username) : []
+      const newlyUnlockedAchievements = (newEpisodeEvents.length || didComplete) ? await evaluateAchievementsForUser(pool, user.username) : []
       const detail = await getTvDetailForUser(pool, { showId, username: user.username })
       response.json({ updatedCount: result.updatedCount, show: mapTvDetail(detail), newlyUnlockedAchievements })
     } catch (error) { next(error) }

@@ -1,8 +1,9 @@
 import pg from 'pg'
 import { ACHIEVEMENTS, ACHIEVEMENT_BY_ID } from './achievements.js'
+import { evaluateMovieTvAchievementEvidence, evaluateWatchTogetherAchievementEvidence } from './achievementEvidence.js'
 import { BOOK_ACHIEVEMENTS } from './bookAchievements.js'
 import { GAME_ACHIEVEMENTS } from './gameAchievements.js'
-import { WATCH_TOGETHER_ACHIEVEMENTS, WATCH_TOGETHER_AUTOMATIC_GENRE_RULES, WATCH_TOGETHER_MANUAL_ACHIEVEMENT_IDS } from './watchTogetherAchievements.js'
+import { WATCH_TOGETHER_ACHIEVEMENTS, WATCH_TOGETHER_ACHIEVEMENT_BY_ID, WATCH_TOGETHER_MANUAL_ACHIEVEMENT_IDS } from './watchTogetherAchievements.js'
 import { defaultThemeKey, normalizeActiveTheme } from '../shared/themes.js'
 import { ENTERTAINMENT_NEWS_SOURCES } from './rssSources.js'
 
@@ -1378,18 +1379,20 @@ export async function ensureAchievementTables(pool) {
   await pool.query(`CREATE TABLE IF NOT EXISTS achievement_baseline_items (user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, kind TEXT NOT NULL, entity_id BIGINT NOT NULL, PRIMARY KEY (user_id, kind, entity_id))`)
   await pool.query(`CREATE TABLE IF NOT EXISTS achievement_events (id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, event_type TEXT NOT NULL, media_type TEXT NOT NULL, entity_id BIGINT NOT NULL, metadata JSONB NOT NULL DEFAULT '{}'::jsonb, occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE (user_id, event_type, media_type, entity_id))`)
   await pool.query(`CREATE TABLE IF NOT EXISTS user_achievement_unlocks (user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, achievement_id TEXT NOT NULL, unlocked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (user_id, achievement_id))`)
-  // This is a one-time, idempotent rollout snapshot. Existing records can never become achievement events.
+  // Only activity older than each user's activation belongs to the rollout baseline.
+  // Re-running setup must not turn subsequent watches and ratings into baseline items.
   await pool.query(`INSERT INTO achievement_tracking (user_id) SELECT id FROM users ON CONFLICT DO NOTHING`)
-  await pool.query(`INSERT INTO achievement_baseline_items (user_id,kind,entity_id) SELECT user_id,'movie_watch',movie_id FROM watched_movies ON CONFLICT DO NOTHING`)
-  await pool.query(`INSERT INTO achievement_baseline_items (user_id,kind,entity_id) SELECT user_id,'movie_rating',movie_id FROM movie_ratings ON CONFLICT DO NOTHING`)
-  await pool.query(`INSERT INTO achievement_baseline_items (user_id,kind,entity_id) SELECT user_id,'movie_watchlist',movie_id FROM watchlist_items ON CONFLICT DO NOTHING`)
-  await pool.query(`INSERT INTO achievement_baseline_items (user_id,kind,entity_id) SELECT user_id,'tv_show',tv_show_id FROM watched_tv_shows ON CONFLICT DO NOTHING`)
-  await pool.query(`INSERT INTO achievement_baseline_items (user_id,kind,entity_id) SELECT user_id,'tv_episode_rating',tv_episode_id FROM tv_episode_ratings ON CONFLICT DO NOTHING`)
-  await pool.query(`INSERT INTO achievement_baseline_items (user_id,kind,entity_id) SELECT user_id,'tv_watchlist',tv_show_id FROM tv_watchlist_items ON CONFLICT DO NOTHING`)
-  await pool.query(`INSERT INTO achievement_baseline_items (user_id,kind,entity_id) SELECT user_id,'tv_episode_watch',tv_episode_id FROM watched_tv_episodes ON CONFLICT DO NOTHING;
+  await pool.query(`INSERT INTO achievement_baseline_items (user_id,kind,entity_id) SELECT item.user_id,'movie_watch',item.movie_id FROM watched_movies item JOIN achievement_tracking tracking ON tracking.user_id=item.user_id WHERE item.created_at < tracking.activated_at AND NOT EXISTS (SELECT 1 FROM achievement_events e WHERE e.user_id=item.user_id AND e.event_type='movie_watched' AND e.entity_id=item.movie_id) ON CONFLICT DO NOTHING`)
+  await pool.query(`INSERT INTO achievement_baseline_items (user_id,kind,entity_id) SELECT item.user_id,'movie_rating',item.movie_id FROM movie_ratings item JOIN achievement_tracking tracking ON tracking.user_id=item.user_id WHERE item.created_at < tracking.activated_at AND NOT EXISTS (SELECT 1 FROM achievement_events e WHERE e.user_id=item.user_id AND e.event_type='movie_rated' AND e.entity_id=item.movie_id) ON CONFLICT DO NOTHING`)
+  await pool.query(`INSERT INTO achievement_baseline_items (user_id,kind,entity_id) SELECT item.user_id,'movie_watchlist',item.movie_id FROM watchlist_items item JOIN achievement_tracking tracking ON tracking.user_id=item.user_id WHERE item.created_at < tracking.activated_at AND NOT EXISTS (SELECT 1 FROM achievement_events e WHERE e.user_id=item.user_id AND e.event_type='movie_watchlist_added' AND e.entity_id=item.movie_id) ON CONFLICT DO NOTHING`)
+  await pool.query(`INSERT INTO achievement_baseline_items (user_id,kind,entity_id) SELECT item.user_id,'tv_show',item.tv_show_id FROM watched_tv_shows item JOIN achievement_tracking tracking ON tracking.user_id=item.user_id WHERE item.created_at < tracking.activated_at AND NOT EXISTS (SELECT 1 FROM achievement_events e WHERE e.user_id=item.user_id AND e.event_type='tv_show_completed' AND e.entity_id=item.tv_show_id) ON CONFLICT DO NOTHING`)
+  await pool.query(`INSERT INTO achievement_baseline_items (user_id,kind,entity_id) SELECT item.user_id,'tv_episode_rating',item.tv_episode_id FROM tv_episode_ratings item JOIN achievement_tracking tracking ON tracking.user_id=item.user_id WHERE item.created_at < tracking.activated_at AND NOT EXISTS (SELECT 1 FROM achievement_events e WHERE e.user_id=item.user_id AND e.event_type='tv_rated' AND e.entity_id=item.tv_episode_id) ON CONFLICT DO NOTHING`)
+  await pool.query(`INSERT INTO achievement_baseline_items (user_id,kind,entity_id) SELECT item.user_id,'tv_watchlist',item.tv_show_id FROM tv_watchlist_items item JOIN achievement_tracking tracking ON tracking.user_id=item.user_id WHERE item.created_at < tracking.activated_at AND NOT EXISTS (SELECT 1 FROM achievement_events e WHERE e.user_id=item.user_id AND e.event_type='tv_watchlist_added' AND e.entity_id=item.tv_show_id) ON CONFLICT DO NOTHING`)
+  await pool.query(`INSERT INTO achievement_baseline_items (user_id,kind,entity_id) SELECT item.user_id,'tv_episode_watch',item.tv_episode_id FROM watched_tv_episodes item JOIN achievement_tracking tracking ON tracking.user_id=item.user_id WHERE item.watched_at < tracking.activated_at AND NOT EXISTS (SELECT 1 FROM achievement_events e WHERE e.user_id=item.user_id AND e.event_type='tv_episode_watched' AND e.entity_id=item.tv_episode_id) ON CONFLICT DO NOTHING;
     INSERT INTO book_achievement_baseline_items (user_id,kind,entity_id) SELECT user_id,'read',id FROM read_books ON CONFLICT DO NOTHING;
     INSERT INTO book_achievement_baseline_items (user_id,kind,entity_id) SELECT user_id,'rating',book_id FROM book_ratings ON CONFLICT DO NOTHING;
     INSERT INTO book_achievement_baseline_items (user_id,kind,entity_id) SELECT user_id,'watchlist',book_id FROM book_watchlist_items ON CONFLICT DO NOTHING`)
+  await syncTvEpisodeAchievementEventsForUser(pool)
 }
 
 export async function recordBookAchievementEventForUser(pool, { username, eventType, bookId, metadata = {} }) {
@@ -1442,6 +1445,7 @@ export async function evaluateBookAchievementsForUser(pool, username) {
 export async function recordAchievementEventForUser(pool, { username, eventType, mediaType, entityId, baselineKind, metadata = {} }) {
   const result = await pool.query(`WITH selected_user AS (SELECT id FROM users WHERE username=$1 LIMIT 1), eligible AS (
     SELECT id FROM selected_user WHERE NOT EXISTS (SELECT 1 FROM achievement_baseline_items b WHERE b.user_id=selected_user.id AND b.kind=$5 AND b.entity_id=$4)
+      OR EXISTS (SELECT 1 FROM achievement_events prior WHERE prior.user_id=selected_user.id AND prior.event_type=$2 AND prior.media_type=$3 AND prior.entity_id=$4)
   ), inserted AS (
     INSERT INTO achievement_events (user_id,event_type,media_type,entity_id,metadata)
     SELECT id,$2,$3,$4,$6::jsonb FROM eligible
@@ -1452,279 +1456,159 @@ export async function recordAchievementEventForUser(pool, { username, eventType,
   return Boolean(result.rows[0]?.inserted)
 }
 
-export function buildFirstReleaseAchievementValues({ movies = [], ratings = [], watchlistCount = 0, watchlistAdds = [] }) {
-  const values = {}
-  const dateOf = (value) => new Date(value)
-  const dayKey = (value) => String(value).slice(0, 10)
-  const genreCounts = new Map(); const directorCounts = new Map(); const actorCounts = new Map(); const pairCounts = new Map()
-  const watchedDays = new Set(); const months = new Set(); const weeks = new Set(); const years = new Map(); const decades = new Set(); const letters = new Set()
-  let mondayMovies = 0; let fridayMovies = 0; let nightOwlMovies = 0; let earlyScreeningMovies = 0; let halloweenHorror = 0; let openingWeekend = 0; let newReleaseHunter = 0
-  const ordered = [...movies].sort((a, b) => dateOf(a.occurred_at) - dateOf(b.occurred_at))
-  for (const movie of ordered) {
-    const watchedAt = dateOf(movie.occurred_at); if (Number.isNaN(watchedAt.valueOf())) continue
-    const day = dayKey(movie.occurred_at); const year = watchedAt.getUTCFullYear(); const month = `${year}-${String(watchedAt.getUTCMonth() + 1).padStart(2, '0')}`
-    watchedDays.add(day); months.add(month); years.set(year, (years.get(year) || new Set()).add(day)); weeks.add(`${year}-${Math.floor((Date.UTC(year, watchedAt.getUTCMonth(), watchedAt.getUTCDate()) - Date.UTC(year, 0, 1)) / 604800000)}`)
-    if (watchedAt.getUTCDay() === 1) mondayMovies += 1
-    if (watchedAt.getUTCDay() === 5) fridayMovies += 1
-    if (watchedAt.getUTCHours() < 6) nightOwlMovies += 1
-    if (watchedAt.getUTCHours() < 12) earlyScreeningMovies += 1
-    const genres = new Set((movie.genre_names || []).filter(Boolean)); for (const genre of genres) genreCounts.set(genre, (genreCounts.get(genre) || 0) + 1)
-    if (watchedAt.getUTCMonth() === 9 && watchedAt.getUTCDate() === 31 && genres.has('Horror')) halloweenHorror += 1
-    const releaseYear = Number(String(movie.release_date || '').slice(0, 4)); if (Number.isInteger(releaseYear)) { decades.add(Math.floor(releaseYear / 10) * 10); if (releaseYear === year) newReleaseHunter += 1 }
-    const initial = String(movie.title || '').trim().charAt(0).toUpperCase(); if (/^[A-Z]$/.test(initial)) letters.add(initial)
-    for (const director of new Set(movie.director_ids || [])) directorCounts.set(String(director), (directorCounts.get(String(director)) || 0) + 1)
-    const actors = [...new Set(movie.actor_ids || [])].map(String).sort(); for (const actor of actors) actorCounts.set(actor, (actorCounts.get(actor) || 0) + 1)
-    for (let index = 0; index < actors.length; index += 1) for (let other = index + 1; other < actors.length; other += 1) { const pair = `${actors[index]}:${actors[other]}`; pairCounts.set(pair, (pairCounts.get(pair) || 0) + 1) }
-    const releases = movie.detail_payload?.release_dates?.results?.find((entry) => entry?.iso_3166_1 === 'US')?.release_dates || []
-    const theatricalDate = releases.find((entry) => entry?.type === 3)?.release_date?.slice(0, 10) || movie.release_date
-    if (theatricalDate) { const offset = (Date.UTC(year, watchedAt.getUTCMonth(), watchedAt.getUTCDate()) - Date.parse(`${theatricalDate}T00:00:00Z`)) / 86400000; if (offset >= 0 && offset <= 2) openingWeekend += 1 }
-  }
-  const max = (counts) => Math.max(0, ...counts.values())
-  const sortedMonths = [...months].sort(); let monthlyRegular = 0; let runningMonths = 0; let previousMonth = null
-  for (const month of sortedMonths) { const current = new Date(`${month}-01T00:00:00Z`); runningMonths = previousMonth && current.getUTCFullYear() * 12 + current.getUTCMonth() === previousMonth.getUTCFullYear() * 12 + previousMonth.getUTCMonth() + 1 ? runningMonths + 1 : 1; monthlyRegular = Math.max(monthlyRegular, runningMonths); previousMonth = current }
-  const sortedWeeks = [...weeks].sort((a, b) => Number(a.split('-')[0]) - Number(b.split('-')[0]) || Number(a.split('-')[1]) - Number(b.split('-')[1])); let weeklyRegular = 0; let runningWeeks = 0; let previousWeek = null
-  for (const week of sortedWeeks) { const [year, number] = week.split('-').map(Number); const stamp = Date.UTC(year, 0, 1) + number * 604800000; runningWeeks = previousWeek !== null && stamp - previousWeek <= 604800000 ? runningWeeks + 1 : 1; weeklyRegular = Math.max(weeklyRegular, runningWeeks); previousWeek = stamp }
-  let genreMonth = 0; for (const movie of ordered) { const month = String(movie.occurred_at).slice(0, 7); for (const genre of new Set(movie.genre_names || [])) values[`genre-month:${month}:${genre}`] = (values[`genre-month:${month}:${genre}`] || 0) + 1 }; genreMonth = Math.max(0, ...Object.entries(values).filter(([key]) => key.startsWith('genre-month:')).map(([, count]) => count))
-  const doubleFeature = ordered.some((movie, index) => index > 0 && dateOf(movie.occurred_at) - dateOf(ordered[index - 1].occurred_at) <= 6 * 3600000) ? 2 : 0
-  const expectedDecades = Array.from({ length: 11 }, (_, index) => 1920 + index * 10)
-  values.zero_backlog = watchlistAdds.length > 0 && watchlistCount === 0 ? 1 : 0; values.forgotten_treasure = ordered.some((movie) => watchlistAdds.some((saved) => Number(saved.entity_id) === Number(movie.entity_id) && dateOf(movie.occurred_at) - dateOf(saved.occurred_at) >= 365 * 86400000)) ? 1 : 0
-  Object.assign(values, { time_traveller: expectedDecades.filter((decade) => decades.has(decade)).length, opening_weekend: openingWeekend, new_release_hunter: newReleaseHunter, director_max: max(directorCounts), actor_max: max(actorCounts), actor_pair_max: max(pairCounts), director_diversity: directorCounts.size, monday_movies: mondayMovies, friday_movies: fridayMovies, night_owl_movies: nightOwlMovies, early_screening_movies: earlyScreeningMovies, monthly_regular: monthlyRegular, weekly_regular: weeklyRegular, yearly_days: Math.max(0, ...[...years.values()].map((days) => days.size)), halloween_horror: halloweenHorror, double_feature: doubleFeature, alphabet_challenge: letters.size, decade_challenge: decades.size, genre_month: genreMonth })
-  values.hidden_gem_hunter = ratings.filter((rating) => Number(rating.personal_score) >= 4 && Number(rating.community_count) <= 5).length
-  values.against_crowd = ratings.some((rating) => Number(rating.vote_count) >= 1000 && Number(rating.community_count) >= 5 && Number(rating.personal_score) <= Number(rating.community_average) - 1.5) ? 1 : 0
-  values.so_bad_its_good = ratings.some((rating) => Number(rating.vote_average) <= 5 && Number(rating.personal_score) >= 4.5) ? 1 : 0
-  values.everyone_hated_it = ratings.some((rating) => Number(rating.community_count) >= 5 && Number(rating.community_average) <= 2.5 && Number(rating.personal_score) >= 4.5) ? 1 : 0
-  values.everyone_loved_it = ratings.some((rating) => Number(rating.community_count) >= 5 && Number(rating.community_average) >= 4.5 && Number(rating.personal_score) <= 2) ? 1 : 0
-  return values
+export async function syncTvEpisodeAchievementEventsForUser(pool, username = null) {
+  const result = await pool.query(`INSERT INTO achievement_events (user_id,event_type,media_type,entity_id,occurred_at)
+    SELECT watched.user_id,'tv_episode_watched','tv',watched.tv_episode_id,watched.watched_at
+    FROM watched_tv_episodes watched
+    JOIN achievement_tracking tracking ON tracking.user_id=watched.user_id
+    JOIN users ON users.id=watched.user_id
+    WHERE watched.watched_at >= tracking.activated_at AND ($1::TEXT IS NULL OR users.username=$1)
+    ON CONFLICT DO NOTHING RETURNING entity_id`, [username])
+  return (result.rows || []).map((row) => Number(row.entity_id))
+}
+
+async function loadIndividualAchievementEvidenceForUser(pool, username) {
+  // Achievement events already enforce the rollout baseline. Both the catalog and
+  // detail page consume these same rows and the same rule evaluator.
+  const [movieEvents, showEvents, episodeEvents, watchlist] = await Promise.all([
+    pool.query(`SELECT e.id AS event_id,e.entity_id,e.event_type,e.occurred_at,e.metadata,
+        m.tmdb_id,m.title,m.release_date,m.poster_path,m.runtime_minutes,m.original_language,m.detail_payload,m.vote_average,m.vote_count,
+        COALESCE((SELECT array_agg(DISTINCT g.name) FROM unnest(m.genre_ids) gid JOIN genres g ON g.tmdb_genre_id=gid), ARRAY[]::TEXT[]) AS genre_names,
+        COALESCE((SELECT array_agg(DISTINCT mc.cast_member_id) FROM movie_cast mc WHERE mc.movie_id=m.id AND mc.credit_type='director'), ARRAY[]::BIGINT[]) AS director_ids,
+        COALESCE((SELECT array_agg(DISTINCT mc.cast_member_id) FROM movie_cast mc WHERE mc.movie_id=m.id AND mc.credit_type='actor'), ARRAY[]::BIGINT[]) AS actor_ids,
+        (SELECT AVG(r.score)::DOUBLE PRECISION FROM movie_ratings r WHERE r.movie_id=m.id) AS community_average,
+        (SELECT COUNT(*)::INTEGER FROM movie_ratings r WHERE r.movie_id=m.id) AS community_count
+      FROM achievement_events e JOIN movies m ON m.id=e.entity_id
+      WHERE e.user_id=(SELECT id FROM users WHERE username=$1) AND e.event_type IN ('movie_watched','movie_rated','movie_watchlist_added')
+      ORDER BY e.occurred_at,e.id`, [username]),
+    pool.query(`SELECT e.id AS event_id,e.entity_id,e.event_type,e.occurred_at,e.metadata,
+        s.tmdb_id,s.name,s.first_air_date,s.poster_path
+      FROM achievement_events e JOIN tv_shows s ON s.id=e.entity_id
+      WHERE e.user_id=(SELECT id FROM users WHERE username=$1) AND e.event_type IN ('tv_show_completed','tv_watchlist_added')
+      ORDER BY e.occurred_at,e.id`, [username]),
+    pool.query(`SELECT e.id AS event_id,e.entity_id,e.event_type,e.occurred_at,e.metadata,
+        s.tmdb_id,s.name,s.first_air_date,s.poster_path,
+        ep.tmdb_id AS episode_tmdb_id,ep.name AS episode_name,ep.runtime_minutes,
+        season.season_number,ep.episode_number
+      FROM achievement_events e JOIN tv_episodes ep ON ep.id=e.entity_id
+      JOIN tv_seasons season ON season.id=ep.tv_season_id JOIN tv_shows s ON s.id=season.tv_show_id
+      WHERE e.user_id=(SELECT id FROM users WHERE username=$1) AND e.event_type IN ('tv_rated','tv_episode_watched')
+      ORDER BY e.occurred_at,e.id`, [username]),
+    pool.query(`SELECT COUNT(*)::INTEGER AS count FROM watchlist_items WHERE user_id=(SELECT id FROM users WHERE username=$1)`, [username]),
+  ])
+  return evaluateMovieTvAchievementEvidence({ movies: movieEvents.rows, shows: showEvents.rows, episodes: episodeEvents.rows, watchlistCount: Number(watchlist.rows[0]?.count || 0) })
 }
 
 export async function getAchievementsForUser(pool, username) {
-  const data = await pool.query(`WITH selected_user AS (SELECT id FROM users WHERE username=$1 LIMIT 1), events AS (
-    SELECT * FROM achievement_events WHERE user_id=(SELECT id FROM selected_user)
-  ), movie_events AS (SELECT e.*,m.runtime_minutes,m.release_date,m.original_language,m.genre_ids FROM events e JOIN movies m ON m.id=e.entity_id WHERE e.event_type='movie_watched'),
-  show_events AS (SELECT e.*,s.genre_ids FROM events e JOIN tv_shows s ON s.id=e.entity_id WHERE e.event_type='tv_show_completed'),
-  values AS (
-    SELECT
-      (SELECT COUNT(*) FROM movie_events)::int movie_count,
-      (SELECT COUNT(*) FROM show_events)::int show_count,
-      (SELECT COUNT(*) FROM events WHERE event_type='movie_watchlist_added')::int movie_watchlist_count,
-      (SELECT COUNT(*) FROM events WHERE event_type='tv_watchlist_added')::int tv_watchlist_count,
-      (SELECT COUNT(*) FROM events watched WHERE watched.event_type='movie_watched' AND EXISTS (SELECT 1 FROM events saved WHERE saved.event_type='movie_watchlist_added' AND saved.entity_id=watched.entity_id AND saved.occurred_at <= watched.occurred_at))::int movie_watchlist_watched,
-      (SELECT COUNT(DISTINCT entity_id) FROM events WHERE event_type='movie_rated')::int movie_rating_count,
-      (SELECT COUNT(DISTINCT entity_id) FROM events WHERE event_type='tv_rated')::int tv_rating_count,
-      (SELECT COALESCE(SUM(runtime_minutes),0) FROM movie_events)::int movie_runtime,
-      (SELECT COALESCE(SUM(COALESCE(te.runtime_minutes,0)),0) FROM events e JOIN tv_episodes te ON te.id=e.entity_id WHERE e.event_type='tv_episode_watched')::int tv_runtime
-  ) SELECT * FROM values`, [username])
-  const metrics = data.rows[0] ?? {}
-  const details = await pool.query(`WITH selected_user AS (SELECT id FROM users WHERE username=$1), events AS (SELECT * FROM achievement_events WHERE user_id=(SELECT id FROM selected_user)), movie_events AS (SELECT e.*,m.runtime_minutes,m.release_date,m.original_language,m.genre_ids FROM events e JOIN movies m ON m.id=e.entity_id WHERE e.event_type='movie_watched') SELECT
-    COALESCE((SELECT json_agg(name) FROM (SELECT DISTINCT g.name FROM movie_events me JOIN LATERAL unnest(me.genre_ids) gid ON true JOIN genres g ON g.tmdb_genre_id=gid) x),'[]'::json) genres,
-    COALESCE((SELECT json_agg(json_build_object('name',x.name,'count',x.count)) FROM (SELECT g.name,COUNT(DISTINCT me.entity_id)::int count FROM movie_events me JOIN LATERAL unnest(me.genre_ids) gid ON true JOIN genres g ON g.tmdb_genre_id=gid GROUP BY g.name) x),'[]'::json) genre_counts,
-    COALESCE((SELECT json_agg(score) FROM (SELECT DISTINCT (metadata->>'score')::numeric score FROM events WHERE event_type='movie_rated') x),'[]'::json) rating_scores,
-    COALESCE((SELECT COUNT(*)::int FROM events WHERE event_type='movie_rated' AND (metadata->>'score')::numeric=1),0) low_ratings,
-    COALESCE((SELECT COUNT(*)::int FROM events WHERE event_type='movie_rated' AND (metadata->>'score')::numeric=5),0) high_ratings,
-    COALESCE((SELECT COUNT(DISTINCT EXTRACT(YEAR FROM release_date)::int / 10) FROM movie_events WHERE release_date IS NOT NULL),0) decade_diversity,
-    COALESCE((SELECT COUNT(*)::int FROM movie_events WHERE original_language IS NOT NULL AND original_language <> 'en'),0) foreign_language,
-    COALESCE((SELECT COUNT(*)::int FROM movie_events WHERE release_date < '1970-01-01'),0) classic_movies,
-    COALESCE((SELECT COUNT(*)::int FROM movie_events WHERE runtime_minutes < 80),0) short_movie,
-    COALESCE((SELECT COUNT(*)::int FROM movie_events WHERE runtime_minutes > 180),0) long_movie,
-    COALESCE((SELECT MAX(count)::int FROM (SELECT COUNT(*)::int count FROM movie_events GROUP BY occurred_at::date) x),0) daily_movies,
-    COALESCE((SELECT MAX(minutes)::int FROM (SELECT SUM(COALESCE(runtime_minutes,0))::int minutes FROM movie_events GROUP BY occurred_at::date) x),0) daily_runtime,
-    COALESCE((SELECT MAX(count)::int FROM (SELECT COUNT(*)::int count FROM movie_events WHERE EXTRACT(ISODOW FROM occurred_at) IN (6,7) GROUP BY date_trunc('week',occurred_at)) x),0) weekend_movies`, [username])
-  const extra = details.rows[0] ?? {}
-  const genreCounts = new Map((extra.genre_counts ?? []).map((row) => [row.name, Number(row.count)]))
-  const [movieDates, movieActivity, ratingActivity, watchlistStatus, watchlistAdds] = await Promise.all([
-    pool.query(`SELECT occurred_at::date AS day FROM achievement_events WHERE user_id=(SELECT id FROM users WHERE username=$1) AND event_type='movie_watched' ORDER BY day`, [username]),
-    pool.query(`WITH events AS (SELECT * FROM achievement_events WHERE user_id=(SELECT id FROM users WHERE username=$1) AND event_type='movie_watched')
-      SELECT e.entity_id,e.occurred_at,m.title,m.release_date,m.detail_payload,
-        COALESCE(array_agg(DISTINCT g.name) FILTER (WHERE g.name IS NOT NULL), ARRAY[]::TEXT[]) AS genre_names,
-        COALESCE(array_agg(DISTINCT mc.cast_member_id) FILTER (WHERE mc.credit_type='director'), ARRAY[]::BIGINT[]) AS director_ids,
-        COALESCE(array_agg(DISTINCT mc.cast_member_id) FILTER (WHERE mc.credit_type='actor'), ARRAY[]::BIGINT[]) AS actor_ids
-      FROM events e JOIN movies m ON m.id=e.entity_id LEFT JOIN LATERAL unnest(m.genre_ids) genre_id ON TRUE LEFT JOIN genres g ON g.tmdb_genre_id=genre_id LEFT JOIN movie_cast mc ON mc.movie_id=m.id
-      GROUP BY e.entity_id,e.occurred_at,m.id`, [username]),
-    pool.query(`WITH events AS (SELECT * FROM achievement_events WHERE user_id=(SELECT id FROM users WHERE username=$1) AND event_type='movie_rated')
-      SELECT e.entity_id,(e.metadata->>'score')::NUMERIC AS personal_score,m.vote_average,m.vote_count,
-        COALESCE((SELECT AVG(score) FROM movie_ratings WHERE movie_id=m.id),0)::DOUBLE PRECISION AS community_average,
-        (SELECT COUNT(*)::INTEGER FROM movie_ratings WHERE movie_id=m.id) AS community_count
-      FROM events e JOIN movies m ON m.id=e.entity_id`, [username]),
-    pool.query(`SELECT COUNT(*)::INTEGER AS count FROM watchlist_items WHERE user_id=(SELECT id FROM users WHERE username=$1)`, [username]),
-    pool.query(`SELECT entity_id,occurred_at FROM achievement_events WHERE user_id=(SELECT id FROM users WHERE username=$1) AND event_type='movie_watchlist_added'`, [username]),
+  const [evaluated, unlocks] = await Promise.all([
+    loadIndividualAchievementEvidenceForUser(pool, username),
+    pool.query(`SELECT achievement_id,unlocked_at FROM user_achievement_unlocks WHERE user_id=(SELECT id FROM users WHERE username=$1)`, [username]),
   ])
-  Object.assign(extra, buildFirstReleaseAchievementValues({ movies: movieActivity.rows, ratings: ratingActivity.rows, watchlistCount: Number(watchlistStatus.rows[0]?.count || 0), watchlistAdds: watchlistAdds.rows }))
-  const days = [...new Set(movieDates.rows.map((row) => String(row.day)))].sort()
-  let streak = 0; let bestStreak = 0; let previous = null
-  for (const day of days) { const current = new Date(`${day}T00:00:00Z`); streak = previous && current - previous === 86400000 ? streak + 1 : 1; bestStreak = Math.max(bestStreak, streak); previous = current }
-  const progressFor = (achievement) => {
-    if (achievement.availability !== 'active') return { current: 0, complete: false }
-    const { rule } = achievement
-    let current = 0
-    if (rule.startsWith('genre:')) current = genreCounts.get(rule.slice(6)) ?? 0
-    else if (rule === 'genre_diversity') current = (extra.genres ?? []).length
-    else if (rule === 'movie_streak') current = bestStreak
-    else current = Number(metrics[rule] ?? extra[rule] ?? 0)
-    if (rule === 'rating_scale') current = (extra.rating_scores ?? []).length
-    return { current, complete: current >= achievement.target }
-  }
-  const unlocked = await pool.query(`SELECT achievement_id,unlocked_at FROM user_achievement_unlocks WHERE user_id=(SELECT id FROM users WHERE username=$1)`, [username])
-  const unlockMap = new Map(unlocked.rows.map((row) => [row.achievement_id, row.unlocked_at]))
+  const unlocked = new Map(unlocks.rows.map((row) => [row.achievement_id, row.unlocked_at]))
   return ACHIEVEMENTS.map((achievement) => {
-    const progress = progressFor(achievement); const unlockedAt = unlockMap.get(achievement.id) ?? null
-    return { ...achievement, progress: { ...progress, target: achievement.target }, unlocked: Boolean(unlockedAt), unlockedAt, hasContributorDetails: supportsAchievementContributorDetails(achievement) }
+    const current = evaluated.get(achievement.id)?.current || 0
+    const unlockedAt = unlocked.get(achievement.id) || null
+    return { ...achievement, progress: { current, target: achievement.target, complete: achievement.availability === 'active' && current >= achievement.target }, unlocked: Boolean(unlockedAt), unlockedAt, hasContributorDetails: achievement.availability === 'active' }
   })
 }
 
-// These rules are backed by a concrete movie or completed-show event. Rules that
-// aggregate score values or calendar buckets intentionally stay non-navigable
-// until they have an equally clear title-level explanation.
-function supportsAchievementContributorDetails(achievement) {
-  return achievement?.availability === 'active'
+export async function getAchievementProgressDetailsForUser(pool, username, achievementId) {
+  if (WATCH_TOGETHER_ACHIEVEMENT_BY_ID.has(achievementId)) return getWatchTogetherAchievementProgressDetailsForUser(pool, username, achievementId)
+  const achievement = ACHIEVEMENT_BY_ID.get(achievementId)
+  if (!achievement) return { status: 'missing_achievement' }
+  const [evaluated, unlocks] = await Promise.all([
+    loadIndividualAchievementEvidenceForUser(pool, username),
+    pool.query(`SELECT achievement_id,unlocked_at FROM user_achievement_unlocks WHERE user_id=(SELECT id FROM users WHERE username=$1) AND achievement_id=$2`, [username, achievementId]),
+  ])
+  const current = evaluated.get(achievementId)?.current || 0
+  const unlockedAt = unlocks.rows[0]?.unlocked_at || null
+  return { status: 'ok', achievement: { ...achievement, progress: { current, target: achievement.target, complete: achievement.availability === 'active' && current >= achievement.target }, unlocked: Boolean(unlockedAt), unlockedAt }, contributors: evaluated.get(achievementId)?.contributors || [] }
 }
 
-function mapAchievementMovieContributor(row, qualifier = null) {
+function mapWatchTogetherMovieAchievementContributor(row, qualifier = null) {
   return {
     id: row.tmdb_id,
     mediaType: 'movie',
     title: row.title,
     year: row.release_date ? new Date(row.release_date).getUTCFullYear() : null,
     posterPath: row.poster_path ?? null,
-    watchedAt: row.occurred_at,
+    watchedAt: row.watched_together_at,
+    watched: true,
+    qualifier,
+  }
+}
+
+function mapWatchTogetherEpisodeAchievementContributor(row, qualifier = null) {
+  return {
+    id: row.show_tmdb_id,
+    mediaType: 'tv',
+    title: row.episode_name ? `${row.show_name} · ${row.episode_name}` : row.show_name,
+    episodeId: row.episode_tmdb_id,
+    episodeTitle: row.episode_name ?? null,
+    seasonNumber: row.season_number ?? null,
+    episodeNumber: row.episode_number ?? null,
+    year: row.first_air_date ? new Date(row.first_air_date).getUTCFullYear() : null,
+    posterPath: row.poster_path ?? null,
+    watchedAt: row.watched_together_at,
+    watched: true,
     qualifier,
   }
 }
 
 /**
- * Returns the chronological contributors that initially satisfy a supported
- * achievement.  This is deliberately event based (rather than using the
- * current watched list) so it agrees with achievement progress accounting.
+ * Returns shared titles that contributed to a Watch Together achievement.
+ * Manual badges are backed by the achievement ids recorded on a session;
+ * automatic badges use the same movie, episode, and genre counts as the
+ * Watch Together achievement catalogue.
  */
-export async function getAchievementProgressDetailsForUser(pool, username, achievementId) {
-  const achievement = ACHIEVEMENT_BY_ID.get(achievementId)
-  if (!achievement) return { status: 'missing_achievement' }
-
-  const achievements = await getAchievementsForUser(pool, username)
-  let currentAchievement = achievements.find((item) => item.id === achievementId)
-  if (!currentAchievement) return { status: 'missing_achievement' }
-
-  const [movies, shows] = await Promise.all([
-    pool.query(`WITH selected_user AS (SELECT id FROM users WHERE username=$1)
-      SELECT e.entity_id,e.occurred_at,e.event_type,e.metadata,m.tmdb_id,m.title,m.release_date,m.poster_path,m.runtime_minutes,m.original_language,
-        COALESCE(array_agg(DISTINCT g.name) FILTER (WHERE g.name IS NOT NULL), ARRAY[]::TEXT[]) AS genre_names,
-        EXISTS (SELECT 1 FROM achievement_events saved WHERE saved.user_id=e.user_id AND saved.event_type='movie_watchlist_added' AND saved.entity_id=e.entity_id AND saved.occurred_at <= e.occurred_at) AS was_watchlisted
-      FROM achievement_events e JOIN movies m ON m.id=e.entity_id
-      LEFT JOIN LATERAL unnest(m.genre_ids) gid ON TRUE LEFT JOIN genres g ON g.tmdb_genre_id=gid
-      WHERE e.user_id=(SELECT id FROM selected_user) AND e.event_type IN ('movie_watched','movie_rated','movie_watchlist_added')
-      GROUP BY e.id,e.entity_id,e.occurred_at,e.event_type,e.metadata,m.id
-      ORDER BY e.occurred_at ASC,e.id ASC`, [username]),
-    pool.query(`WITH selected_user AS (SELECT id FROM users WHERE username=$1)
-      SELECT e.entity_id,e.occurred_at,s.tmdb_id,s.name,s.first_air_date,s.poster_path
-      FROM achievement_events e JOIN tv_shows s ON s.id=e.entity_id
-      WHERE e.user_id=(SELECT id FROM selected_user) AND e.event_type='tv_show_completed'
-      ORDER BY e.occurred_at ASC,e.id ASC`, [username]),
+async function loadWatchTogetherEvidenceForUser(pool, pair) {
+  if (!pair) return null
+  const [moviesResult, episodesResult] = await Promise.all([
+    pool.query(`SELECT movies.tmdb_id,movies.title,movies.release_date,movies.poster_path,watched.watched_together_at,
+        COALESCE(ARRAY_REMOVE(ARRAY_AGG(DISTINCT genres.name), NULL), '{}') AS genre_names,
+        COALESCE(session.achievement_ids, '{}') AS session_achievement_ids
+      FROM watch_together_watched_movies watched
+      JOIN movies ON movies.id=watched.movie_id
+      LEFT JOIN LATERAL UNNEST(movies.genre_ids) genre_id(tmdb_genre_id) ON TRUE
+      LEFT JOIN genres ON genres.tmdb_genre_id=genre_id.tmdb_genre_id
+      LEFT JOIN watch_together_sessions session ON session.pair_id=watched.pair_id AND session.history_key=('movie:' || movies.tmdb_id::text)
+      WHERE watched.pair_id=$1
+      GROUP BY movies.id,movies.tmdb_id,movies.title,movies.release_date,movies.poster_path,watched.watched_together_at,session.achievement_ids
+      ORDER BY watched.watched_together_at ASC,movies.tmdb_id ASC`, [pair.pair_id]),
+    pool.query(`SELECT tv_shows.tmdb_id AS show_tmdb_id,tv_shows.name AS show_name,tv_shows.first_air_date,tv_shows.poster_path,
+        tv_episodes.tmdb_id AS episode_tmdb_id,tv_episodes.name AS episode_name,tv_seasons.season_number,tv_episodes.episode_number,watched.watched_together_at,
+        COALESCE(ARRAY_REMOVE(ARRAY_AGG(DISTINCT tv_genres.name), NULL), '{}') AS genre_names,
+        COALESCE(session.achievement_ids, '{}') AS session_achievement_ids
+      FROM watch_together_watched_episodes watched
+      JOIN tv_episodes ON tv_episodes.id=watched.tv_episode_id
+      JOIN tv_seasons ON tv_seasons.id=tv_episodes.tv_season_id
+      JOIN tv_shows ON tv_shows.id=tv_seasons.tv_show_id
+      LEFT JOIN LATERAL UNNEST(tv_shows.genre_ids) genre_id(tmdb_genre_id) ON TRUE
+      LEFT JOIN tv_genres ON tv_genres.tmdb_genre_id=genre_id.tmdb_genre_id
+      LEFT JOIN watch_together_sessions session ON session.pair_id=watched.pair_id AND session.history_key=('tv:' || tv_episodes.id::text)
+      WHERE watched.pair_id=$1
+      GROUP BY tv_shows.id,tv_shows.tmdb_id,tv_shows.name,tv_shows.first_air_date,tv_shows.poster_path,tv_episodes.id,tv_episodes.tmdb_id,tv_episodes.name,tv_seasons.season_number,tv_episodes.episode_number,watched.watched_together_at,session.achievement_ids
+      ORDER BY watched.watched_together_at ASC,tv_episodes.id ASC`, [pair.pair_id]),
   ])
+  return evaluateWatchTogetherAchievementEvidence({ movies: moviesResult.rows, episodes: episodesResult.rows })
+}
 
-  let qualifying = []
-  const watched = movies.rows.filter((row) => row.event_type === 'movie_watched')
-  const rated = movies.rows.filter((row) => row.event_type === 'movie_rated')
-  const watchlistAdded = movies.rows.filter((row) => row.event_type === 'movie_watchlist_added')
-  const { rule, target } = achievement
-  if (rule === 'daily_runtime') {
-    const dayKey = (value) => {
-      const date = new Date(value)
-      return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 10)
-    }
-    const minutesByDay = new Map()
-    for (const row of watched) {
-      const day = dayKey(row.occurred_at)
-      if (!day) continue
-      minutesByDay.set(day, (minutesByDay.get(day) || 0) + Math.max(0, Number(row.runtime_minutes) || 0))
-    }
-    const [qualifyingDay, qualifyingMinutes] = [...minutesByDay.entries()].sort((a, b) => b[1] - a[1] || b[0].localeCompare(a[0]))[0] || [null, 0]
-    currentAchievement = { ...currentAchievement, progress: { ...currentAchievement.progress, current: qualifyingMinutes, complete: qualifyingMinutes >= target } }
-    if (qualifyingDay) {
-      qualifying = watched
-        .filter((row) => dayKey(row.occurred_at) === qualifyingDay)
-        .map((row) => mapAchievementMovieContributor(row, `${Math.max(0, Number(row.runtime_minutes) || 0)} min · ${qualifyingDay}`))
-    }
-  }
-  if (rule === 'decade_diversity') {
-    const releaseDecades = new Set(watched.map((row) => Number(String(row.release_date || '').slice(0, 4))).filter(Number.isInteger).map((year) => Math.floor(year / 10) * 10))
-    currentAchievement = { ...currentAchievement, progress: { ...currentAchievement.progress, current: releaseDecades.size, complete: releaseDecades.size >= target } }
-  }
-  if (rule === 'movie_count') qualifying = watched.map((row) => mapAchievementMovieContributor(row))
-  else if (rule.startsWith('genre:')) {
-    const genre = rule.slice(6).toLocaleLowerCase()
-    qualifying = watched.filter((row) => row.genre_names.some((name) => name.toLocaleLowerCase() === genre)).map((row) => mapAchievementMovieContributor(row, rule.slice(6)))
-  } else if (rule === 'movie_watchlist_watched') qualifying = watched.filter((row) => row.was_watchlisted).map((row) => mapAchievementMovieContributor(row, 'From watchlist'))
-  else if (rule === 'movie_watchlist_count') qualifying = watchlistAdded.map((row) => mapAchievementMovieContributor(row, 'Added to watchlist'))
-  else if (rule === 'movie_rating_count') qualifying = rated.map((row) => mapAchievementMovieContributor(row, `Rated ${row.metadata?.score ?? ''}/5`.trim()))
-  else if (rule === 'low_ratings' || rule === 'high_ratings') {
-    const score = rule === 'low_ratings' ? 1 : 5
-    qualifying = rated.filter((row) => Number(row.metadata?.score) === score).map((row) => mapAchievementMovieContributor(row, `Rated ${score}/5`))
-  } else if (rule === 'foreign_language') qualifying = watched.filter((row) => row.original_language && row.original_language !== 'en').map((row) => mapAchievementMovieContributor(row, row.original_language.toUpperCase()))
-  else if (rule === 'classic_movies') qualifying = watched.filter((row) => row.release_date && new Date(row.release_date) < new Date('1970-01-01')).map((row) => mapAchievementMovieContributor(row, 'Released before 1970'))
-  else if (rule === 'short_movie' || rule === 'long_movie') {
-    const isShort = rule === 'short_movie'
-    qualifying = watched.filter((row) => isShort ? Number(row.runtime_minutes) < 80 : Number(row.runtime_minutes) > 180).map((row) => mapAchievementMovieContributor(row, `${row.runtime_minutes} min`))
-  } else if (rule === 'decade_diversity') {
-    const decades = new Set()
-    qualifying = watched.filter((row) => {
-      const year = Number(String(row.release_date || '').slice(0, 4))
-      if (!Number.isInteger(year)) return false
-      const decade = Math.floor(year / 10) * 10
-      if (decades.has(decade)) return false
-      decades.add(decade)
-      return true
-    }).map((row) => mapAchievementMovieContributor(row, `${String(row.release_date).slice(0, 3)}0s`))
-  } else if (rule === 'movie_runtime') {
-    let minutes = 0
-    for (const row of watched) {
-      if (minutes >= target) break
-      minutes += Math.max(0, Number(row.runtime_minutes) || 0)
-      qualifying.push(mapAchievementMovieContributor(row, `${row.runtime_minutes || 0} min`))
-    }
-  } else if (rule === 'movie_streak') {
-    // The progress page should explain the current/latest streak, not the
-    // first seven movies ever recorded for the user.
-    const latestWatchedAt = watched.reduce((latest, row) => {
-      const timestamp = new Date(row.occurred_at).getTime()
-      return Number.isNaN(timestamp) ? latest : Math.max(latest, timestamp)
-    }, Number.NEGATIVE_INFINITY)
-    if (Number.isFinite(latestWatchedAt)) {
-      const windowStart = latestWatchedAt - (target - 1) * 86400000
-      qualifying = watched
-        .filter((row) => {
-          const timestamp = new Date(row.occurred_at).getTime()
-          return Number.isFinite(timestamp) && timestamp >= windowStart && timestamp <= latestWatchedAt
-        })
-        .map((row) => mapAchievementMovieContributor(row, 'Within the latest 7-day window'))
-    }
-  } else if (rule === 'weekend_movies') {
-    // Keep the progress page focused on the latest weekend that contributed to
-    // the achievement instead of the first three movies ever recorded.
-    const weekendStart = (value) => {
-      const date = new Date(value)
-      if (Number.isNaN(date.getTime()) || ![0, 6].includes(date.getUTCDay())) return null
-      const monday = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()))
-      monday.setUTCDate(monday.getUTCDate() - ((date.getUTCDay() + 6) % 7))
-      return monday.getTime()
-    }
-    const latestWeekend = watched.reduce((latest, row) => Math.max(latest, weekendStart(row.occurred_at) ?? Number.NEGATIVE_INFINITY), Number.NEGATIVE_INFINITY)
-    if (Number.isFinite(latestWeekend)) {
-      qualifying = watched
-        .filter((row) => weekendStart(row.occurred_at) === latestWeekend)
-        .map((row) => mapAchievementMovieContributor(row, 'Latest weekend'))
-    }
-  } else if (rule === 'show_count') {
-    qualifying = shows.rows.map((row) => ({ id: row.tmdb_id, mediaType: 'tv', title: row.name, year: row.first_air_date ? new Date(row.first_air_date).getUTCFullYear() : null, posterPath: row.poster_path ?? null, watchedAt: row.occurred_at, qualifier: 'Completed' }))
-  }
-
-  // All active badges are navigable. For aggregate rules that do not yet have a
-  // narrower predicate, show the earliest recorded title activity rather than
-  // leaving an in-progress achievement as a dead end.
-  if (!qualifying.length) {
-    const fallback = achievement.media === 'tv' ? shows.rows.map((row) => ({ id: row.tmdb_id, mediaType: 'tv', title: row.name, year: row.first_air_date ? new Date(row.first_air_date).getUTCFullYear() : null, posterPath: row.poster_path ?? null, watchedAt: row.occurred_at, qualifier: 'Recorded TV activity' })) : watched.map((row) => mapAchievementMovieContributor(row, 'Recorded watch activity'))
-    qualifying = fallback.length ? fallback : rated.map((row) => mapAchievementMovieContributor(row, 'Recorded rating activity'))
-  }
-
-  return { status: 'ok', achievement: currentAchievement, contributors: qualifying.slice(0, target) }
+export async function getWatchTogetherAchievementProgressDetailsForUser(pool, username, achievementId) {
+  const achievement = WATCH_TOGETHER_ACHIEVEMENT_BY_ID.get(achievementId)
+  if (!achievement) return { status: 'missing_achievement' }
+  const pair = await getWatchTogetherPairForUser(pool, username)
+  if (!pair) return { status: 'missing_achievement' }
+  const [evaluated, unlocks] = await Promise.all([
+    loadWatchTogetherEvidenceForUser(pool, pair),
+    pool.query(`SELECT achievement_id,unlocked_at FROM watch_together_achievement_unlocks WHERE pair_id=$1 AND achievement_id=$2`, [pair.pair_id, achievementId]),
+  ])
+  if (!evaluated) return { status: 'missing_achievement' }
+  const current = evaluated.get(achievementId)?.current || 0
+  const unlockedAt = unlocks.rows[0]?.unlocked_at || null
+  const contributors = (evaluated.get(achievementId)?.rows || []).map((row) => row.sharedKind === 'movie'
+    ? mapWatchTogetherMovieAchievementContributor(row, row.qualifier || (achievement.tracking === 'manual' ? 'Recorded shared session' : null))
+    : mapWatchTogetherEpisodeAchievementContributor(row, row.qualifier || (achievement.tracking === 'manual' ? 'Recorded shared session' : null)))
+  return { status: 'ok', achievement: { ...achievement, progress: { current: Math.min(current, achievement.target), target: achievement.target, complete: current >= achievement.target }, unlocked: Boolean(unlockedAt), unlockedAt }, contributors }
 }
 
 export async function evaluateAchievementsForUser(pool, username) {
@@ -2845,48 +2729,15 @@ async function getWatchTogetherPairForUser(pool, username) {
 export async function getWatchTogetherAchievementsForUser(pool, username) {
   const pair = await getWatchTogetherPairForUser(pool, username)
   if (!pair) return []
-  const [sessions, movieCount, episodeCount, genreHistory, unlocks] = await Promise.all([
-    pool.query(`SELECT achievement_ids FROM watch_together_sessions WHERE pair_id=$1`, [pair.pair_id]),
-    pool.query(`SELECT COUNT(*)::INTEGER AS count FROM watch_together_watched_movies WHERE pair_id=$1`, [pair.pair_id]),
-    pool.query(`SELECT COUNT(*)::INTEGER AS count FROM watch_together_watched_episodes WHERE pair_id=$1`, [pair.pair_id]),
-    pool.query(`WITH shared_title_genres AS (
-      SELECT w.movie_id::TEXT AS history_key, COALESCE(array_agg(DISTINCT g.name) FILTER (WHERE g.name IS NOT NULL), ARRAY[]::TEXT[]) AS genre_names
-      FROM watch_together_watched_movies w
-      JOIN movies m ON m.id=w.movie_id
-      LEFT JOIN LATERAL unnest(m.genre_ids) genre_id ON TRUE
-      LEFT JOIN genres g ON g.tmdb_genre_id=genre_id
-      WHERE w.pair_id=$1
-      GROUP BY w.movie_id
-      UNION ALL
-      SELECT w.tv_episode_id::TEXT AS history_key, COALESCE(array_agg(DISTINCT g.name) FILTER (WHERE g.name IS NOT NULL), ARRAY[]::TEXT[]) AS genre_names
-      FROM watch_together_watched_episodes w
-      JOIN tv_episodes e ON e.id=w.tv_episode_id
-      JOIN tv_seasons season ON season.id=e.tv_season_id
-      JOIN tv_shows show ON show.id=season.tv_show_id
-      LEFT JOIN LATERAL unnest(show.genre_ids) genre_id ON TRUE
-      LEFT JOIN genres g ON g.tmdb_genre_id=genre_id
-      WHERE w.pair_id=$1
-      GROUP BY w.tv_episode_id
-    ) SELECT genre_names FROM shared_title_genres`, [pair.pair_id]),
-    pool.query(`SELECT achievement_id, unlocked_at FROM watch_together_achievement_unlocks WHERE pair_id=$1`, [pair.pair_id]),
+  const [evaluated, unlocks] = await Promise.all([
+    loadWatchTogetherEvidenceForUser(pool, pair),
+    pool.query(`SELECT achievement_id,unlocked_at FROM watch_together_achievement_unlocks WHERE pair_id=$1`, [pair.pair_id]),
   ])
-  const counts = new Map()
-  for (const row of sessions.rows) for (const id of row.achievement_ids || []) counts.set(id, (counts.get(id) || 0) + 1)
-  // The core milestones progress automatically as shared history grows.
-  const auto = { 'watch-together-better-together': Number(movieCount.rows[0]?.count || 0), 'watch-together-pilot-partners': Number(episodeCount.rows[0]?.count || 0), 'watch-together-movie-night-regulars': Number(movieCount.rows[0]?.count || 0), 'watch-together-perfect-pairing': Number(movieCount.rows[0]?.count || 0), 'watch-together-cinema-companions': Number(movieCount.rows[0]?.count || 0), 'watch-together-dynamic-duo': Number(movieCount.rows[0]?.count || 0), 'watch-together-reel-soulmates': Number(movieCount.rows[0]?.count || 0), 'watch-together-long-term-relationship': Number(episodeCount.rows[0]?.count || 0), 'watch-together-episode-experts': Number(episodeCount.rows[0]?.count || 0), 'watch-together-binge-legends': Number(episodeCount.rows[0]?.count || 0) }
-  const normalizeGenre = (name) => String(name || '').trim().toLocaleLowerCase()
-  const genreCounts = new Map()
-  for (const row of genreHistory.rows) {
-    for (const genre of new Set((row.genre_names || []).map(normalizeGenre).filter(Boolean))) {
-      genreCounts.set(genre, (genreCounts.get(genre) || 0) + 1)
-    }
-  }
-  for (const [achievementId, genre] of WATCH_TOGETHER_AUTOMATIC_GENRE_RULES) auto[achievementId] = genreCounts.get(normalizeGenre(genre)) || 0
-  auto['watch-together-genre-tourists'] = genreCounts.size
   const unlocked = new Map(unlocks.rows.map((row) => [row.achievement_id, row.unlocked_at]))
   return WATCH_TOGETHER_ACHIEVEMENTS.map((achievement) => {
-    const current = achievement.tracking === 'automatic' ? (auto[achievement.id] || 0) : (counts.get(achievement.id) || 0)
-    return { ...achievement, progress: { current: Math.min(current, achievement.target), target: achievement.target, complete: current >= achievement.target }, unlocked: unlocked.has(achievement.id), unlockedAt: unlocked.get(achievement.id) || null }
+    const current = evaluated.get(achievement.id)?.current || 0
+    const unlockedAt = unlocked.get(achievement.id) || null
+    return { ...achievement, progress: { current: Math.min(current, achievement.target), target: achievement.target, complete: current >= achievement.target }, unlocked: Boolean(unlockedAt), unlockedAt }
   })
 }
 
