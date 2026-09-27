@@ -92,21 +92,22 @@ export async function importEntertainmentNews(pool, { fetchImpl = fetch, feeds }
   let selectedFeeds = feeds
   if (!Array.isArray(selectedFeeds)) {
     await ensureRssSourcesTable(pool)
-    selectedFeeds = (await listRssSources(pool, { enabledOnly: true })).map((source) => source.url)
+    selectedFeeds = (await listRssSources(pool, { enabledOnly: true })).map((source) => ({ url: source.url, category: source.category }))
   }
-  const settledFeeds = await Promise.allSettled(selectedFeeds.map((url) => fetchNewsFeed(fetchImpl, url)))
+  const settledFeeds = await Promise.allSettled(selectedFeeds.map((source) => fetchNewsFeed(fetchImpl, typeof source === 'string' ? source : source.url)))
   const errors = []
   const articleByLink = new Map()
   let fetchedCount = 0
 
   settledFeeds.forEach((result, index) => {
     if (result.status === 'rejected') {
-      errors.push({ feed: selectedFeeds[index], message: result.reason?.message ?? String(result.reason) })
+      errors.push({ feed: typeof selectedFeeds[index] === 'string' ? selectedFeeds[index] : selectedFeeds[index].url, message: result.reason?.message ?? String(result.reason) })
       return
     }
     for (const article of result.value) {
       fetchedCount += 1
       const existing = articleByLink.get(article.link)
+      const category = typeof selectedFeeds[index] === 'string' ? null : selectedFeeds[index].category
       articleByLink.set(article.link, existing
         ? {
             ...existing,
@@ -115,7 +116,7 @@ export async function importEntertainmentNews(pool, { fetchImpl = fetch, feeds }
             photoUrl: article.photoUrl ?? existing.photoUrl,
             categories: [...new Set([...existing.categories, ...article.categories])],
           }
-        : article)
+        : { ...article, category })
     }
   })
 

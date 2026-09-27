@@ -61,16 +61,24 @@ function isSchemaSetupQuery(sql) {
     sql.includes('ALTER TABLE tv_shows')
     || sql.includes('ALTER TABLE users')
     || sql.includes('CREATE TABLE IF NOT EXISTS user_section_preferences')
+    || sql.includes('CREATE TABLE IF NOT EXISTS user_news_preferences')
     || sql.includes('CREATE TABLE IF NOT EXISTS site_theme_preferences')
     || sql.includes('CREATE TABLE IF NOT EXISTS admin_job_executions')
     || sql.includes('CREATE TABLE IF NOT EXISTS rss_sources')
+    || sql.includes('ALTER TABLE rss_sources')
+    || sql.includes('CREATE TABLE IF NOT EXISTS app_data_migrations')
+    || sql.includes('INSERT INTO app_data_migrations')
     || sql.includes('INSERT INTO rss_sources')
+    || sql === 'BEGIN'
+    || sql === 'COMMIT'
+    || sql === 'ROLLBACK'
     || (sql.includes('INSERT INTO site_theme_preferences') && !sql.includes('RETURNING active_theme'))
     || sql.includes('CREATE TABLE IF NOT EXISTS igdb_credentials')
     || sql.includes('CREATE TABLE IF NOT EXISTS igdb_api_credentials')
     || sql.includes('ALTER TABLE user_section_preferences')
     || sql.includes('UPDATE user_section_preferences')
     || sql.includes('INSERT INTO user_section_preferences (user_id)')
+    || sql.includes('INSERT INTO user_news_preferences (user_id)')
     || sql.includes('CREATE TABLE IF NOT EXISTS user_alerts')
     || sql.includes('ALTER TABLE user_alerts')
     || sql.includes('CREATE TABLE IF NOT EXISTS alert_feature_state')
@@ -3730,14 +3738,14 @@ test('user section preferences default to all sections and keep Movies and TV en
 })
 
 test('section preference APIs require authentication and validate updates', async () => {
-  let savedSections = ['movies', 'tv', 'books', 'games', 'calendar']
+  const savedSections = new Map()
   const pool = {
     async query(sql, params) {
       if (isSchemaSetupQuery(sql)) return { rowCount: null, rows: [] }
-      if (sql.includes('FROM users') && sql.includes('WHERE username = $1')) return { rows: [{ id: 17, username: params[0], full_name: 'Florin' }] }
-      if (sql.includes('SELECT enabled_sections')) return { rows: [{ enabled_sections: savedSections }] }
+      if (sql.includes('FROM users') && sql.includes('WHERE username = $1')) return { rows: [{ id: params[0] === 'florin' ? 17 : 18, username: params[0], full_name: params[0] === 'florin' ? 'Florin' : 'Alex' }] }
+      if (sql.includes('SELECT enabled_sections')) return { rows: savedSections.has(params[0]) ? [{ enabled_sections: savedSections.get(params[0]) }] : [] }
       if (sql.includes('INSERT INTO user_section_preferences (user_id, enabled_sections')) {
-        savedSections = params[1]
+        savedSections.set(params[0], params[1])
         return { rows: [] }
       }
       throw new Error(`Unexpected query: ${sql}`)
@@ -3752,20 +3760,101 @@ test('section preference APIs require authentication and validate updates', asyn
     const unauthenticated = await fetch(`${baseUrl}/api/preferences/sections`)
     assert.equal(unauthenticated.status, 401)
 
-    const invalid = await fetch(`${baseUrl}/api/admin/preferences/sections`, {
+    const unauthenticatedUpdate = await fetch(`${baseUrl}/api/preferences/sections`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabledSections: ['books'] }),
+    })
+    assert.equal(unauthenticatedUpdate.status, 401)
+
+    const invalid = await fetch(`${baseUrl}/api/preferences/sections`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', 'x-watchvault-username': 'florin' },
       body: JSON.stringify({ enabledSections: ['movies', 'music'] }),
     })
     assert.equal(invalid.status, 400)
 
-    const update = await fetch(`${baseUrl}/api/admin/preferences/sections`, {
+    const update = await fetch(`${baseUrl}/api/preferences/sections`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', 'x-watchvault-username': 'florin' },
       body: JSON.stringify({ enabledSections: ['games', 'calendar'] }),
     })
     assert.equal(update.status, 200)
     assert.deepEqual((await update.json()).enabled, ['movies', 'tv', 'games', 'calendar'])
+
+    const legacyUpdate = await fetch(`${baseUrl}/api/admin/preferences/sections`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'x-watchvault-username': 'florin' },
+      body: JSON.stringify({ enabledSections: ['books'] }),
+    })
+    assert.equal(legacyUpdate.status, 200)
+    assert.deepEqual((await legacyUpdate.json()).enabled, ['movies', 'tv', 'books'])
+
+    const saved = await fetch(`${baseUrl}/api/preferences/sections`, {
+      headers: { 'x-watchvault-username': 'florin' },
+    })
+    assert.deepEqual((await saved.json()).enabled, ['movies', 'tv', 'books'])
+
+    const otherUser = await fetch(`${baseUrl}/api/preferences/sections`, {
+      headers: { 'x-watchvault-username': 'alex' },
+    })
+    assert.deepEqual((await otherUser.json()).enabled, ['movies', 'tv', 'books', 'games', 'calendar'])
+  } finally {
+    await closeServer(server)
+  }
+})
+
+test('news preference APIs persist category choices per user and require authentication', async () => {
+  const savedPreferences = new Map()
+  const defaultCategories = ['formula-1', 'games', 'movies', 'tv-shows']
+  const pool = {
+    async query(sql, params = []) {
+      if (isSchemaSetupQuery(sql)) return { rowCount: null, rows: [] }
+      if (sql.includes('FROM users') && sql.includes('WHERE username = $1')) {
+        const id = params[0] === 'florin' ? 17 : 18
+        return { rows: [{ id, username: params[0], full_name: params[0] === 'florin' ? 'Florin' : 'Alex' }] }
+      }
+      if (sql.includes('SELECT enabled_categories')) {
+        return { rows: savedPreferences.has(params[0]) ? [{ enabled_categories: savedPreferences.get(params[0]) }] : [] }
+      }
+      if (sql.includes('INSERT INTO user_news_preferences (user_id, enabled_categories')) {
+        savedPreferences.set(params[0], params[1])
+        return { rows: [] }
+      }
+      throw new Error(`Unexpected query: ${sql}`)
+    },
+  }
+  const app = await createApp(pool)
+  const server = app.listen(0)
+
+  try {
+    const baseUrl = `http://127.0.0.1:${server.address().port}/api/preferences/news`
+    assert.equal((await fetch(baseUrl)).status, 401)
+    assert.equal((await fetch(baseUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabledCategories: ['games'] }),
+    })).status, 401)
+
+    const invalid = await fetch(baseUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'x-watchvault-username': 'florin' },
+      body: JSON.stringify({ enabledCategories: ['games', 'music'] }),
+    })
+    assert.equal(invalid.status, 400)
+
+    const update = await fetch(baseUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'x-watchvault-username': 'florin' },
+      body: JSON.stringify({ enabledCategories: ['games', 'formula-1'] }),
+    })
+    assert.equal(update.status, 200)
+    assert.deepEqual((await update.json()).enabled, ['formula-1', 'games'])
+
+    const saved = await fetch(baseUrl, { headers: { 'x-watchvault-username': 'florin' } })
+    assert.deepEqual((await saved.json()).enabled, ['formula-1', 'games'])
+    const otherUser = await fetch(baseUrl, { headers: { 'x-watchvault-username': 'alex' } })
+    assert.deepEqual((await otherUser.json()).enabled, defaultCategories)
   } finally {
     await closeServer(server)
   }

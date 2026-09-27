@@ -6,6 +6,7 @@ import { GAME_ACHIEVEMENTS } from './gameAchievements.js'
 import { WATCH_TOGETHER_ACHIEVEMENTS, WATCH_TOGETHER_ACHIEVEMENT_BY_ID, WATCH_TOGETHER_MANUAL_ACHIEVEMENT_IDS } from './watchTogetherAchievements.js'
 import { defaultThemeKey, normalizeActiveTheme } from '../shared/themes.js'
 import { ENTERTAINMENT_NEWS_SOURCES } from './rssSources.js'
+import { NEWS_CATEGORIES } from '../shared/newsCategories.js'
 
 const { Pool } = pg
 
@@ -3338,23 +3339,47 @@ export async function ensureRssSourcesTable(pool) {
       source_key TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       url TEXT NOT NULL,
+      category TEXT,
       enabled BOOLEAN NOT NULL DEFAULT TRUE,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `)
-  for (const source of ENTERTAINMENT_NEWS_SOURCES) {
-    await pool.query(
-      `INSERT INTO rss_sources (source_key, name, url, enabled)
-       VALUES ($1, $2, $3, TRUE)
-       ON CONFLICT (source_key) DO NOTHING`,
-      [source.key, source.name, source.url]
+  await pool.query('ALTER TABLE rss_sources ADD COLUMN IF NOT EXISTS category TEXT')
+  await pool.query(`CREATE TABLE IF NOT EXISTS app_data_migrations (migration_key TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`)
+  // The unique migration key serializes API and importer startups. A rollback restores
+  // both the old articles and sources if any part of the transition fails.
+  const client = pool instanceof Pool ? await pool.connect() : pool
+  try {
+    await client.query('BEGIN')
+    const claimed = await client.query(
+      `INSERT INTO app_data_migrations (migration_key) VALUES ($1)
+       ON CONFLICT DO NOTHING RETURNING migration_key`,
+      ['news-sources-v2']
     )
+    if (claimed.rows?.length) {
+      await client.query('DELETE FROM news_articles')
+      await client.query('DELETE FROM rss_sources')
+    }
+    for (const source of ENTERTAINMENT_NEWS_SOURCES) {
+      await client.query(
+        `INSERT INTO rss_sources (source_key, name, url, category, enabled)
+         VALUES ($1, $2, $3, $4, TRUE)
+         ON CONFLICT (source_key) DO NOTHING`,
+        [source.key, source.name, source.url, source.category]
+      )
+    }
+    await client.query('COMMIT')
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally {
+    if (client !== pool) client.release()
   }
 }
 
 export async function listRssSources(pool, { enabledOnly = false } = {}) {
   const result = await pool.query(
-    `SELECT source_key, name, url, enabled, updated_at
+    `SELECT source_key, name, url, category, enabled, updated_at
      FROM rss_sources
      ${enabledOnly ? 'WHERE enabled = TRUE' : ''}
      ORDER BY CASE source_key ${ENTERTAINMENT_NEWS_SOURCES.map((source, index) => `WHEN '${source.key}' THEN ${index}`).join(' ')} ELSE ${ENTERTAINMENT_NEWS_SOURCES.length} END`,
@@ -3367,7 +3392,7 @@ export async function updateRssSourceEnabled(pool, { sourceKey, enabled }) {
     `UPDATE rss_sources
      SET enabled = $2, updated_at = NOW()
      WHERE source_key = $1
-     RETURNING source_key, name, url, enabled, updated_at`,
+     RETURNING source_key, name, url, category, enabled, updated_at`,
     [sourceKey, enabled]
   )
   return result.rows[0] ?? null
@@ -3381,10 +3406,13 @@ export async function ensureNewsTables(pool) {
       link TEXT NOT NULL UNIQUE,
       published_at TIMESTAMPTZ,
       photo_url TEXT,
+      category TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `)
+
+  await pool.query('ALTER TABLE news_articles ADD COLUMN IF NOT EXISTS category TEXT')
 
   await pool.query('ALTER TABLE news_articles DROP COLUMN IF EXISTS description')
 
@@ -3498,15 +3526,16 @@ export async function upsertNewsArticles(pool, articles) {
     await client.query('BEGIN')
     for (const article of articles) {
       const result = await client.query(
-        `INSERT INTO news_articles (title, link, published_at, photo_url, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, NOW(), NOW())
+        `INSERT INTO news_articles (title, link, published_at, photo_url, category, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
          ON CONFLICT (link) DO UPDATE SET
            title = EXCLUDED.title,
            published_at = COALESCE(EXCLUDED.published_at, news_articles.published_at),
            photo_url = COALESCE(EXCLUDED.photo_url, news_articles.photo_url),
+           category = COALESCE(EXCLUDED.category, news_articles.category),
            updated_at = NOW()
          RETURNING id, (xmax = 0) AS inserted`,
-        [article.title, article.link, article.publishedAt, article.photoUrl]
+        [article.title, article.link, article.publishedAt, article.photoUrl, article.category ?? null]
       )
       const row = result.rows[0]
       articleIdsByLink.set(article.link, row.id)
@@ -3616,12 +3645,20 @@ export function linkNewsArticlesToTvShows(pool, links) {
 }
 
 export async function listNewsArticles(pool, options = {}) {
-  const { limit = 20, page = 1, actorId = null, movieId = null, showId = null, userId = null, savedOnly = false } = options
+  const { limit = 20, page = 1, actorId = null, movieId = null, showId = null, category = null, userId = null, savedOnly = false, disabledCategories = [] } = options
   const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 20
   const normalizedPage = Number.isInteger(page) ? Math.max(1, page) : 1
   const offset = (normalizedPage - 1) * normalizedLimit
   const params = []
   const conditions = []
+  if (category) {
+    params.push(category)
+    conditions.push(`news_articles.category = $${params.length}`)
+  }
+  if (Array.isArray(disabledCategories) && disabledCategories.length > 0) {
+    params.push(disabledCategories)
+    conditions.push(`COALESCE(news_articles.category, '') <> ALL($${params.length}::TEXT[])`)
+  }
   if (Number.isInteger(actorId)) {
     params.push(actorId)
     conditions.push(`EXISTS (SELECT 1 FROM news_article_actors filter_actor_link JOIN cast_members filter_actor ON filter_actor.id = filter_actor_link.cast_member_id WHERE filter_actor_link.news_article_id = news_articles.id AND filter_actor.tmdb_person_id = $${params.length})`)
@@ -3640,7 +3677,7 @@ export async function listNewsArticles(pool, options = {}) {
   if (savedOnly) conditions.push(`EXISTS (SELECT 1 FROM news_article_saves saved_filter WHERE saved_filter.news_article_id = news_articles.id AND saved_filter.user_id = $${viewerUserParamIndex})`)
   params.push(normalizedLimit, offset)
   const result = await pool.query(
-    `SELECT news_articles.id, news_articles.title, news_articles.link, news_articles.published_at, news_articles.photo_url,
+    `SELECT news_articles.id, news_articles.title, news_articles.link, news_articles.published_at, news_articles.photo_url, news_articles.category,
       (SELECT COUNT(*)::INTEGER FROM news_article_likes WHERE news_article_likes.news_article_id = news_articles.id) AS like_count,
       ${viewerUserId === null ? 'FALSE' : `EXISTS (SELECT 1 FROM news_article_likes viewer_like WHERE viewer_like.news_article_id = news_articles.id AND viewer_like.user_id = $${viewerUserParamIndex})`} AS liked_by_current_user,
       ${viewerUserId === null ? 'FALSE' : `EXISTS (SELECT 1 FROM news_article_saves viewer_save WHERE viewer_save.news_article_id = news_articles.id AND viewer_save.user_id = $${viewerUserParamIndex})`} AS saved_by_current_user,
@@ -3661,6 +3698,47 @@ export async function listNewsArticles(pool, options = {}) {
     params
   )
   return result.rows
+}
+
+const defaultEnabledNewsCategories = NEWS_CATEGORIES.map(({ key }) => key)
+
+export async function ensureUserNewsPreferencesTable(pool) {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_news_preferences (
+      user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      enabled_categories TEXT[] NOT NULL DEFAULT ARRAY['formula-1', 'games', 'movies', 'tv-shows']::TEXT[],
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CHECK (enabled_categories <@ ARRAY['formula-1', 'games', 'movies', 'tv-shows']::TEXT[])
+    )
+  `)
+  await pool.query(`
+    INSERT INTO user_news_preferences (user_id)
+    SELECT id FROM users
+    ON CONFLICT (user_id) DO NOTHING
+  `)
+}
+
+export async function getUserEnabledNewsCategories(pool, userId) {
+  const result = await pool.query(
+    'SELECT enabled_categories FROM user_news_preferences WHERE user_id = $1 LIMIT 1',
+    [userId]
+  )
+  const enabledCategories = result.rows[0]?.enabled_categories
+  return Array.isArray(enabledCategories) ? enabledCategories : defaultEnabledNewsCategories
+}
+
+export async function saveUserEnabledNewsCategories(pool, { userId, enabledCategories }) {
+  if (!Array.isArray(enabledCategories) || enabledCategories.some((category) => !defaultEnabledNewsCategories.includes(category))) {
+    throw new Error('Enabled news categories must contain only formula-1, games, movies, and tv-shows.')
+  }
+  const normalizedCategories = defaultEnabledNewsCategories.filter((category) => enabledCategories.includes(category))
+  await pool.query(
+    `INSERT INTO user_news_preferences (user_id, enabled_categories, updated_at)
+     VALUES ($1, $2::TEXT[], NOW())
+     ON CONFLICT (user_id) DO UPDATE SET enabled_categories = EXCLUDED.enabled_categories, updated_at = NOW()`,
+    [userId, normalizedCategories]
+  )
+  return normalizedCategories
 }
 
 async function getNewsArticleLikeCount(pool, articleId) {

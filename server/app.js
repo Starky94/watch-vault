@@ -1,5 +1,6 @@
 import express from 'express'
 import { loadConfig } from './config.js'
+import { NEWS_CATEGORIES } from '../shared/newsCategories.js'
 import {
   addMovieToWatchlistForUser,
   addNewsArticleLikeForUser,
@@ -42,8 +43,11 @@ import {
   updateRssSourceEnabled,
   saveActiveSiteTheme,
   ensureUserSectionPreferencesTable,
+  ensureUserNewsPreferencesTable,
   getUserEnabledSections,
+  getUserEnabledNewsCategories,
   saveUserEnabledSections,
+  saveUserEnabledNewsCategories,
   ensureFilelistTables,
   getFilelistCredentialStatus,
   getFilelistCredentials,
@@ -186,7 +190,7 @@ import { fetchBookById, fetchRelatedBooksByCategory, searchBooksByTitle } from '
 import { buildFilelistSearchUrl, buildFilelistTvEpisodeQuery, decryptFilelistValue, encryptFilelistValue, mapFilelistResults } from './filelist.js'
 import { fetchIgdbAccessToken, igdbRequest } from './igdbClient.js'
 import { getSeasonalTheme, isAvailableTheme } from '../shared/themes.js'
-import { entertainmentNewsSourceKeys } from './rssSources.js'
+import { entertainmentNewsSourceKeys, newsCategoryKeys } from './rssSources.js'
 
 const bookReadingFormats = new Set(['physical', 'ebook', 'audiobook'])
 const gameStatuses = new Set(['played', 'backlog', 'playing', 'dropped', 'completed'])
@@ -320,6 +324,7 @@ export async function createApp(pool, options = {}) {
   await ensureAdminJobExecutionsTable(pool)
   await ensureRssSourcesTable(pool)
   await ensureUserSectionPreferencesTable(pool)
+  await ensureUserNewsPreferencesTable(pool)
 
   const app = express()
   app.use(express.json())
@@ -1733,7 +1738,7 @@ export async function createApp(pool, options = {}) {
         },
         filelist: { configured: Boolean(credential), updatedAt: credential?.updated_at ?? null },
         igdb: { configured: Boolean(igdbCredential), updatedAt: igdbCredential?.updated_at ?? null },
-        rssSources: rssSources.map((source) => ({ key: source.source_key, name: source.name, url: source.url, enabled: Boolean(source.enabled), updatedAt: source.updated_at })),
+        rssSources: rssSources.map((source) => ({ key: source.source_key, name: source.name, url: source.url, category: source.category, enabled: Boolean(source.enabled), updatedAt: source.updated_at })),
         sections: { enabled: enabledSections },
       })
     } catch (error) {
@@ -1752,7 +1757,7 @@ export async function createApp(pool, options = {}) {
       await ensureRssSourcesTable(pool)
       const source = await updateRssSourceEnabled(pool, { sourceKey, enabled })
       if (!source) return response.status(404).json({ error: `Unknown RSS source: ${sourceKey}` })
-      response.json({ key: source.source_key, name: source.name, url: source.url, enabled: Boolean(source.enabled), updatedAt: source.updated_at })
+      response.json({ key: source.source_key, name: source.name, url: source.url, category: source.category, enabled: Boolean(source.enabled), updatedAt: source.updated_at })
     } catch (error) { next(error) }
   })
 
@@ -1764,7 +1769,9 @@ export async function createApp(pool, options = {}) {
       const user = await getAuthenticatedUser(pool, request)
       const savedOnly = request.query.saved === 'true'
       if (savedOnly && !user) return response.status(401).json({ error: 'Authentication required' })
-      const articles = await listNewsArticles(pool, { limit: pagination.limit + 1, page: pagination.page, userId: user?.id ?? null, savedOnly, ...filters })
+      const enabledCategories = user ? await getUserEnabledNewsCategories(pool, user.id) : null
+      const disabledCategories = enabledCategories ? NEWS_CATEGORIES.map(({ key }) => key).filter((key) => !enabledCategories.includes(key)) : []
+      const articles = await listNewsArticles(pool, { limit: pagination.limit + 1, page: pagination.page, userId: user?.id ?? null, savedOnly, disabledCategories, ...filters })
       const pagedArticles = articles.slice(0, pagination.limit)
       response.json({
         count: pagedArticles.length,
@@ -1774,6 +1781,7 @@ export async function createApp(pool, options = {}) {
           link: article.link,
           publishedAt: article.published_at,
           photoUrl: article.photo_url,
+          category: article.category,
           likeCount: Number(article.like_count) || 0,
           likedByCurrentUser: Boolean(article.liked_by_current_user),
           savedByCurrentUser: Boolean(article.saved_by_current_user),
@@ -1868,7 +1876,7 @@ export async function createApp(pool, options = {}) {
     } catch (error) { next(error) }
   })
 
-  app.put('/api/admin/preferences/sections', async (request, response, next) => {
+  const updateSectionPreferences = async (request, response, next) => {
     try {
       const user = await getAuthenticatedUser(pool, request)
       if (!user) return response.status(401).json({ error: 'Authentication required' })
@@ -1877,6 +1885,29 @@ export async function createApp(pool, options = {}) {
         return response.status(400).json({ error: 'Enabled sections must contain only movies, tv, books, games, and calendar.' })
       }
       response.json({ enabled: await saveUserEnabledSections(pool, { userId: user.id, enabledSections }) })
+    } catch (error) { next(error) }
+  }
+  app.put('/api/preferences/sections', updateSectionPreferences)
+  app.put('/api/admin/preferences/sections', updateSectionPreferences)
+
+  app.get('/api/preferences/news', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      response.json({ enabled: await getUserEnabledNewsCategories(pool, user.id) })
+    } catch (error) { next(error) }
+  })
+
+  app.put('/api/preferences/news', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const enabledCategories = request.body?.enabledCategories
+      const validCategories = ['formula-1', 'games', 'movies', 'tv-shows']
+      if (!Array.isArray(enabledCategories) || enabledCategories.some((category) => typeof category !== 'string' || !validCategories.includes(category))) {
+        return response.status(400).json({ error: 'Enabled news categories must contain only formula-1, games, movies, and tv-shows.' })
+      }
+      response.json({ enabled: await saveUserEnabledNewsCategories(pool, { userId: user.id, enabledCategories }) })
     } catch (error) { next(error) }
   })
 
@@ -3475,9 +3506,11 @@ function readNewsFilters(request) {
   const actorId = parse('actor')
   const movieId = parse('movie')
   const showId = parse('show')
+  const category = request.query.category === undefined || request.query.category === '' ? null : request.query.category
+  if (category !== null && (typeof category !== 'string' || !newsCategoryKeys.has(category))) return { error: 'Unknown news category' }
   if ([actorId, movieId, showId].some(Number.isNaN)) return { error: 'News filters must be positive integer IDs' }
   if (movieId && showId) return { error: 'Choose either a movie or a show filter' }
-  return { actorId, movieId, showId }
+  return { actorId, movieId, showId, category }
 }
 
 function decodeHtmlEntities(value) {

@@ -14,6 +14,7 @@ services:
       - .:/app
       - api-node-modules:/app/node_modules
     environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-watchvault}
       CHOKIDAR_USEPOLLING: "true"
       CHOKIDAR_INTERVAL: "1000"
 
@@ -62,6 +63,8 @@ services:
     volumes:
       - .:/app
       - api-node-modules:/app/node_modules
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-watchvault}
 
   importer-games-upcoming:
     build:

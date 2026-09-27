@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import './App.css'
 import { defaultThemeKey, seasonalThemes } from '../shared/themes.js'
+import { NEWS_CATEGORIES } from '../shared/newsCategories.js'
 import { applyActiveTheme, readCachedActiveTheme } from './theme.js'
 
 const primaryViews = {
@@ -32,6 +33,7 @@ const navItems = [
 ]
 
 const defaultEnabledSections = ['movies', 'tv', 'books', 'games', 'calendar']
+const defaultEnabledNewsCategories = NEWS_CATEGORIES.map(({ key }) => key)
 const requiredEnabledSections = ['movies', 'tv']
 const sectionByPrimaryView = {
   [primaryViews.movies]: 'movies',
@@ -71,6 +73,7 @@ const appScreens = {
 
 const routeKinds = {
   home: 'home',
+  profile: 'profile',
   stats: 'stats',
   search: 'search',
   discover: 'discover',
@@ -120,7 +123,7 @@ const moviesPageSize = 30
 const statsWatchedMoviesPageSize = 30
 const watchTogetherHistoryPageSize = 20
 const newsPageSize = 20
-const emptyNewsFilters = { actor: null, movie: null, show: null }
+const emptyNewsFilters = { actor: null, movie: null, show: null, category: null }
 const genreAccentPalette = ['#ff6b7a', '#7c8dff', '#ffd86f', '#84b3ff', '#ff6cb6', '#67e8f9', '#9ae66e']
 const statsActorColors = ['#c99a75', '#8f5e48', '#5e7792', '#a47265']
 
@@ -235,7 +238,7 @@ function App() {
   const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => getLocalIsoDate())
   const [calendarState, setCalendarState] = useState({ status: 'idle', events: [], upcoming: [], error: '' })
   const [moviesScreenMode, setMoviesScreenMode] = useState(movieScreenModes.overview)
-  const [currentScreen, setCurrentScreen] = useState(appScreens.dashboard)
+  const [currentScreen, setCurrentScreen] = useState(() => readAppRoute().kind === routeKinds.profile ? appScreens.account : appScreens.dashboard)
   const [searchInput, setSearchInput] = useState(() => readAppRoute().query || '')
   const [searchError, setSearchError] = useState('')
   const [searchResultsState, setSearchResultsState] = useState({
@@ -268,10 +271,13 @@ function App() {
   const igdbSearchRequestId = useRef(0)
   const igdbSearchStartedQueryRef = useRef('')
   const [activeSearchSource, setActiveSearchSource] = useState('watchvault')
-  const [user, setUser] = useState(null)
+  const [user, setUser] = useState(() => readStoredUser())
   const [activeTheme, setActiveTheme] = useState(() => readCachedActiveTheme())
   const [themeState, setThemeState] = useState({ status: 'loading', pendingTheme: null, error: '', message: '' })
   const [enabledSections, setEnabledSections] = useState(defaultEnabledSections)
+  const [sectionsStatus, setSectionsStatus] = useState('loading')
+  const [enabledNewsCategories, setEnabledNewsCategories] = useState(defaultEnabledNewsCategories)
+  const [newsPreferencesStatus, setNewsPreferencesStatus] = useState('loading')
   const [authStatus, setAuthStatus] = useState('idle')
   const [authError, setAuthError] = useState('')
   const [changePasswordState, setChangePasswordState] = useState({
@@ -533,7 +539,7 @@ function App() {
     function handlePopState() {
       const nextRoute = readAppRoute()
       setCurrentRoute(nextRoute)
-      setCurrentScreen(appScreens.dashboard)
+      setCurrentScreen(nextRoute.kind === routeKinds.profile ? appScreens.account : appScreens.dashboard)
       setActiveView(
         nextRoute.kind === routeKinds.stats
           ? primaryViews.stats
@@ -644,24 +650,6 @@ function App() {
   }, [activeTheme])
 
   useEffect(() => {
-    try {
-      const storedUser = window.localStorage.getItem(authStorageKey)
-
-      if (!storedUser) {
-        return
-      }
-
-      const parsedUser = JSON.parse(storedUser)
-
-      if (parsedUser?.username && parsedUser?.fullName) {
-        setUser(parsedUser)
-      }
-    } catch {
-      window.localStorage.removeItem(authStorageKey)
-    }
-  }, [])
-
-  useEffect(() => {
     if (user?.username && user?.fullName) {
       window.localStorage.setItem(authStorageKey, JSON.stringify(user))
       return
@@ -672,20 +660,59 @@ function App() {
 
   useEffect(() => {
     if (!user) {
-      setEnabledSections(defaultEnabledSections)
+      setEnabledNewsCategories(defaultEnabledNewsCategories)
+      setNewsPreferencesStatus('idle')
       return
     }
 
     let cancelled = false
+    setNewsPreferencesStatus('loading')
+
+    async function loadNewsPreferences() {
+      try {
+        const response = await fetch('/api/preferences/news', { headers: buildAuthHeaders(user) })
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+        if (!cancelled) {
+          setEnabledNewsCategories(normalizeEnabledNewsCategories(payload.enabled))
+          setNewsPreferencesStatus('ready')
+        }
+      } catch {
+        if (!cancelled) {
+          setEnabledNewsCategories(defaultEnabledNewsCategories)
+          setNewsPreferencesStatus('ready')
+        }
+      }
+    }
+
+    void loadNewsPreferences()
+    return () => { cancelled = true }
+  }, [user])
+
+  useEffect(() => {
+    if (!user) {
+      setEnabledSections(defaultEnabledSections)
+      setSectionsStatus('idle')
+      return
+    }
+
+    let cancelled = false
+    setSectionsStatus('loading')
 
     async function loadEnabledSections() {
       try {
         const response = await fetch('/api/preferences/sections', { headers: buildAuthHeaders(user) })
         const payload = await response.json().catch(() => ({}))
         if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
-        if (!cancelled) setEnabledSections(normalizeEnabledSections(payload.enabled))
+        if (!cancelled) {
+          setEnabledSections(normalizeEnabledSections(payload.enabled))
+          setSectionsStatus('ready')
+        }
       } catch {
-        if (!cancelled) setEnabledSections(defaultEnabledSections)
+        if (!cancelled) {
+          setEnabledSections(defaultEnabledSections)
+          setSectionsStatus('ready')
+        }
       }
     }
 
@@ -710,10 +737,18 @@ function App() {
   function handleCloseLogin() {
     setAuthError('')
     setAuthStatus('idle')
-    setCurrentScreen(appScreens.dashboard)
+    if (currentRoute.kind === routeKinds.profile) {
+      handleNavigateToPath('/', { kind: routeKinds.home })
+    } else {
+      setCurrentScreen(appScreens.dashboard)
+    }
   }
 
   function handleOpenAdmin() {
+    if (currentRoute.kind === routeKinds.profile) {
+      window.history.pushState({}, '', '/')
+      setCurrentRoute({ kind: routeKinds.home })
+    }
     setCurrentScreen(appScreens.admin)
   }
 
@@ -728,6 +763,8 @@ function App() {
       error: '',
       message: '',
     })
+    if (currentRoute.kind !== routeKinds.profile) window.history.pushState({}, '', '/profile')
+    setCurrentRoute({ kind: routeKinds.profile })
     setCurrentScreen(appScreens.account)
   }
 
@@ -737,12 +774,15 @@ function App() {
       error: '',
       message: '',
     })
-    setCurrentScreen(appScreens.dashboard)
+    handleNavigateToPath('/', { kind: routeKinds.home })
   }
 
   function handleLogout() {
     setUser(null)
     setEnabledSections(defaultEnabledSections)
+    setSectionsStatus('idle')
+    setEnabledNewsCategories(defaultEnabledNewsCategories)
+    setNewsPreferencesStatus('idle')
     setAuthStatus('idle')
     setAuthError('')
     setWatchlistActionState({
@@ -766,6 +806,11 @@ function App() {
       message: '',
     })
     setCurrentScreen(appScreens.dashboard)
+
+    if (currentRoute.kind === routeKinds.profile) {
+      window.history.replaceState({}, '', '/')
+      setCurrentRoute({ kind: routeKinds.home })
+    }
 
     if (currentRoute.kind !== routeKinds.movieDetail && currentRoute.kind !== routeKinds.personDetail && currentRoute.kind !== routeKinds.bookDetail && currentRoute.kind !== routeKinds.authorDetail) {
       setActiveView(primaryViews.home)
@@ -1090,7 +1135,7 @@ function App() {
 
       setUser(payload.user)
       setAuthStatus('success')
-      setCurrentScreen(appScreens.dashboard)
+      setCurrentScreen(currentRoute.kind === routeKinds.profile ? appScreens.account : appScreens.dashboard)
     } catch (error) {
       setAuthStatus('error')
       setAuthError(error instanceof Error ? error.message : 'Unable to sign in right now.')
@@ -1139,6 +1184,7 @@ function App() {
   }
 
   function handleMovieViewSelection(view) {
+    setCurrentScreen(appScreens.dashboard)
     if (view === primaryViews.news) {
       handleNavigateToPath('/news', { kind: routeKinds.news }, view)
       setSelectedGenre(null)
@@ -2741,7 +2787,7 @@ function App() {
   }
 
   async function handleSaveEnabledSections(nextEnabledSections) {
-    const response = await fetch('/api/admin/preferences/sections', {
+    const response = await fetch('/api/preferences/sections', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', ...buildAuthHeaders(user) },
       body: JSON.stringify({ enabledSections: nextEnabledSections }),
@@ -2750,7 +2796,19 @@ function App() {
     if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
     const enabled = normalizeEnabledSections(payload.enabled)
     setEnabledSections(enabled)
-    setAdminOverviewState((previousState) => ({ ...previousState, sections: { enabled } }))
+    return enabled
+  }
+
+  async function handleSaveEnabledNewsCategories(nextEnabledCategories) {
+    const response = await fetch('/api/preferences/news', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...buildAuthHeaders(user) },
+      body: JSON.stringify({ enabledCategories: nextEnabledCategories }),
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+    const enabled = normalizeEnabledNewsCategories(payload.enabled)
+    setEnabledNewsCategories(enabled)
     return enabled
   }
 
@@ -3995,7 +4053,7 @@ function App() {
       </aside>
 
       <main className="dashboard">
-        {currentScreen === appScreens.login ? (
+        {currentScreen === appScreens.login || (currentScreen === appScreens.account && !user) ? (
           <LoginScreen
             authError={authError}
             authStatus={authStatus}
@@ -4054,7 +4112,6 @@ function App() {
                 onClearFilelistSettings={handleClearFilelistSettings}
                 onSaveIgdbSettings={handleSaveIgdbSettings}
                 onClearIgdbSettings={handleClearIgdbSettings}
-                onSaveEnabledSections={handleSaveEnabledSections}
                 onSetRssSourceEnabled={handleSetRssSourceEnabled}
                 onSetActiveTheme={handleSetActiveTheme}
                 themeState={themeState}
@@ -4062,7 +4119,13 @@ function App() {
             ) : currentScreen === appScreens.account ? (
               <AccountScreen
                 changePasswordState={changePasswordState}
+                enabledSections={enabledSections}
+                enabledNewsCategories={enabledNewsCategories}
+                sectionsStatus={sectionsStatus}
+                newsPreferencesStatus={newsPreferencesStatus}
                 onBack={handleOpenDashboard}
+                onSaveEnabledSections={handleSaveEnabledSections}
+                onSaveEnabledNewsCategories={handleSaveEnabledNewsCategories}
                 onSubmit={handleChangePassword}
                 user={user}
               />
@@ -4193,6 +4256,7 @@ function App() {
               <NewsScreen
                 route={currentRoute}
                 user={user}
+                enabledNewsCategories={enabledNewsCategories}
                 onOpenLogin={handleOpenLogin}
                 onNavigateNews={(filters, tab = currentRoute.tab) => handleNavigateToPath(buildNewsPath(filters, tab), { kind: routeKinds.news, filters, tab }, primaryViews.news)}
               />
@@ -4546,7 +4610,7 @@ function DesktopTopbar({ alertsState, onOpenAdmin, onOpenAccount, onOpenAlert, o
                 </div>
                 <button type="button" className="profile-dropdown-item" onClick={handleOpenAccountMenuItem} role="menuitem">
                   <UserIcon />
-                  <span>Change Password</span>
+                  <span>Profile</span>
                 </button>
                 <button type="button" className="profile-dropdown-item" onClick={handleOpenAdminMenuItem} role="menuitem">
                   <ShieldIcon />
@@ -4976,8 +5040,11 @@ function normalizeSearchLabel(value) {
   return String(value || '').toLocaleLowerCase().replace(/[^a-z0-9]/g, '')
 }
 
-function NewsScreen({ route, user, onNavigateNews, onOpenLogin }) {
-  const filters = route?.filters ?? emptyNewsFilters
+function NewsScreen({ route, user, enabledNewsCategories = defaultEnabledNewsCategories, onNavigateNews, onOpenLogin }) {
+  const routeFilters = route?.filters ?? emptyNewsFilters
+  const filters = routeFilters.category && !enabledNewsCategories.includes(routeFilters.category)
+    ? { ...routeFilters, category: null }
+    : routeFilters
   const tab = route?.tab === 'saved' ? 'saved' : 'news'
   const [feed, setFeed] = useState({ status: 'loading', articles: [], hasNextPage: true, error: '' })
   const [likeAction, setLikeAction] = useState({ articleId: null, errorArticleId: null, error: '' })
@@ -5001,7 +5068,7 @@ function NewsScreen({ route, user, onNavigateNews, onOpenLogin }) {
     return () => window.removeEventListener('scroll', updateScrollToTopVisibility)
   }, [])
 
-  const filterKey = `${tab}:${filters.actor ?? ''}:${filters.movie ?? ''}:${filters.show ?? ''}`
+  const filterKey = `${tab}:${filters.actor ?? ''}:${filters.movie ?? ''}:${filters.show ?? ''}:${filters.category ?? ''}:${enabledNewsCategories.join(',')}`
   const loadPage = useCallback(async (page) => {
     if (loadingRef.current || !mountedRef.current) return
     if (tab === 'saved' && !user) {
@@ -5125,7 +5192,7 @@ function NewsScreen({ route, user, onNavigateNews, onOpenLogin }) {
       <section className="news-page">
         <NewsHeading />
         <NewsTabs activeTab={tab} onChange={(nextTab) => onNavigateNews(filters, nextTab)} />
-        <NewsFilters filters={filters} onChange={onNavigateNews} />
+        <NewsFilters filters={filters} enabledCategories={enabledNewsCategories} onChange={onNavigateNews} />
         <div className="news-feed-message error" role="alert">
           <p>Could not load the news feed. {feed.error}</p>
           <button type="button" className="secondary-button" onClick={() => loadPage(1)}>Retry</button>
@@ -5138,10 +5205,10 @@ function NewsScreen({ route, user, onNavigateNews, onOpenLogin }) {
     <section className="news-page">
       <NewsHeading />
       <NewsTabs activeTab={tab} onChange={(nextTab) => onNavigateNews(filters, nextTab)} />
-      <NewsFilters filters={filters} onChange={onNavigateNews} />
+      <NewsFilters filters={filters} enabledCategories={enabledNewsCategories} onChange={onNavigateNews} />
       {tab === 'saved' && !user ? <div className="news-feed-message"><p>Sign in to view and manage your saved articles.</p><button type="button" className="secondary-button" onClick={onOpenLogin}>Sign in</button></div> : null}
       {tab !== 'saved' || user ? <>{feed.status === 'loading' ? <NewsFeedSkeleton /> : null}
-      {feed.status !== 'loading' && feed.articles.length === 0 ? <SectionMessage message={filters.actor || filters.movie || filters.show ? 'No articles match these filters.' : tab === 'saved' ? 'You have no saved articles yet.' : 'No stored news articles are available yet.'} /> : null}</> : null}
+      {feed.status !== 'loading' && feed.articles.length === 0 ? <SectionMessage message={filters.actor || filters.movie || filters.show || filters.category ? 'No articles match these filters.' : tab === 'saved' ? 'You have no saved articles yet.' : 'No stored news articles are available yet.'} /> : null}</> : null}
       {feed.articles.length > 0 ? (
         <div className="news-feed" aria-live="polite">
           {feed.articles.map((article, index) => <NewsArticleCard key={article.id} article={article} featured={index === 0} filters={filters} onFilter={onNavigateNews} isLikePending={likeAction.articleId === article.id} likeError={likeAction.errorArticleId === article.id ? likeAction.error : ''} onLike={handleLike} isSavePending={saveAction.articleId === article.id} saveError={saveAction.errorArticleId === article.id ? saveAction.error : ''} onSave={handleSave} />)}
@@ -5162,7 +5229,7 @@ function NewsScreen({ route, user, onNavigateNews, onOpenLogin }) {
 }
 
 function NewsHeading() {
-  return <header className="news-heading"><p className="eyebrow">Entertainment news</p><h1>News Feed</h1><p>Latest movie, TV, and celebrity updates from trusted entertainment publishers.</p></header>
+  return <header className="news-heading"><p className="eyebrow">Latest stories</p><h1>News Feed</h1><p>Formula 1, games, movie, and TV news from the selected RSS sources.</p></header>
 }
 
 function NewsTabs({ activeTab, onChange }) {
@@ -5172,7 +5239,7 @@ function NewsTabs({ activeTab, onChange }) {
   </div>
 }
 
-function NewsFilters({ filters, onChange }) {
+function NewsFilters({ filters, enabledCategories = defaultEnabledNewsCategories, onChange }) {
   const [options, setOptions] = useState({ actors: [], titles: [], selected: { actor: null, movie: null, show: null } })
   const [actorQuery, setActorQuery] = useState('')
   const [titleQuery, setTitleQuery] = useState('')
@@ -5222,9 +5289,12 @@ function NewsFilters({ filters, onChange }) {
     onChange(next)
   }
   return <div className="news-filters" aria-label="Filter news">
+    <div className="news-category-filters" aria-label="News categories">
+      {[{ key: null, name: 'All' }, ...NEWS_CATEGORIES.filter(({ key }) => enabledCategories.includes(key))].map((category) => <button type="button" key={category.key ?? 'all'} className={filters.category === category.key ? 'is-active' : ''} aria-pressed={filters.category === category.key} onClick={() => onChange({ ...filters, category: category.key })}>{category.name}</button>)}
+    </div>
     <div className="news-filter-control"><label htmlFor="news-actor-filter">Actor</label><input id="news-actor-filter" value={actorQuery} onChange={(event) => setActorQuery(event.target.value)} placeholder={selectedActor?.name || 'Search linked actors'} />{actorQuery.trim() ? <div className="news-filter-options">{options.actors.map((actor) => <button type="button" key={actor.id} onClick={() => { onChange({ ...filters, actor: actor.id }); setActorQuery('') }}>{actor.name}</button>)}</div> : null}{selectedActor ? <button type="button" className="news-active-filter" onClick={() => clear('actor')}>{selectedActor.name} <span aria-hidden="true">×</span></button> : null}</div>
     <div className="news-filter-control"><label htmlFor="news-title-filter">Movie or show</label><input id="news-title-filter" value={titleQuery} onChange={(event) => setTitleQuery(event.target.value)} placeholder={selectedTitle?.name || 'Search linked titles'} />{titleQuery.trim() ? <div className="news-filter-options">{options.titles.map((title) => <button type="button" key={`${title.kind}-${title.id}`} onClick={() => { onChange({ ...filters, movie: title.kind === 'movie' ? title.id : null, show: title.kind === 'show' ? title.id : null }); setTitleQuery('') }}><span>{title.name}</span><small>{title.kind === 'movie' ? 'Movie' : 'TV show'}</small></button>)}</div> : null}{selectedTitle ? <button type="button" className="news-active-filter" onClick={() => clear('movie')}>{selectedTitle.name} <span aria-hidden="true">×</span></button> : null}</div>
-    {(filters.actor || filters.movie || filters.show) ? <button type="button" className="news-clear-filters" onClick={() => onChange(emptyNewsFilters)}>Clear filters</button> : null}
+    {(filters.actor || filters.movie || filters.show || filters.category) ? <button type="button" className="news-clear-filters" onClick={() => onChange(emptyNewsFilters)}>Clear filters</button> : null}
   </div>
 }
 
@@ -5237,7 +5307,7 @@ function NewsArticleCard({ article, featured = false, filters, onFilter, isLikeP
       <div className="news-card-primary">
         <a className="news-card-art" href={article.link} target="_blank" rel="noopener noreferrer" aria-label={`Read ${article.title} on ${source}`}>
           {showImage ? <img src={article.photoUrl} alt="" loading="lazy" onError={() => setImageUnavailable(true)} /> : <NewsIcon />}
-          <span className={`news-card-badge${featured ? ' featured' : ''}`}>{featured ? 'Featured' : 'News'}</span>
+          <span className={`news-card-badge${featured ? ' featured' : ''}`}>{NEWS_CATEGORIES.find((category) => category.key === article.category)?.name ?? 'News'}</span>
         </a>
         <div className="news-card-copy">
           <a className="news-card-content-link" href={article.link} target="_blank" rel="noopener noreferrer" aria-label={`Read ${article.title} on ${source}`}>
@@ -5778,20 +5848,14 @@ function LoginScreen({ authError, authStatus, onCancel, onSubmit }) {
   )
 }
 
-function AdminScreen({ activeTheme, adminOverviewState, adminRunState, onBack, onRunJob, onSaveFilelistSettings, onClearFilelistSettings, onSaveIgdbSettings, onClearIgdbSettings, onSaveEnabledSections, onSetActiveTheme, onSetRssSourceEnabled, themeState }) {
+function AdminScreen({ activeTheme, adminOverviewState, adminRunState, onBack, onRunJob, onSaveFilelistSettings, onClearFilelistSettings, onSaveIgdbSettings, onClearIgdbSettings, onSetActiveTheme, onSetRssSourceEnabled, themeState }) {
   const [filelistUsername, setFilelistUsername] = useState('')
   const [filelistPasskey, setFilelistPasskey] = useState('')
   const [filelistState, setFilelistState] = useState({ status: 'idle', error: '' })
   const [igdbClientId, setIgdbClientId] = useState('')
   const [igdbPrivateKey, setIgdbPrivateKey] = useState('')
   const [igdbState, setIgdbState] = useState({ status: 'idle', error: '' })
-  const [sectionState, setSectionState] = useState({ status: 'idle', error: '' })
   const [rssSourceState, setRssSourceState] = useState({ pendingKey: null, error: '' })
-  const [selectedSections, setSelectedSections] = useState(() => normalizeEnabledSections(adminOverviewState.sections?.enabled))
-
-  useEffect(() => {
-    setSelectedSections(normalizeEnabledSections(adminOverviewState.sections?.enabled))
-  }, [adminOverviewState.sections?.enabled])
 
   async function handleFilelistSave(event) {
     event.preventDefault()
@@ -5831,22 +5895,6 @@ function AdminScreen({ activeTheme, adminOverviewState, adminRunState, onBack, o
       setIgdbPrivateKey('')
       setIgdbState({ status: 'success', error: '' })
     } catch (error) { setIgdbState({ status: 'error', error: error instanceof Error ? error.message : 'Unable to clear IGDB settings.' }) }
-  }
-
-  async function handleSectionChange(section) {
-    const nextSections = selectedSections.includes(section)
-      ? selectedSections.filter((selectedSection) => selectedSection !== section)
-      : [...selectedSections, section]
-    setSelectedSections(nextSections)
-    setSectionState({ status: 'loading', error: '' })
-    try {
-      const savedSections = await onSaveEnabledSections(nextSections)
-      setSelectedSections(savedSections)
-      setSectionState({ status: 'success', error: '' })
-    } catch (error) {
-      setSelectedSections(normalizeEnabledSections(adminOverviewState.sections?.enabled))
-      setSectionState({ status: 'error', error: error instanceof Error ? error.message : 'Unable to save section preferences.' })
-    }
   }
 
   async function handleRssSourceToggle(source) {
@@ -5902,7 +5950,7 @@ function AdminScreen({ activeTheme, adminOverviewState, adminRunState, onBack, o
         <article className="admin-summary-card">
           <span>Total News Articles Stored</span>
           <strong>{adminOverviewState.status === 'success' ? formatAdminTotal(adminOverviewState.totalNewsArticles) : '--'}</strong>
-          <p>Entertainment-news articles currently stored in the local database.</p>
+          <p>News articles currently stored in the local database.</p>
         </article>
         <article className="admin-summary-card">
           <span>Stored Data Size</span>
@@ -5912,16 +5960,19 @@ function AdminScreen({ activeTheme, adminOverviewState, adminRunState, onBack, o
       </section>
 
       <section className="content-section admin-content-section rss-sources-section">
-        <div className="section-header"><div><h2>RSS Sources</h2><span>Choose which publishers the hourly Entertainment News Import reads. Changes apply to its next scheduled or manual run.</span></div></div>
+        <div className="section-header"><div><h2>RSS Sources</h2><span>Choose which category feeds the hourly News Import reads. Changes apply to its next scheduled or manual run.</span></div></div>
         <div className="rss-sources-list" aria-label="RSS sources">
-          {adminOverviewState.rssSources.map((source) => {
-            const pending = rssSourceState.pendingKey === source.key
-            return <article key={source.key} className={`rss-source-row${source.enabled ? ' active' : ''}`}>
-              <div><strong>{source.name}</strong><a href={source.url} target="_blank" rel="noreferrer">{source.url}</a></div>
-              <span className={`rss-source-status${source.enabled ? ' active' : ''}`}>{source.enabled ? 'Active' : 'Inactive'}</span>
-              <button type="button" className={source.enabled ? 'secondary-button' : 'primary-button'} aria-pressed={source.enabled} aria-label={`${source.enabled ? 'Deactivate' : 'Activate'} ${source.name} RSS source`} disabled={pending} onClick={() => handleRssSourceToggle(source)}>{pending ? 'Saving…' : source.enabled ? 'Deactivate' : 'Activate'}</button>
-            </article>
-          })}
+          {NEWS_CATEGORIES.map((category) => <section key={category.key} className="rss-source-category" aria-label={`${category.name} RSS sources`}>
+            <h3>{category.name}</h3>
+            {adminOverviewState.rssSources.filter((source) => source.category === category.key).map((source) => {
+              const pending = rssSourceState.pendingKey === source.key
+              return <article key={source.key} className={`rss-source-row${source.enabled ? ' active' : ''}`}>
+                <div><strong>{source.name}</strong><a href={source.url} target="_blank" rel="noreferrer">{source.url}</a></div>
+                <span className={`rss-source-status${source.enabled ? ' active' : ''}`}>{source.enabled ? 'Active' : 'Inactive'}</span>
+                <button type="button" className={source.enabled ? 'secondary-button' : 'primary-button'} aria-pressed={source.enabled} aria-label={`${source.enabled ? 'Deactivate' : 'Activate'} ${source.name} RSS source`} disabled={pending} onClick={() => handleRssSourceToggle(source)}>{pending ? 'Saving…' : source.enabled ? 'Deactivate' : 'Activate'}</button>
+              </article>
+            })}
+          </section>)}
         </div>
         {rssSourceState.error ? <p className="filelist-settings-error" role="alert">{rssSourceState.error}</p> : null}
       </section>
@@ -6037,26 +6088,6 @@ function AdminScreen({ activeTheme, adminOverviewState, adminRunState, onBack, o
         {themeState.error ? <p className="filelist-settings-error" role="alert">{themeState.error}</p> : null}
       </section>
 
-      <section className="content-section admin-content-section section-preferences-section">
-        <div className="section-header"><div><h2>Visible sections</h2><span>Choose which primary sections appear in your navigation. Movies and TV Shows are always available.</span></div></div>
-        <fieldset className="section-preferences-control" disabled={sectionState.status === 'loading'}>
-          <legend>Enabled sections</legend>
-          <div className="section-preferences-options">
-            {[['movies', 'Movies'], ['tv', 'TV Shows'], ['books', 'Books'], ['games', 'Games'], ['calendar', 'Calendar']].map(([section, label]) => {
-              const required = requiredEnabledSections.includes(section)
-              const selected = selectedSections.includes(section)
-              return <label key={section} className={`section-preference-option${selected ? ' selected' : ''}${required ? ' required' : ''}`}>
-                <input type="checkbox" checked={selected} disabled={required} onChange={() => handleSectionChange(section)} />
-                <span>{label}</span>
-                {required ? <small>Required</small> : null}
-              </label>
-            })}
-          </div>
-        </fieldset>
-        {sectionState.status === 'success' ? <p className="filelist-settings-success" role="status">Section preferences saved.</p> : null}
-        {sectionState.status === 'error' ? <p className="filelist-settings-error" role="alert">{sectionState.error}</p> : null}
-      </section>
-
       <section className="content-section admin-content-section filelist-settings-section">
         <div className="section-header"><div><h2>Filelist</h2><span>{adminOverviewState.filelist?.configured ? 'Your encrypted credentials are saved.' : 'Configure your credentials to search from movie pages.'}</span></div></div>
         <form className="filelist-settings-form" onSubmit={handleFilelistSave}>
@@ -6082,10 +6113,12 @@ function AdminScreen({ activeTheme, adminOverviewState, adminRunState, onBack, o
   )
 }
 
-function AccountScreen({ changePasswordState, onBack, onSubmit, user }) {
+function AccountScreen({ changePasswordState, enabledSections, enabledNewsCategories, sectionsStatus, newsPreferencesStatus, onBack, onSaveEnabledSections, onSaveEnabledNewsCategories, onSubmit, user }) {
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
+  const [sectionState, setSectionState] = useState({ status: 'idle', error: '' })
+  const [newsPreferenceState, setNewsPreferenceState] = useState({ status: 'idle', error: '' })
 
   useEffect(() => {
     if (changePasswordState.status === 'success') {
@@ -6104,17 +6137,39 @@ function AccountScreen({ changePasswordState, onBack, onSubmit, user }) {
     })
   }
 
+  async function handleSectionChange(section) {
+    const nextSections = enabledSections.includes(section)
+      ? enabledSections.filter((selectedSection) => selectedSection !== section)
+      : [...enabledSections, section]
+    setSectionState({ status: 'loading', error: '' })
+    try {
+      await onSaveEnabledSections(nextSections)
+      setSectionState({ status: 'success', error: '' })
+    } catch (error) {
+      setSectionState({ status: 'error', error: error instanceof Error ? error.message : 'Unable to save section preferences.' })
+    }
+  }
+
+  async function handleNewsCategoryChange(category) {
+    const nextCategories = enabledNewsCategories.includes(category)
+      ? enabledNewsCategories.filter((selectedCategory) => selectedCategory !== category)
+      : [...enabledNewsCategories, category]
+    setNewsPreferenceState({ status: 'loading', error: '' })
+    try {
+      await onSaveEnabledNewsCategories(nextCategories)
+      setNewsPreferenceState({ status: 'success', error: '' })
+    } catch (error) {
+      setNewsPreferenceState({ status: 'error', error: error instanceof Error ? error.message : 'Unable to save news preferences.' })
+    }
+  }
+
   return (
     <section className="account-page">
       <div className="account-page-header">
         <div>
           <p className="admin-kicker">Account</p>
-          <h1>Change your password</h1>
-          <p>
-            {user?.fullName
-              ? `Update the password for ${user.fullName}'s WatchVault account.`
-              : 'Update your WatchVault password.'}
-          </p>
+          <h1>Your profile</h1>
+          <p>Manage your WatchVault account, navigation, and news preferences.</p>
         </div>
         <button type="button" className="secondary-button admin-back-button" onClick={onBack}>
           <ChevronLeftIcon />
@@ -6122,10 +6177,15 @@ function AccountScreen({ changePasswordState, onBack, onSubmit, user }) {
         </button>
       </div>
 
+      <div className="account-card profile-identity-card">
+        <div className="avatar">{getUserInitial(user.fullName)}</div>
+        <div><h2>{user.fullName}</h2><p>@{user.username}</p></div>
+      </div>
+
       <div className="account-card">
         <div className="account-card-copy">
           <p className="login-kicker">Security</p>
-          <h2>Confirm your current password, then set a new one.</h2>
+          <h2>Change password</h2>
           <p>Your signed-in session stays active after the change. Use the new password the next time you sign in.</p>
         </div>
 
@@ -6178,6 +6238,52 @@ function AccountScreen({ changePasswordState, onBack, onSubmit, user }) {
             </button>
           </div>
         </form>
+      </div>
+
+      <div className="account-card">
+        <div className="account-card-copy">
+          <p className="login-kicker">Navigation</p>
+          <h2>Visible sections</h2>
+          <p>Choose which primary sections appear in your navigation. Movies and TV Shows are always available.</p>
+        </div>
+        <fieldset className="section-preferences-control" disabled={sectionsStatus !== 'ready' || sectionState.status === 'loading'}>
+          <legend>Enabled sections</legend>
+          <div className="section-preferences-options">
+            {[['movies', 'Movies'], ['tv', 'TV Shows'], ['books', 'Books'], ['games', 'Games'], ['calendar', 'Calendar']].map(([section, label]) => {
+              const required = requiredEnabledSections.includes(section)
+              const selected = enabledSections.includes(section)
+              return <label key={section} className={`section-preference-option${selected ? ' selected' : ''}${required ? ' required' : ''}`}>
+                <input type="checkbox" checked={selected} disabled={required} onChange={() => handleSectionChange(section)} />
+                <span>{label}</span>
+                {required ? <small>Required</small> : null}
+              </label>
+            })}
+          </div>
+        </fieldset>
+        {sectionState.status === 'success' ? <p className="filelist-settings-success" role="status">Section preferences saved.</p> : null}
+        {sectionState.status === 'error' ? <p className="filelist-settings-error" role="alert">{sectionState.error}</p> : null}
+      </div>
+
+      <div className="account-card">
+        <div className="account-card-copy">
+          <p className="login-kicker">News</p>
+          <h2>News preferences</h2>
+          <p>Choose which categories appear in your news feed and saved articles.</p>
+        </div>
+        <fieldset className="section-preferences-control" disabled={newsPreferencesStatus !== 'ready' || newsPreferenceState.status === 'loading'}>
+          <legend>Show news from</legend>
+          <div className="section-preferences-options">
+            {NEWS_CATEGORIES.map(({ key, name }) => {
+              const selected = enabledNewsCategories.includes(key)
+              return <label key={key} className={`section-preference-option${selected ? ' selected' : ''}`}>
+                <input type="checkbox" checked={selected} onChange={() => handleNewsCategoryChange(key)} />
+                <span>{name}</span>
+              </label>
+            })}
+          </div>
+        </fieldset>
+        {newsPreferenceState.status === 'success' ? <p className="filelist-settings-success" role="status">News preferences saved.</p> : null}
+        {newsPreferenceState.status === 'error' ? <p className="filelist-settings-error" role="alert">{newsPreferenceState.error}</p> : null}
       </div>
     </section>
   )
@@ -10130,9 +10236,25 @@ function buildAuthHeaders(user) {
   }
 }
 
+function readStoredUser() {
+  try {
+    const storedUser = window.localStorage.getItem(authStorageKey)
+    const parsedUser = storedUser ? JSON.parse(storedUser) : null
+    return parsedUser?.username && parsedUser?.fullName ? parsedUser : null
+  } catch {
+    window.localStorage.removeItem(authStorageKey)
+    return null
+  }
+}
+
 function normalizeEnabledSections(sections) {
   const selected = Array.isArray(sections) ? sections : defaultEnabledSections
   return defaultEnabledSections.filter((section) => requiredEnabledSections.includes(section) || selected.includes(section))
+}
+
+function normalizeEnabledNewsCategories(categories) {
+  const selected = Array.isArray(categories) ? categories : defaultEnabledNewsCategories
+  return defaultEnabledNewsCategories.filter((category) => selected.includes(category))
 }
 
 function isPrimaryViewEnabled(view, enabledSections) {
@@ -11182,6 +11304,7 @@ function getSeasonalThemeLabel(theme) {
 }
 
 function readAppRoute(pathname = window.location.pathname, search = window.location.search) {
+  if (/^\/profile\/?$/.test(pathname)) return { kind: routeKinds.profile }
   if (/^\/news\/?$/.test(pathname)) {
     const params = new URLSearchParams(search)
     const readId = (key) => {
@@ -11190,7 +11313,8 @@ function readAppRoute(pathname = window.location.pathname, search = window.locat
     }
     const movie = readId('movie')
     const tab = params.get('tab') === 'saved' ? 'saved' : 'news'
-    return { kind: routeKinds.news, tab, filters: { actor: readId('actor'), movie, show: movie ? null : readId('show') } }
+    const category = NEWS_CATEGORIES.some((entry) => entry.key === params.get('category')) ? params.get('category') : null
+    return { kind: routeKinds.news, tab, filters: { actor: readId('actor'), movie, show: movie ? null : readId('show'), category } }
   }
 
   if (/^\/stats\/?$/.test(pathname)) {
@@ -11283,6 +11407,7 @@ function buildWatchlistPath({ tab, availability, sort }) {
 function buildNewsPath(filters = emptyNewsFilters, tab = 'news') {
   const params = new URLSearchParams()
   if (tab === 'saved') params.set('tab', 'saved')
+  if (NEWS_CATEGORIES.some((category) => category.key === filters.category)) params.set('category', filters.category)
   if (Number.isInteger(filters.actor) && filters.actor > 0) params.set('actor', filters.actor)
   if (Number.isInteger(filters.movie) && filters.movie > 0) params.set('movie', filters.movie)
   if (Number.isInteger(filters.show) && filters.show > 0 && !params.has('movie')) params.set('show', filters.show)
@@ -11293,6 +11418,7 @@ function buildNewsPath(filters = emptyNewsFilters, tab = 'news') {
 function buildNewsApiPath(page, filters = emptyNewsFilters, tab = 'news') {
   const params = new URLSearchParams({ page: String(page), limit: String(newsPageSize) })
   if (tab === 'saved') params.set('saved', 'true')
+  if (NEWS_CATEGORIES.some((category) => category.key === filters.category)) params.set('category', filters.category)
   if (Number.isInteger(filters.actor) && filters.actor > 0) params.set('actor', filters.actor)
   if (Number.isInteger(filters.movie) && filters.movie > 0) params.set('movie', filters.movie)
   if (Number.isInteger(filters.show) && filters.show > 0 && !params.has('movie')) params.set('show', filters.show)
