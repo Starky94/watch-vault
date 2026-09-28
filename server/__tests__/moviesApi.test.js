@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import pg from 'pg'
 import { readMovieAvailability } from '../app.js'
 import { createApp, sessionCookieFor } from './sessionTestHelpers.js'
 import { addMovieReleaseReminderForUser, buildStatsInsights, countMovies, countStoredDataBytes, ensureMoviesTable, ensureSiteThemePreferencesTable, getActiveSiteTheme, getBookStatsForUser, getMostWatchedActorsForUser, getMovieStatsForUser, getPersonFilmographyPersonalStates, getPersonHistoryForUser, getStatsInsightsForUser, getStreamingPlatformsForUser, getTopRatedThisMonthForUser, getUserEnabledSections, hasMovieReleaseReminderForUser, listCalendarEventsForUser, listContinueWatchingTvShowsForUser, listGenres, listLatestEpisodeTvShows, listMovies, listRecentlyReleasedMovies, listSimilarMovies, listTopRatedMovies, listTvShows, listTvWatchlistShowsForUser, listUpcomingMovies, listWatchedMoviesByGenreForUser, listWatchedTvEpisodesForUser, removeMovieReleaseReminderForUser, saveActiveSiteTheme, saveUserEnabledSections, searchActors, searchBooks, searchGames, searchMovies, searchTvShows, updateTvEpisodeWatchStateForUser, upsertTvEpisodeRatingForUser } from '../database.js'
@@ -328,6 +329,24 @@ test('ensureMoviesTable creates normalized cast tables and watchlist tables', as
   assert.equal(executedSql.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS tv_watchlist_items')), true)
   assert.equal(executedSql.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS watched_tv_shows')), true)
   assert.equal(executedSql.some((sql) => sql.includes('UPDATE movies')), true)
+})
+
+test('ensureMoviesTable releases its schema lock when setup fails', async () => {
+  const calls = []
+  const client = {
+    async query(sql) {
+      calls.push(sql)
+      if (sql.includes('ALTER TABLE movies')) throw new Error('schema setup failed')
+      return { rows: [] }
+    },
+    release() { calls.push('release') },
+  }
+  const pool = Object.assign(Object.create(pg.Pool.prototype), { async connect() { return client } })
+
+  await assert.rejects(ensureMoviesTable(pool), /schema setup failed/)
+  assert.match(calls[0], /pg_advisory_lock/)
+  assert.match(calls.at(-2), /pg_advisory_unlock/)
+  assert.equal(calls.at(-1), 'release')
 })
 
 test('movie release reminders are scoped to the user and only insert for an upcoming movie', async () => {

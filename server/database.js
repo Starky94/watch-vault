@@ -270,6 +270,24 @@ export async function getPersonHistoryForUser(pool, { username, movieIds = [], t
 }
 
 export async function ensureMoviesTable(pool) {
+  if (!(pool instanceof Pool)) return ensureMoviesTableSchema(pool)
+
+  const client = await pool.connect()
+  try {
+    // Import workers run in separate processes and can initialize the same schema at once.
+    // Keep their DDL in a consistent order on one connection to avoid PostgreSQL deadlocks.
+    await client.query('SELECT pg_advisory_lock(hashtext($1), 1)', ['watchvault:movies-schema'])
+    try {
+      await ensureMoviesTableSchema(client)
+    } finally {
+      await client.query('SELECT pg_advisory_unlock(hashtext($1), 1)', ['watchvault:movies-schema'])
+    }
+  } finally {
+    client.release()
+  }
+}
+
+async function ensureMoviesTableSchema(pool) {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS genres (
       id BIGSERIAL PRIMARY KEY,
@@ -368,6 +386,20 @@ export async function ensureMoviesTable(pool) {
     )
     WHERE detail_payload IS NOT NULL
       AND detail_payload ? 'release_dates'
+      AND (
+        jsonb_typeof(detail_payload->'release_dates'->'results') IS DISTINCT FROM 'array'
+        OR EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(
+            CASE
+              WHEN jsonb_typeof(detail_payload->'release_dates'->'results') = 'array'
+                THEN detail_payload->'release_dates'->'results'
+              ELSE '[]'::jsonb
+            END
+          ) AS entry
+          WHERE entry->>'iso_3166_1' IS DISTINCT FROM 'US'
+        )
+      )
   `)
 
   await pool.query(`

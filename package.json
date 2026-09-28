@@ -10,8 +10,9 @@
     "dev": "vite",
     "server": "node server/index.js",
     "server:watch": "node --watch server/index.js",
-    "build": "vite build",
+    "build": "npm run typecheck && vite build",
     "lint": "oxlint",
+    "typecheck": "tsc --noEmit",
     "preview": "vite preview",
     "import:movies": "node server/importMoviesCli.js",
     "import:books": "node server/importBooksCli.js",
@@ -47,6 +48,7 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
     "oxlint": "^1.71.0",
+    "typescript": "^6.0.3",
     "vite": "^8.1.1"
   }
 }

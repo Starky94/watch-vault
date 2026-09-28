@@ -14,6 +14,10 @@ function createPool({ failInsert = false, failTheme = false } = {}) {
         entries.push({ source: params[0], context: params[1], message: params[2], stack: params[3] })
         return { rows: [] }
       }
+      if (sql.includes('DELETE FROM error_logs')) {
+        entries.splice(0, entries.length)
+        return { rows: [] }
+      }
       if (failTheme && sql.includes('FROM site_theme_preferences')) throw new Error('theme failed')
       if (sql.includes('FROM error_logs')) {
         const filtered = entries.filter((entry) => (!params[0] || entry.source === params[0]) && (!params[1] || `${entry.context} ${entry.message} ${entry.stack}`.toLowerCase().includes(params[1].toLowerCase())))
@@ -47,6 +51,24 @@ test('error log API is admin-only and supports source and text filters', async (
     assert.equal(payload.logs[0].context, 'books')
     assert.equal((await fetch(`${base}/api/admin/error-logs?page=-1`, { headers: { Cookie: sessionCookieFor('florind') } })).status, 400)
   })
+})
+
+test('clearing error logs is admin-only and removes the complete history', async () => {
+  const pool = createPool()
+  await insertErrorLog(pool, { source: 'api', context: 'GET /api/theme', error: new Error('theme broke') })
+  await insertErrorLog(pool, { source: 'job', context: 'books', error: new Error('import broke') })
+  await withServer(pool, {}, async (base) => {
+    assert.equal((await fetch(`${base}/api/admin/error-logs`, { method: 'DELETE' })).status, 401)
+    assert.equal((await fetch(`${base}/api/admin/error-logs`, { method: 'DELETE', headers: { Cookie: sessionCookieFor('alex') } })).status, 403)
+    const response = await fetch(`${base}/api/admin/error-logs`, { method: 'DELETE', headers: { Cookie: sessionCookieFor('florind') } })
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), { cleared: true })
+    const filteredResponse = await fetch(`${base}/api/admin/error-logs?source=job&search=import`, { headers: { Cookie: sessionCookieFor('florind') } })
+    const payload = await filteredResponse.json()
+    assert.equal(payload.total, 0)
+    assert.deepEqual(payload.logs, [])
+  })
+  assert.equal(pool.entries.length, 0)
 })
 
 test('unexpected API failure is recorded once and logging failure preserves the 500 response', async () => {

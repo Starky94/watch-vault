@@ -37,6 +37,7 @@ function isSchemaSetupQuery(sql) {
     sql.includes('CREATE TABLE IF NOT EXISTS movie_release_reminders') ||
     sql.includes('CREATE TABLE IF NOT EXISTS watch_together_') ||
     sql.includes('CREATE UNIQUE INDEX IF NOT EXISTS watch_together_') ||
+    sql.includes('CREATE INDEX IF NOT EXISTS watch_together_') ||
     sql.includes('ALTER TABLE watch_together_') ||
     sql.includes('CREATE TABLE IF NOT EXISTS watched_movies') ||
     sql.includes('ALTER TABLE watched_movies') ||
@@ -44,6 +45,7 @@ function isSchemaSetupQuery(sql) {
     sql.includes('CREATE TABLE IF NOT EXISTS tv_watchlist_items') ||
     sql.includes('CREATE TABLE IF NOT EXISTS watched_tv_shows')
     || sql.includes('ALTER TABLE users')
+    || sql.includes('ALTER TABLE news_articles')
     || sql.includes('CREATE TABLE IF NOT EXISTS user_alerts')
     || sql.includes('ALTER TABLE user_alerts')
     || sql.includes('CREATE TABLE IF NOT EXISTS alert_feature_state')

@@ -1,8 +1,17 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
+import { useHomePage } from './home/useHomePage.ts'
+import { HomeScreen } from './home/HomeScreen.tsx'
+import { loadCollection, requestJson } from './collectionLoader.js'
 import { defaultThemeKey, seasonalThemes } from '../shared/themes.js'
 import { NEWS_CATEGORIES } from '../shared/newsCategories.js'
 import { applyActiveTheme, readCachedActiveTheme } from './theme.js'
+
+const homeUi = {
+  SparklesIcon, ClockIcon, PlayIcon, BookmarkIcon, ClapperIcon, TvIcon, ChevronRight,
+  StatsPanel, ContentSection, ProgressCard, RatingCard, HomeWatchlistCard,
+  TvShowsGrid, SectionMessage, getFirstName, getSeasonalThemeLabel,
+}
 
 const primaryViews = {
   home: 'Home',
@@ -188,31 +197,6 @@ const statsPeriods = [
   { value: 'month', label: 'This Month' },
   { value: 'year', label: 'This Year' },
 ]
-
-const _statsMockData = {
-  metrics: [
-    { label: 'Titles Watched', value: '148', trend: '18%', tone: 'violet', icon: ClapperIcon },
-    { label: 'Hours Watched', value: '426h', trend: '22%', tone: 'blue', icon: ClockIcon },
-    { label: 'Episodes Watched', value: '312', trend: '15%', tone: 'teal', icon: TvIcon },
-    { label: 'Average Rating', value: '4.3', suffix: '/5', trend: '0.2', tone: 'gold', icon: StarOutlineIcon },
-  ],
-  activity: [38, 54, 49, 68, 36, 65, 62, 45, 86, 61, 47, 42],
-  genres: [
-    { label: 'Sci-Fi', value: '112h', percent: 92 }, { label: 'Drama', value: '86h', percent: 70 },
-    { label: 'Thriller', value: '74h', percent: 60 }, { label: 'Adventure', value: '63h', percent: 51 },
-    { label: 'Comedy', value: '41h', percent: 34 },
-  ],
-  achievements: [
-    { title: '7-Day Streak', detail: 'Watch something for 7 days in a row', value: 'Complete', icon: ShieldIcon, complete: true },
-    { title: 'Century Club', detail: 'Watch 100 movies', value: '100 / 100', icon: StarIcon, complete: true },
-    { title: 'Sci-Fi Master', detail: 'Watch 50 Sci-Fi titles', value: '36 / 50', icon: SparklesIcon, complete: false },
-  ],
-  history: [
-    { title: 'Oppenheimer', kind: 'Movie', time: '2h ago', theme: 'theme-ember' }, { title: 'Wonka', kind: 'Movie', time: 'Yesterday', theme: 'theme-arrival' },
-    { title: 'Interstellar', kind: 'Movie', time: '2 days ago', theme: 'theme-starfall' }, { title: 'Eclipse Point', kind: 'TV Show', time: '2 days ago', theme: 'theme-eclipse' },
-    { title: 'Neon City', kind: 'TV Show', time: '4 days ago', theme: 'theme-neon' },
-  ],
-}
 
 function App() {
   const [currentRoute, setCurrentRoute] = useState(() => readAppRoute())
@@ -410,7 +394,6 @@ function App() {
   const [recentTvState, setRecentTvState] = useState(() => createTvCollectionState())
   const [upcomingTvState, setUpcomingTvState] = useState(() => createTvCollectionState())
   const [topRatedTvState, setTopRatedTvState] = useState(() => createTvCollectionState())
-  const [latestEpisodesState, setLatestEpisodesState] = useState(() => createTvCollectionState())
   const [genreMoviesPage, setGenreMoviesPage] = useState(1)
   const [genreMoviesState, setGenreMoviesState] = useState(() => createMovieCollectionState())
   const [genresState, setGenresState] = useState({
@@ -520,6 +503,9 @@ function App() {
     error: '',
   })
   const [statsPeriod, setStatsPeriod] = useState('year')
+  const statsLoadContextRef = useRef({ user, period: statsPeriod })
+  const movieStatsRequestRef = useRef(0)
+  const tvStatsRequestRef = useRef(0)
   const [tvStatsState, setTvStatsState] = useState({ status: 'idle', stats: emptyTvStats, error: '' })
   const [tvWatchedHistoryState, setTvWatchedHistoryState] = useState({ status: 'idle', episodes: [], error: '' })
   const [statsInsightsState, setStatsInsightsState] = useState({ status: 'idle', insights: emptyStatsInsights, error: '' })
@@ -1688,6 +1674,7 @@ function App() {
   }
 
   async function loadWatchedForUser(nextUser) {
+    const statsRequestId = ++movieStatsRequestRef.current
     if (!nextUser?.username) {
       setWatchedState({
         status: 'idle',
@@ -1728,10 +1715,8 @@ function App() {
         movies: Array.isArray(payload.movies) ? payload.movies.map(mapWatchedMoviePayload) : [],
         error: '',
       })
-      setMovieStatsState({
-        status: 'success',
-        stats: mapMovieStatsPayload(payload.stats),
-        error: '',
+      if (movieStatsRequestRef.current === statsRequestId) setMovieStatsState({
+        status: 'success', stats: mapMovieStatsPayload(payload.stats), error: '',
       })
     } catch (error) {
       setWatchedState({
@@ -1739,7 +1724,7 @@ function App() {
         movies: [],
         error: error instanceof Error ? error.message : 'Unable to load your watched movies right now.',
       })
-      setMovieStatsState({
+      if (movieStatsRequestRef.current === statsRequestId) setMovieStatsState({
         status: 'error',
         stats: emptyMovieStats,
         error: error instanceof Error ? error.message : 'Unable to load your movie stats right now.',
@@ -1748,6 +1733,7 @@ function App() {
   }
 
   async function loadTvLibraryForUser(nextUser) {
+    const statsRequestId = ++tvStatsRequestRef.current
     if (!nextUser?.username) {
       setTvWatchedIds(new Set())
       setTvWatchlistIds(new Set())
@@ -1765,13 +1751,13 @@ function App() {
       setTvWatchedIds(new Set(payload.watchedIds ?? []))
       setTvWatchlistIds(new Set(payload.watchlistIds ?? []))
       setTvWatchlistShows(Array.isArray(payload.watchlistShows) ? payload.watchlistShows.map(mapTvWatchlistShowPayload) : [])
-      setTvStatsState({ status: 'success', stats: mapTvStatsPayload(payload.stats), error: '' })
+      if (tvStatsRequestRef.current === statsRequestId) setTvStatsState({ status: 'success', stats: mapTvStatsPayload(payload.stats), error: '' })
       setContinueWatchingState({ status: 'success', shows: Array.isArray(payload.continueWatchingShows) ? payload.continueWatchingShows.map(mapContinueWatchingTvShowPayload) : [], error: '' })
     } catch (error) {
       setTvWatchedIds(new Set())
       setTvWatchlistIds(new Set())
       setTvWatchlistShows([])
-      setTvStatsState({ status: 'error', stats: emptyTvStats, error: error instanceof Error ? error.message : 'Unable to load TV stats right now.' })
+      if (tvStatsRequestRef.current === statsRequestId) setTvStatsState({ status: 'error', stats: emptyTvStats, error: error instanceof Error ? error.message : 'Unable to load TV stats right now.' })
       setContinueWatchingState({ status: 'error', shows: [], error: error instanceof Error ? error.message : 'Unable to load your TV progress right now.' })
     }
   }
@@ -2302,6 +2288,45 @@ function App() {
     loadFavoriteActorsForUser(user)
     loadFavoriteAuthorsForUser(user)
     loadAlertsForUser(user)
+  }, [user])
+
+  useEffect(() => {
+    const previous = statsLoadContextRef.current
+    statsLoadContextRef.current = { user, period: statsPeriod }
+    // The user effect loads the full libraries; a period-only change needs just their stats.
+    if (previous.user !== user || previous.period === statsPeriod || !user?.username) return
+
+    let cancelled = false
+    const movieRequestId = ++movieStatsRequestRef.current
+    const tvRequestId = ++tvStatsRequestRef.current
+    setMovieStatsState((state) => ({ ...state, status: 'loading', error: '' }))
+    setTvStatsState((state) => ({ ...state, status: 'loading', error: '' }))
+
+    async function loadMovieStats() {
+      try {
+        const response = await fetch(`/api/watched?period=${statsPeriod}`, { headers: buildAuthHeaders(user) })
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+        if (!cancelled && movieStatsRequestRef.current === movieRequestId) setMovieStatsState({ status: 'success', stats: mapMovieStatsPayload(payload.stats), error: '' })
+      } catch (error) {
+        if (!cancelled && movieStatsRequestRef.current === movieRequestId) setMovieStatsState({ status: 'error', stats: emptyMovieStats, error: error instanceof Error ? error.message : 'Unable to load your movie stats right now.' })
+      }
+    }
+
+    async function loadTvStats() {
+      try {
+        const response = await fetch(`/api/tv/library?period=${statsPeriod}`, { headers: buildAuthHeaders(user) })
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+        if (!cancelled && tvStatsRequestRef.current === tvRequestId) setTvStatsState({ status: 'success', stats: mapTvStatsPayload(payload.stats), error: '' })
+      } catch (error) {
+        if (!cancelled && tvStatsRequestRef.current === tvRequestId) setTvStatsState({ status: 'error', stats: emptyTvStats, error: error instanceof Error ? error.message : 'Unable to load TV stats right now.' })
+      }
+    }
+
+    void loadMovieStats()
+    void loadTvStats()
+    return () => { cancelled = true }
   }, [user, statsPeriod])
 
   useEffect(() => {
@@ -3381,99 +3406,51 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (activeView !== primaryViews.movies && activeView !== primaryViews.home) {
-      return
-    }
-
-    let cancelled = false
-
-    async function loadPopularMovies() {
-      setPopularMoviesState(createMovieCollectionLoadingState({ page: popularMoviesPage, includeFeaturedMovie: true }))
-      const hideWatched = Boolean(user) && hideWatchedMovies && activeView === primaryViews.movies && moviesScreenMode === movieScreenModes.popularList
-
-      try {
-        const response = await fetch(buildMoviesApiPath('/api/movies', popularMoviesPage, moviesPageSize, { hideWatched: hideWatched ? 'true' : undefined }), { headers: buildAuthHeaders(user) })
-
-        if (!response.ok) {
-          throw new Error(`Request failed with status ${response.status}`)
-        }
-
-        const payload = await response.json()
-        const movies = Array.isArray(payload.movies) ? payload.movies.map(mapMovieRowToCard) : []
-        const featuredMovie = payload.featuredMovie ? mapFeaturedMoviePayload(payload.featuredMovie) : null
-        const pagination = mapPaginationPayload(payload.pagination, popularMoviesPage)
-
-        if (!cancelled) {
-          setPopularMoviesState({
-            status: 'success',
-            movies,
-            featuredMovie,
-            pagination,
-            error: '',
-          })
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setPopularMoviesState({
-            status: 'error',
-            movies: [],
-            featuredMovie: null,
-            pagination: createPaginationState(popularMoviesPage),
-            error: error instanceof Error ? error.message : 'Unable to load movies right now.',
-          })
-        }
-      }
-    }
-
-    loadPopularMovies()
-
-    return () => {
-      cancelled = true
-    }
+    if (activeView !== primaryViews.movies) return
+    const hideWatched = Boolean(user) && hideWatchedMovies && moviesScreenMode === movieScreenModes.popularList
+    return loadCollection({
+      url: buildMoviesApiPath('/api/movies', popularMoviesPage, moviesPageSize, { hideWatched: hideWatched ? 'true' : undefined }),
+      options: { headers: buildAuthHeaders(user) },
+      setState: setPopularMoviesState,
+      loadingState: createMovieCollectionLoadingState({ page: popularMoviesPage, includeFeaturedMovie: true }),
+      itemsKey: 'movies', mapItem: mapMovieRowToCard,
+      featuredKey: 'featuredMovie', mapFeatured: mapFeaturedMoviePayload,
+      mapPagination: (value) => mapPaginationPayload(value, popularMoviesPage),
+      errorMessage: 'Unable to load movies right now.',
+    })
   }, [activeView, hideWatchedMovies, moviesScreenMode, popularMoviesPage, user, watchedState.movies])
 
   useEffect(() => {
     if (activeView !== primaryViews.books) return
-    let cancelled = false
-    async function loadBooks() {
-      setBooksState(createBookCollectionLoadingState(booksPage))
-      try {
-        const response = await fetch(buildMoviesApiPath('/api/books', booksPage))
-        const payload = await response.json().catch(() => ({}))
-        if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
-        if (!cancelled) setBooksState({ status: 'success', books: Array.isArray(payload.books) ? payload.books.map(mapBookRowToCard) : [], pagination: mapPaginationPayload(payload.pagination, booksPage), error: '' })
-      } catch (error) {
-        if (!cancelled) setBooksState({ status: 'error', books: [], pagination: createPaginationState(booksPage), error: error instanceof Error ? error.message : 'Unable to load books right now.' })
-      }
-    }
-    loadBooks()
-    return () => { cancelled = true }
+    return loadCollection({
+      url: buildMoviesApiPath('/api/books', booksPage),
+      setState: setBooksState, loadingState: createBookCollectionLoadingState(booksPage),
+      itemsKey: 'books', mapItem: mapBookRowToCard,
+      mapPagination: (value) => mapPaginationPayload(value, booksPage),
+      errorMessage: 'Unable to load books right now.',
+    })
   }, [activeView, booksPage])
 
   useEffect(() => {
     if (activeView !== primaryViews.games) return
 
-    let cancelled = false
-    if (activeGamesTab === 'favorites') return () => { cancelled = true }
+    if (activeGamesTab === 'favorites') return
 
     if (activeGamesTab === 'all') {
+      let cancelled = false
       async function loadGamesDashboard() {
         setGamesDashboardState(createGamesDashboardLoadingState())
         try {
-          const [popularResponse, recentResponse, upcomingResponse] = await Promise.all([
-            fetch(buildMoviesApiPath('/api/games', 1, 6)),
-            fetch(buildMoviesApiPath('/api/games/recently-released', 1, 6)),
-            fetch(buildMoviesApiPath('/api/games/upcoming', 1, 6)),
+          const [popular, recent, upcoming] = await Promise.all([
+            requestJson(buildMoviesApiPath('/api/games', 1, 6)),
+            requestJson(buildMoviesApiPath('/api/games/recently-released', 1, 6)),
+            requestJson(buildMoviesApiPath('/api/games/upcoming', 1, 6)),
           ])
-          const responses = [popularResponse, recentResponse, upcomingResponse]
-          const payloads = await Promise.all(responses.map((response) => response.json().catch(() => ({}))))
-          const failedResponse = responses.find((response) => !response.ok)
-          if (failedResponse) throw new Error(payloads[responses.indexOf(failedResponse)]?.error || `Request failed with status ${failedResponse.status}`)
           if (!cancelled) setGamesDashboardState({
             status: 'success',
-            popularGames: Array.isArray(payloads[0].games) ? payloads[0].games.map(mapGamePayload) : [],
-            recentGames: Array.isArray(payloads[1].games) ? payloads[1].games.map(mapGamePayload) : [],
-            upcomingGames: Array.isArray(payloads[2].games) ? payloads[2].games.map(mapUpcomingGamePayload) : [],
+            popularGames: Array.isArray(popular.games) ? popular.games.map(mapGamePayload) : [],
+            recentGames: Array.isArray(recent.games) ? recent.games.map(mapGamePayload) : [],
+            upcomingGames: Array.isArray(upcoming.games) ? upcoming.games.map(mapUpcomingGamePayload) : [],
             error: '',
           })
         } catch (error) {
@@ -3497,31 +3474,13 @@ function App() {
     }
     const activeTabLabel = activeGamesTab === 'recent' ? 'recent games' : activeGamesTab === 'upcoming' ? 'upcoming games' : 'popular games'
 
-    async function loadGames() {
-      setGamesState(createGameCollectionLoadingState(gamesPage))
-      try {
-        const response = await fetch(buildMoviesApiPath(gamesApiPaths[activeGamesTab], gamesPage, moviesPageSize))
-        const payload = await response.json().catch(() => ({}))
-        if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
-        const mapGame = activeGamesTab === 'upcoming' ? mapUpcomingGamePayload : mapGamePayload
-        if (!cancelled) setGamesState({
-          status: 'success',
-          games: Array.isArray(payload.games) ? payload.games.map(mapGame) : [],
-          pagination: mapPaginationPayload(payload.pagination, gamesPage),
-          error: '',
-        })
-      } catch (error) {
-        if (!cancelled) setGamesState({
-          status: 'error',
-          games: [],
-          pagination: createPaginationState(gamesPage),
-          error: error instanceof Error ? error.message : `Unable to load ${activeTabLabel} right now.`,
-        })
-      }
-    }
-
-    loadGames()
-    return () => { cancelled = true }
+    return loadCollection({
+      url: buildMoviesApiPath(gamesApiPaths[activeGamesTab], gamesPage, moviesPageSize),
+      setState: setGamesState, loadingState: createGameCollectionLoadingState(gamesPage),
+      itemsKey: 'games', mapItem: activeGamesTab === 'upcoming' ? mapUpcomingGamePayload : mapGamePayload,
+      mapPagination: (value) => mapPaginationPayload(value, gamesPage),
+      errorMessage: `Unable to load ${activeTabLabel} right now.`,
+    })
   }, [activeGamesTab, activeView, gamesPage])
 
   useEffect(() => {
@@ -3546,490 +3505,118 @@ function App() {
   }, [currentRoute, user])
 
   useEffect(() => {
-    if (activeView !== primaryViews.home) {
-      return
-    }
-
-    let cancelled = false
-
-    async function loadLatestEpisodes() {
-      setLatestEpisodesState(createTvCollectionLoadingState())
-
-      try {
-        const response = await fetch('/api/tv/latest-episodes')
-        const payload = await response.json().catch(() => ({}))
-        if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
-
-        if (!cancelled) {
-          setLatestEpisodesState({
-            status: 'success',
-            shows: Array.isArray(payload.shows) ? payload.shows.map(mapLatestEpisodeTvShowPayload) : [],
-            pagination: createPaginationState(),
-            error: '',
-          })
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setLatestEpisodesState({
-            status: 'error',
-            shows: [],
-            pagination: createPaginationState(),
-            error: error instanceof Error ? error.message : 'Unable to load the latest TV episodes right now.',
-          })
-        }
-      }
-    }
-
-    loadLatestEpisodes()
-
-    return () => {
-      cancelled = true
-    }
-  }, [activeView])
-
-  useEffect(() => {
-    if (activeView !== primaryViews.movies) {
-      return
-    }
-
-    let cancelled = false
-
-    async function loadUpcomingMovies() {
-      setUpcomingMoviesState(createMovieCollectionLoadingState({ page: upcomingMoviesPage }))
-      const hideWatched = Boolean(user) && hideWatchedMovies && moviesScreenMode === movieScreenModes.upcomingList
-
-      try {
-        const response = await fetch(buildMoviesApiPath('/api/movies/upcoming', upcomingMoviesPage, moviesPageSize, { hideWatched: hideWatched ? 'true' : undefined }), { headers: buildAuthHeaders(user) })
-
-        if (!response.ok) {
-          throw new Error(`Request failed with status ${response.status}`)
-        }
-
-        const payload = await response.json()
-        const movies = Array.isArray(payload.movies) ? payload.movies.map(mapMovieRowToCard) : []
-        const pagination = mapPaginationPayload(payload.pagination, upcomingMoviesPage)
-
-        if (!cancelled) {
-          setUpcomingMoviesState({
-            status: 'success',
-            movies,
-            pagination,
-            error: '',
-          })
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setUpcomingMoviesState({
-            status: 'error',
-            movies: [],
-            pagination: createPaginationState(upcomingMoviesPage),
-            error: error instanceof Error ? error.message : 'Unable to load upcoming movies right now.',
-          })
-        }
-      }
-    }
-
-    loadUpcomingMovies()
-
-    return () => {
-      cancelled = true
-    }
+    if (activeView !== primaryViews.movies) return
+    const hideWatched = Boolean(user) && hideWatchedMovies && moviesScreenMode === movieScreenModes.upcomingList
+    return loadCollection({
+      url: buildMoviesApiPath('/api/movies/upcoming', upcomingMoviesPage, moviesPageSize, { hideWatched: hideWatched ? 'true' : undefined }),
+      options: { headers: buildAuthHeaders(user) },
+      setState: setUpcomingMoviesState, loadingState: createMovieCollectionLoadingState({ page: upcomingMoviesPage }),
+      itemsKey: 'movies', mapItem: mapMovieRowToCard,
+      mapPagination: (value) => mapPaginationPayload(value, upcomingMoviesPage),
+      errorMessage: 'Unable to load upcoming movies right now.',
+    })
   }, [activeView, hideWatchedMovies, moviesScreenMode, upcomingMoviesPage, user, watchedState.movies])
 
   useEffect(() => {
-    if (activeView !== primaryViews.movies) {
-      return
-    }
-
-    let cancelled = false
-
-    async function loadRecentMovies() {
-      setRecentMoviesState(createMovieCollectionLoadingState({ page: recentMoviesPage }))
-      const hideWatched = Boolean(user) && hideWatchedMovies && moviesScreenMode === movieScreenModes.nowPlayingList
-
-      try {
-        const response = await fetch(buildMoviesApiPath('/api/movies/recently-released', recentMoviesPage, moviesPageSize, { hideWatched: hideWatched ? 'true' : undefined }), { headers: buildAuthHeaders(user) })
-
-        if (!response.ok) {
-          throw new Error(`Request failed with status ${response.status}`)
-        }
-
-        const payload = await response.json()
-        const movies = Array.isArray(payload.movies) ? payload.movies.map(mapMovieRowToCard) : []
-        const pagination = mapPaginationPayload(payload.pagination, recentMoviesPage)
-
-        if (!cancelled) {
-          setRecentMoviesState({
-            status: 'success',
-            movies,
-            pagination,
-            error: '',
-          })
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setRecentMoviesState({
-            status: 'error',
-            movies: [],
-            pagination: createPaginationState(recentMoviesPage),
-            error: error instanceof Error ? error.message : 'Unable to load recently released movies right now.',
-          })
-        }
-      }
-    }
-
-    loadRecentMovies()
-
-    return () => {
-      cancelled = true
-    }
+    if (activeView !== primaryViews.movies) return
+    const hideWatched = Boolean(user) && hideWatchedMovies && moviesScreenMode === movieScreenModes.nowPlayingList
+    return loadCollection({
+      url: buildMoviesApiPath('/api/movies/recently-released', recentMoviesPage, moviesPageSize, { hideWatched: hideWatched ? 'true' : undefined }),
+      options: { headers: buildAuthHeaders(user) },
+      setState: setRecentMoviesState, loadingState: createMovieCollectionLoadingState({ page: recentMoviesPage }),
+      itemsKey: 'movies', mapItem: mapMovieRowToCard,
+      mapPagination: (value) => mapPaginationPayload(value, recentMoviesPage),
+      errorMessage: 'Unable to load recently released movies right now.',
+    })
   }, [activeView, hideWatchedMovies, moviesScreenMode, recentMoviesPage, user, watchedState.movies])
 
   useEffect(() => {
-    if (activeView !== primaryViews.movies) {
-      return
-    }
-
-    let cancelled = false
-
-    async function loadTopRatedMovies() {
-      setTopRatedMoviesState(createMovieCollectionLoadingState({ page: topRatedMoviesPage }))
-      const hideWatched = Boolean(user) && hideWatchedMovies && moviesScreenMode === movieScreenModes.topRatedList
-
-      try {
-        const response = await fetch(buildMoviesApiPath('/api/movies/top-rated', topRatedMoviesPage, moviesPageSize, { hideWatched: hideWatched ? 'true' : undefined }), { headers: buildAuthHeaders(user) })
-
-        if (!response.ok) {
-          throw new Error(`Request failed with status ${response.status}`)
-        }
-
-        const payload = await response.json()
-        const movies = Array.isArray(payload.movies) ? payload.movies.map(mapMovieRowToCard) : []
-        const pagination = mapPaginationPayload(payload.pagination, topRatedMoviesPage)
-
-        if (!cancelled) {
-          setTopRatedMoviesState({
-            status: 'success',
-            movies,
-            pagination,
-            error: '',
-          })
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setTopRatedMoviesState({
-            status: 'error',
-            movies: [],
-            pagination: createPaginationState(topRatedMoviesPage),
-            error: error instanceof Error ? error.message : 'Unable to load top rated movies right now.',
-          })
-        }
-      }
-    }
-
-    loadTopRatedMovies()
-
-    return () => {
-      cancelled = true
-    }
+    if (activeView !== primaryViews.movies) return
+    const hideWatched = Boolean(user) && hideWatchedMovies && moviesScreenMode === movieScreenModes.topRatedList
+    return loadCollection({
+      url: buildMoviesApiPath('/api/movies/top-rated', topRatedMoviesPage, moviesPageSize, { hideWatched: hideWatched ? 'true' : undefined }),
+      options: { headers: buildAuthHeaders(user) },
+      setState: setTopRatedMoviesState, loadingState: createMovieCollectionLoadingState({ page: topRatedMoviesPage }),
+      itemsKey: 'movies', mapItem: mapMovieRowToCard,
+      mapPagination: (value) => mapPaginationPayload(value, topRatedMoviesPage),
+      errorMessage: 'Unable to load top rated movies right now.',
+    })
   }, [activeView, hideWatchedMovies, moviesScreenMode, topRatedMoviesPage, user, watchedState.movies])
 
   useEffect(() => {
-    if (activeView !== primaryViews.tvShows) {
-      return
-    }
-
-    let cancelled = false
-
-    async function loadPopularTvShows() {
-      setPopularTvState(createTvCollectionLoadingState({ page: popularTvPage, includeFeaturedShow: true }))
-
-      try {
-        const response = await fetch(buildTvApiPath('/api/tv', popularTvPage))
-
-        if (!response.ok) {
-          throw new Error(`Request failed with status ${response.status}`)
-        }
-
-        const payload = await response.json()
-        const shows = Array.isArray(payload.shows) ? payload.shows.map(mapTvRowToCard) : []
-        const featuredShow = payload.featuredShow ? mapFeaturedTvPayload(payload.featuredShow) : null
-        const pagination = mapPaginationPayload(payload.pagination, popularTvPage)
-
-        if (!cancelled) {
-          setPopularTvState({
-            status: 'success',
-            shows,
-            featuredShow,
-            pagination,
-            error: '',
-          })
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setPopularTvState({
-            status: 'error',
-            shows: [],
-            featuredShow: null,
-            pagination: createPaginationState(popularTvPage),
-            error: error instanceof Error ? error.message : 'Unable to load TV shows right now.',
-          })
-        }
-      }
-    }
-
-    loadPopularTvShows()
-
-    return () => {
-      cancelled = true
-    }
+    if (activeView !== primaryViews.tvShows) return
+    return loadCollection({
+      url: buildTvApiPath('/api/tv', popularTvPage),
+      setState: setPopularTvState, loadingState: createTvCollectionLoadingState({ page: popularTvPage, includeFeaturedShow: true }),
+      itemsKey: 'shows', mapItem: mapTvRowToCard,
+      featuredKey: 'featuredShow', mapFeatured: mapFeaturedTvPayload,
+      mapPagination: (value) => mapPaginationPayload(value, popularTvPage),
+      errorMessage: 'Unable to load TV shows right now.',
+    })
   }, [activeView, popularTvPage])
 
   useEffect(() => {
-    if (activeView !== primaryViews.tvShows) {
-      return
-    }
-
-    let cancelled = false
-
-    async function loadRecentTvShows() {
-      setRecentTvState(createTvCollectionLoadingState({ page: recentTvPage }))
-
-      try {
-        const response = await fetch(buildTvApiPath('/api/tv/recently-released', recentTvPage))
-
-        if (!response.ok) {
-          throw new Error(`Request failed with status ${response.status}`)
-        }
-
-        const payload = await response.json()
-        const shows = Array.isArray(payload.shows) ? payload.shows.map(mapTvRowToCard) : []
-        const pagination = mapPaginationPayload(payload.pagination, recentTvPage)
-
-        if (!cancelled) {
-          setRecentTvState({
-            status: 'success',
-            shows,
-            pagination,
-            error: '',
-          })
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setRecentTvState({
-            status: 'error',
-            shows: [],
-            pagination: createPaginationState(recentTvPage),
-            error: error instanceof Error ? error.message : 'Unable to load recently aired TV shows right now.',
-          })
-        }
-      }
-    }
-
-    loadRecentTvShows()
-
-    return () => {
-      cancelled = true
-    }
+    if (activeView !== primaryViews.tvShows) return
+    return loadCollection({
+      url: buildTvApiPath('/api/tv/recently-released', recentTvPage),
+      setState: setRecentTvState, loadingState: createTvCollectionLoadingState({ page: recentTvPage }),
+      itemsKey: 'shows', mapItem: mapTvRowToCard,
+      mapPagination: (value) => mapPaginationPayload(value, recentTvPage),
+      errorMessage: 'Unable to load recently aired TV shows right now.',
+    })
   }, [activeView, recentTvPage])
 
   useEffect(() => {
-    if (activeView !== primaryViews.tvShows) {
-      return
-    }
-
-    let cancelled = false
-
-    async function loadUpcomingTvShows() {
-      setUpcomingTvState(createTvCollectionLoadingState({ page: upcomingTvPage }))
-
-      try {
-        const response = await fetch(buildTvApiPath('/api/tv/upcoming', upcomingTvPage))
-
-        if (!response.ok) {
-          throw new Error(`Request failed with status ${response.status}`)
-        }
-
-        const payload = await response.json()
-        const shows = Array.isArray(payload.shows) ? payload.shows.map(mapTvRowToCard) : []
-        const pagination = mapPaginationPayload(payload.pagination, upcomingTvPage)
-
-        if (!cancelled) {
-          setUpcomingTvState({
-            status: 'success',
-            shows,
-            pagination,
-            error: '',
-          })
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setUpcomingTvState({
-            status: 'error',
-            shows: [],
-            pagination: createPaginationState(upcomingTvPage),
-            error: error instanceof Error ? error.message : 'Unable to load upcoming TV shows right now.',
-          })
-        }
-      }
-    }
-
-    loadUpcomingTvShows()
-
-    return () => {
-      cancelled = true
-    }
+    if (activeView !== primaryViews.tvShows) return
+    return loadCollection({
+      url: buildTvApiPath('/api/tv/upcoming', upcomingTvPage),
+      setState: setUpcomingTvState, loadingState: createTvCollectionLoadingState({ page: upcomingTvPage }),
+      itemsKey: 'shows', mapItem: mapTvRowToCard,
+      mapPagination: (value) => mapPaginationPayload(value, upcomingTvPage),
+      errorMessage: 'Unable to load upcoming TV shows right now.',
+    })
   }, [activeView, upcomingTvPage])
 
   useEffect(() => {
-    if (activeView !== primaryViews.tvShows) {
-      return
-    }
-
-    let cancelled = false
-
-    async function loadTopRatedTvShows() {
-      setTopRatedTvState(createTvCollectionLoadingState({ page: topRatedTvPage }))
-
-      try {
-        const response = await fetch(buildTvApiPath('/api/tv/top-rated', topRatedTvPage))
-
-        if (!response.ok) {
-          throw new Error(`Request failed with status ${response.status}`)
-        }
-
-        const payload = await response.json()
-        const shows = Array.isArray(payload.shows) ? payload.shows.map(mapTvRowToCard) : []
-        const pagination = mapPaginationPayload(payload.pagination, topRatedTvPage)
-
-        if (!cancelled) {
-          setTopRatedTvState({
-            status: 'success',
-            shows,
-            pagination,
-            error: '',
-          })
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setTopRatedTvState({
-            status: 'error',
-            shows: [],
-            pagination: createPaginationState(topRatedTvPage),
-            error: error instanceof Error ? error.message : 'Unable to load top rated TV shows right now.',
-          })
-        }
-      }
-    }
-
-    loadTopRatedTvShows()
-
-    return () => {
-      cancelled = true
-    }
+    if (activeView !== primaryViews.tvShows) return
+    return loadCollection({
+      url: buildTvApiPath('/api/tv/top-rated', topRatedTvPage),
+      setState: setTopRatedTvState, loadingState: createTvCollectionLoadingState({ page: topRatedTvPage }),
+      itemsKey: 'shows', mapItem: mapTvRowToCard,
+      mapPagination: (value) => mapPaginationPayload(value, topRatedTvPage),
+      errorMessage: 'Unable to load top rated TV shows right now.',
+    })
   }, [activeView, topRatedTvPage])
 
   useEffect(() => {
-    if (currentRoute.kind !== routeKinds.continueWatching) {
-      return
-    }
-
+    if (currentRoute.kind !== routeKinds.continueWatching) return
     if (!user?.username) {
       setContinueWatchingPageState(createTvCollectionState())
       return
     }
-
-    let cancelled = false
-
-    async function loadContinueWatchingShows() {
-      setContinueWatchingPageState(createTvCollectionLoadingState({ page: continueWatchingPage }))
-
-      try {
-        const response = await fetch(buildTvApiPath('/api/tv/continue-watching', continueWatchingPage), {
-          headers: buildAuthHeaders(user),
-        })
-        const payload = await response.json().catch(() => ({}))
-        if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
-
-        if (!cancelled) {
-          setContinueWatchingPageState({
-            status: 'success',
-            shows: Array.isArray(payload.shows) ? payload.shows.map(mapContinueWatchingTvShowPayload) : [],
-            pagination: mapPaginationPayload(payload.pagination, continueWatchingPage),
-            error: '',
-          })
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setContinueWatchingPageState({
-            status: 'error',
-            shows: [],
-            pagination: createPaginationState(continueWatchingPage),
-            error: error instanceof Error ? error.message : 'Unable to load your TV progress right now.',
-          })
-        }
-      }
-    }
-
-    loadContinueWatchingShows()
-
-    return () => {
-      cancelled = true
-    }
+    return loadCollection({
+      url: buildTvApiPath('/api/tv/continue-watching', continueWatchingPage),
+      options: { headers: buildAuthHeaders(user) },
+      setState: setContinueWatchingPageState, loadingState: createTvCollectionLoadingState({ page: continueWatchingPage }),
+      itemsKey: 'shows', mapItem: mapContinueWatchingTvShowPayload,
+      mapPagination: (value) => mapPaginationPayload(value, continueWatchingPage),
+      errorMessage: 'Unable to load your TV progress right now.',
+    })
   }, [continueWatchingPage, currentRoute.kind, user])
 
   useEffect(() => {
-    if (activeView !== primaryViews.movies || moviesScreenMode !== movieScreenModes.genreList || !selectedGenre?.name) {
-      return
-    }
-
-    let cancelled = false
-
-    async function loadGenreMovies() {
-      setGenreMoviesState(createMovieCollectionLoadingState({ page: genreMoviesPage }))
-      const hideWatched = Boolean(user) && hideWatchedMovies
-
-      try {
-        const response = await fetch(buildMoviesApiPath('/api/movies', genreMoviesPage, moviesPageSize, {
-          genre: selectedGenre.name,
-          hideWatched: hideWatched ? 'true' : undefined,
-        }), { headers: buildAuthHeaders(user) })
-
-        if (!response.ok) {
-          throw new Error(`Request failed with status ${response.status}`)
-        }
-
-        const payload = await response.json()
-        const movies = Array.isArray(payload.movies)
-          ? payload.movies.map(mapMovieRowToCard)
-          : []
-        const pagination = mapPaginationPayload(payload.pagination, genreMoviesPage)
-
-        if (!cancelled) {
-          setGenreMoviesState({
-            status: 'success',
-            movies,
-            pagination,
-            error: '',
-          })
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setGenreMoviesState({
-            status: 'error',
-            movies: [],
-            pagination: createPaginationState(genreMoviesPage),
-            error: error instanceof Error ? error.message : 'Unable to load genre movies right now.',
-          })
-        }
-      }
-    }
-
-    loadGenreMovies()
-
-    return () => {
-      cancelled = true
-    }
+    if (activeView !== primaryViews.movies || moviesScreenMode !== movieScreenModes.genreList || !selectedGenre?.name) return
+    const hideWatched = Boolean(user) && hideWatchedMovies
+    return loadCollection({
+      url: buildMoviesApiPath('/api/movies', genreMoviesPage, moviesPageSize, {
+        genre: selectedGenre.name, hideWatched: hideWatched ? 'true' : undefined,
+      }),
+      options: { headers: buildAuthHeaders(user) },
+      setState: setGenreMoviesState, loadingState: createMovieCollectionLoadingState({ page: genreMoviesPage }),
+      itemsKey: 'movies', mapItem: mapMovieRowToCard,
+      mapPagination: (value) => mapPaginationPayload(value, genreMoviesPage),
+      errorMessage: 'Unable to load genre movies right now.',
+    })
   }, [activeView, genreMoviesPage, hideWatchedMovies, moviesScreenMode, selectedGenre, user, watchedState.movies])
 
   useEffect(() => {
@@ -4061,15 +3648,52 @@ function App() {
     return () => { cancelled = true }
   }, [currentRoute])
 
-  const watchlistMovieIds = new Set(watchlistState.movies.map((movie) => Number(movie.id)))
-  const watchlistBookIds = new Set(watchlistState.books.map((book) => book.id))
-  const readBookIds = new Set(readBooksState.books.map((book) => book.id))
-  const watchedMovieIds = new Set(watchedState.movies.map((movie) => Number(movie.id)))
-  const homeStats = buildMoviesPageStats({
+  const watchlistMovieIds = useMemo(() => new Set(watchlistState.movies.map((movie) => Number(movie.id))), [watchlistState.movies])
+  const watchlistBookIds = useMemo(() => new Set(watchlistState.books.map((book) => book.id)), [watchlistState.books])
+  const readBookIds = useMemo(() => new Set(readBooksState.books.map((book) => book.id)), [readBooksState.books])
+  const watchedMovieIds = useMemo(() => new Set(watchedState.movies.map((movie) => Number(movie.id))), [watchedState.movies])
+  const favoriteGameIds = useMemo(() => new Set(favoriteGames.map((game) => game.id)), [favoriteGames])
+  const favoriteActorIds = useMemo(() => new Set(favoriteActorsState.actors.map((actor) => Number(actor.id))), [favoriteActorsState.actors])
+  const favoriteAuthorIds = useMemo(() => new Set(favoriteAuthorsState.authors.map((author) => Number(author.id))), [favoriteAuthorsState.authors])
+  const moviesPageStats = useMemo(() => buildMoviesPageStats({
     stats: movieStatsState.stats,
-  })
-  const moviesPageStats = buildMoviesPageStats({
-    stats: movieStatsState.stats,
+  }), [movieStatsState.stats])
+  const homePage = useHomePage({
+    enabled: activeView === primaryViews.home,
+    user,
+    mapMovie: mapMovieRowToCard,
+    mapFeaturedMovie: mapFeaturedMoviePayload,
+    pageSize: moviesPageSize,
+    data: {
+      seasonalTheme: getSeasonalThemeWithMovies(activeTheme),
+      stats: moviesPageStats,
+      statsPeriod,
+      watchlistState,
+      continueWatchingState,
+      tvWatchlistShows,
+      tvWatchlistIds,
+      tvWatchedIds,
+      watchlistMovieIds,
+      watchedMovieIds,
+      readBookIds,
+    },
+    actions: {
+      onOpenMovie: handleOpenMovieDetail,
+      onOpenPopularMovies: handleOpenPopularMovies,
+      onOpenWatchlist: handleOpenWatchlistCta,
+      onOpenDiscover: handleOpenDiscover,
+      onOpenSeasonalMovies: handleOpenSeasonalMovies,
+      onStatsPeriodChange: setStatsPeriod,
+      onOpenContinueWatching: handleOpenContinueWatching,
+      onOpenTvShow: handleOpenTvDetail,
+      onOpenBook: handleOpenBookDetail,
+      onOpenLatestEpisodes: handleOpenRecentlyAiredTvShows,
+      onToggleMovieWatchlist: handleToggleMovieInWatchlist,
+      onToggleMovieWatched: handleToggleMovieWatched,
+      onToggleTvWatchlist: handleToggleTvWatchlist,
+      onToggleBookWatchlist: handleToggleBookInWatchlist,
+      onToggleBookRead: handleToggleBookRead,
+    },
   })
 
   return (
@@ -4239,13 +3863,13 @@ function App() {
                 onOpenBook={handleOpenBookDetail}
                 onOpenGoogleBook={handleOpenGoogleBookDetail}
                 onOpenGame={handleOpenGameDetail}
-                favoriteGameIds={new Set(favoriteGames.map((game) => game.id))}
+                favoriteGameIds={favoriteGameIds}
                 onToggleGameFavorite={handleToggleGameFavorite}
                 watchedMovieIds={watchedMovieIds}
                 watchlistMovieIds={watchlistMovieIds}
                 watchedTvIds={tvWatchedIds}
                 watchlistTvIds={tvWatchlistIds}
-                favoriteActorIds={new Set(favoriteActorsState.actors.map((actor) => Number(actor.id)))}
+                favoriteActorIds={favoriteActorIds}
                 onToggleMovieWatchlist={handleToggleMovieInWatchlist}
                 onToggleMovieWatched={handleToggleMovieWatched}
                 onToggleTvWatchlist={handleToggleTvWatchlist}
@@ -4351,36 +3975,7 @@ function App() {
                 onNavigateNews={(filters, tab = currentRoute.tab) => handleNavigateToPath(buildNewsPath(filters, tab), { kind: routeKinds.news, filters, tab }, primaryViews.news)}
               />
             ) : activeView === primaryViews.home ? (
-              <HomeScreen
-                user={user}
-                onOpenMovie={handleOpenMovieDetail}
-                onOpenPopularMovies={handleOpenPopularMovies}
-                onOpenWatchlist={handleOpenWatchlistCta}
-                onOpenDiscover={handleOpenDiscover}
-                seasonalTheme={getSeasonalThemeWithMovies(activeTheme)}
-                onOpenSeasonalMovies={handleOpenSeasonalMovies}
-                stats={homeStats}
-                statsPeriod={statsPeriod}
-                onStatsPeriodChange={setStatsPeriod}
-                watchlistState={watchlistState}
-                popularMoviesState={popularMoviesState}
-                continueWatchingState={continueWatchingState}
-                onOpenContinueWatching={handleOpenContinueWatching}
-                onOpenTvShow={handleOpenTvDetail}
-                onOpenBook={handleOpenBookDetail}
-                latestEpisodesState={latestEpisodesState}
-                onOpenLatestEpisodes={handleOpenRecentlyAiredTvShows}
-                tvWatchlistShows={tvWatchlistShows}
-                tvWatchlistIds={tvWatchlistIds}
-                tvWatchedIds={tvWatchedIds}
-                watchedMovieIds={watchedMovieIds}
-                readBookIds={readBookIds}
-                onToggleMovieWatchlist={handleToggleMovieInWatchlist}
-                onToggleMovieWatched={handleToggleMovieWatched}
-                onToggleTvWatchlist={handleToggleTvWatchlist}
-                onToggleBookWatchlist={handleToggleBookInWatchlist}
-                onToggleBookRead={handleToggleBookRead}
-              />
+              <HomeScreen {...homePage} ui={homeUi} />
             ) : activeView === primaryViews.games && currentRoute.kind !== routeKinds.gameDetail ? (
               <GamesScreen
                 activeTab={activeGamesTab}
@@ -4505,7 +4100,7 @@ function App() {
                 onOpenBook={handleOpenBookDetail}
                 onOpenLogin={handleOpenLogin}
                 isSignedIn={Boolean(user)}
-                favoriteAuthorIds={new Set(favoriteAuthorsState.authors.map((author) => Number(author.id)))}
+                favoriteAuthorIds={favoriteAuthorIds}
                 onToggleFavorite={handleToggleFavoriteAuthor}
               />
             ) : activeView === primaryViews.books ? (
@@ -4522,7 +4117,7 @@ function App() {
                 onToggleMovieWatchlist={handleToggleMovieInWatchlist}
                 onToggleMovieWatched={handleToggleMovieWatched}
                 onToggleTvWatchlist={handleToggleTvWatchlist}
-                favoriteActorIds={new Set(favoriteActorsState.actors.map((actor) => Number(actor.id)))}
+                favoriteActorIds={favoriteActorIds}
                 onToggleFavorite={handleToggleFavoriteActor}
               />
             ) : currentRoute.kind === routeKinds.movieDetail ? (
@@ -4554,7 +4149,7 @@ function App() {
               <GameDetailPage
                 state={gameDetailState}
                 similarGamesState={similarGamesState}
-                favoriteGameIds={new Set(favoriteGames.map((game) => game.id))}
+                favoriteGameIds={favoriteGameIds}
                 onBack={() => handleMovieViewSelection(primaryViews.games)}
                 onToggleFavorite={handleToggleGameFavorite}
                 onTogglePlayed={handleToggleGamePlayed}
@@ -5521,290 +5116,6 @@ function DiscoverResultCard({ item, onOpen }) {
   return <button type="button" className="discover-result-card" onClick={onOpen}><DiscoverResultArt item={item} /><div><h3>{item.title}</h3><p>{item.year} · {item.meta}</p><span className="star-rating"><StarIcon /> {item.rating}</span></div></button>
 }
 
-function HomeScreen({ user, onOpenMovie, onOpenPopularMovies, onOpenWatchlist, onOpenDiscover, seasonalTheme, onOpenSeasonalMovies, stats, statsPeriod, onStatsPeriodChange, watchlistState, popularMoviesState, continueWatchingState, onOpenContinueWatching, onOpenTvShow, onOpenBook, latestEpisodesState, onOpenLatestEpisodes, tvWatchlistShows, tvWatchlistIds, tvWatchedIds, watchedMovieIds, readBookIds, onToggleMovieWatchlist, onToggleMovieWatched, onToggleTvWatchlist, onToggleBookWatchlist, onToggleBookRead }) {
-  const greeting = user ? `Good evening, ${getFirstName(user.fullName)}! 🍿` : 'Good evening! 🍿'
-  const homeWatchlistMovies = watchlistState.movies.slice(0, 5)
-  const homeWatchlistItems = [
-    watchlistState.movies[0] ? { ...watchlistState.movies[0], kind: 'movie' } : null,
-    tvWatchlistShows[0] ? { ...tvWatchlistShows[0], kind: 'tv' } : null,
-    watchlistState.books[0] ? { ...watchlistState.books[0], kind: 'book' } : null,
-    ...watchlistState.movies.slice(1).map((item) => ({ ...item, kind: 'movie' })),
-    ...tvWatchlistShows.slice(1).map((item) => ({ ...item, kind: 'tv' })),
-    ...watchlistState.books.slice(1).map((item) => ({ ...item, kind: 'book' })),
-  ].filter(Boolean).slice(0, 8)
-  const trendingMovies = popularMoviesState.movies.slice(0, 5)
-  const unfinishedShow = continueWatchingState.shows[0]
-  const watchlistMovie = homeWatchlistMovies[0]
-  const trendingMovie = popularMoviesState.featuredMovie
-  const tonightPick = unfinishedShow
-    ? {
-        ...unfinishedShow,
-        kind: 'tv',
-        reason: 'Continue where you left off',
-        detail: `${unfinishedShow.latestWatchedEpisodeLabel} · ${unfinishedShow.progress}% complete`,
-        artworkUrl: unfinishedShow.posterUrl || unfinishedShow.backdropUrl,
-      }
-    : watchlistMovie
-      ? {
-          ...watchlistMovie,
-          kind: 'movie',
-          reason: 'From your watchlist',
-          detail: watchlistMovie.meta,
-          artworkUrl: watchlistMovie.posterUrl || watchlistMovie.backdropUrl,
-        }
-      : trendingMovie
-        ? {
-            ...trendingMovie,
-            kind: 'movie',
-            reason: user ? 'A popular pick for tonight' : 'Popular tonight',
-            detail: trendingMovie.genreLabel,
-            streamingService: 'Streaming TBA',
-            artworkUrl: trendingMovie.posterUrl || trendingMovie.backdropUrl,
-          }
-        : null
-
-  function openTonightPick() {
-    if (!tonightPick) {
-      onOpenDiscover()
-      return
-    }
-
-    if (tonightPick.kind === 'tv') {
-      onOpenTvShow(tonightPick)
-      return
-    }
-
-    onOpenMovie(tonightPick)
-  }
-
-  return (
-    <>
-      <section className={`hero-panel${tonightPick ? ' has-tonight-pick' : ''}`}>
-        <div className="hero-copy">
-          <p className="eyebrow">{greeting}</p>
-          <p className="tonight-pick-label"><SparklesIcon /> Tonight&apos;s pick</p>
-          <h1>{tonightPick?.title || 'Find something great for tonight.'}</h1>
-          <p className="hero-subcopy">{tonightPick ? `${tonightPick.reason}. ${tonightPick.detail}.` : 'Tell us your mood and available time for a tailored recommendation.'}</p>
-
-          {tonightPick ? (
-            <div className="tonight-pick-meta" aria-label="Tonight's pick details">
-              <span><ClockIcon />{tonightPick.runtime || 'Runtime TBA'}</span>
-              <span className="tonight-pick-service"><span aria-hidden="true">▶</span>{tonightPick.streamingService || 'Streaming TBA'}</span>
-            </div>
-          ) : null}
-
-          <div className="hero-actions">
-            <button type="button" className="primary-button" onClick={openTonightPick}>
-              <PlayIcon />
-              <span>{tonightPick ? 'Watch / details' : 'Find tonight’s pick'}</span>
-            </button>
-            <button type="button" className="secondary-button" onClick={onOpenDiscover}>
-              <SparklesIcon />
-              <span>Find a movie</span>
-            </button>
-            {seasonalTheme ? <button type="button" className="secondary-button seasonal-movies-button" onClick={onOpenSeasonalMovies}>
-              <span aria-hidden="true">{seasonalTheme.emoji}</span>
-              <span>Explore {getSeasonalThemeLabel(seasonalTheme)} movies</span>
-            </button> : null}
-            <button type="button" className="secondary-button" onClick={onOpenWatchlist}>
-              <BookmarkIcon />
-              <span>Open watchlist</span>
-            </button>
-          </div>
-        </div>
-
-        <TonightPickArtwork key={tonightPick ? `${tonightPick.kind}-${tonightPick.id}` : 'empty'} pick={tonightPick} />
-
-        <StatsPanel title="Your Stats" items={stats} period={statsPeriod} onPeriodChange={onStatsPeriodChange} />
-      </section>
-
-      <NextUpSection
-        isSignedIn={Boolean(user)}
-        continueWatchingState={continueWatchingState}
-        movies={watchlistState.movies}
-        shows={tvWatchlistShows}
-        books={watchlistState.books}
-        onOpenMovie={onOpenMovie}
-        onOpenTvShow={onOpenTvShow}
-        onOpenBook={onOpenBook}
-        onOpenWatchlist={onOpenWatchlist}
-      />
-
-      <section className="mobile-stats mobile-only">
-        {stats.map(({ label, value, tone, icon: Icon }) => (
-          <article key={label} className="mini-stat">
-            <div className={`stat-icon ${tone}`}>
-              <Icon />
-            </div>
-            <strong>{value}</strong>
-            <span>{label.replace('Time Watched', 'Time').replace('Movies Watched', 'Movies').replace('In Watchlist', 'Watchlist')}</span>
-          </article>
-        ))}
-      </section>
-
-      <ContentSection title="Continue Watching" action="See all" onAction={onOpenContinueWatching} className="home-secondary-section">
-        {continueWatchingState.status === 'loading' ? <SectionMessage message="Loading your TV progress..." /> : null}
-        {continueWatchingState.status === 'error' ? <SectionMessage message={continueWatchingState.error} tone="error" /> : null}
-        {continueWatchingState.status === 'idle' ? <SectionMessage message="Sign in to view shows you are watching." /> : null}
-        {continueWatchingState.status === 'success' && continueWatchingState.shows.length === 0 ? <SectionMessage message="Start watching a TV show to see it here." /> : null}
-        {continueWatchingState.shows.length > 0 ? <div className="feature-grid home-secondary-rail">{continueWatchingState.shows.map((item) => <ProgressCard key={item.id} item={item} onOpenTvShow={onOpenTvShow} isInWatchlist={tvWatchlistIds.has(Number(item.id))} isWatched={tvWatchedIds.has(Number(item.id))} onToggleWatchlist={onToggleTvWatchlist} />)}</div> : null}
-      </ContentSection>
-
-      <section className="home-tertiary-stack" aria-label="More to explore">
-        <ContentSection title="Watchlist" action="See all" onAction={onOpenWatchlist} compact className="home-tertiary-section">
-          {watchlistState.status === 'loading' ? <SectionMessage message="Loading your watchlist..." /> : null}
-          {watchlistState.status === 'error' ? <SectionMessage message={watchlistState.error} tone="error" /> : null}
-          {watchlistState.status !== 'loading' && watchlistState.status !== 'error' && homeWatchlistItems.length === 0 ? (
-            <SectionMessage message={user ? 'Your watchlist is empty for now.' : 'Sign in to view your watchlist.'} />
-          ) : null}
-          {homeWatchlistItems.length > 0 ? (
-            <div className="home-tertiary-rail" aria-label="Watchlist">
-              {homeWatchlistItems.map((item) => (
-                <HomeWatchlistCard
-                  key={`${item.kind}-${item.id}`}
-                  item={item}
-                  onOpenMovie={onOpenMovie}
-                  onOpenTvShow={onOpenTvShow}
-                  onOpenBook={onOpenBook}
-                  isInWatchlist
-                  isWatched={item.kind === 'movie' ? watchedMovieIds.has(Number(item.id)) : item.kind === 'tv' ? tvWatchedIds.has(Number(item.id)) : readBookIds.has(item.id)}
-                  onToggleWatchlist={item.kind === 'movie' ? onToggleMovieWatchlist : item.kind === 'tv' ? onToggleTvWatchlist : onToggleBookWatchlist}
-                  onToggleWatched={item.kind === 'tv' ? null : item.kind === 'movie' ? onToggleMovieWatched : onToggleBookRead}
-                />
-              ))}
-            </div>
-          ) : null}
-        </ContentSection>
-
-        <ContentSection title="Trending Now" action="See all" onAction={onOpenPopularMovies} compact className="home-tertiary-section">
-          {popularMoviesState.status === 'loading' || popularMoviesState.status === 'idle' ? (
-            <SectionMessage message="Loading trending movies from your local database..." />
-          ) : null}
-          {popularMoviesState.status === 'error' ? (
-            <SectionMessage message={`Could not load trending movies. ${popularMoviesState.error}`} tone="error" />
-          ) : null}
-          {popularMoviesState.status === 'success' && trendingMovies.length === 0 ? (
-            <SectionMessage message="No trending movies are available in the local database yet." />
-          ) : null}
-          {trendingMovies.length > 0 ? (
-            <div className="home-tertiary-rail" aria-label="Trending movies">
-              {trendingMovies.map((item) => (
-                <RatingCard key={item.id} item={item} onOpenMovie={onOpenMovie} isInWatchlist={watchlistState.movies.some((movie) => Number(movie.id) === Number(item.id))} isWatched={watchedMovieIds.has(Number(item.id))} onToggleWatchlist={onToggleMovieWatchlist} onToggleWatched={onToggleMovieWatched} />
-              ))}
-            </div>
-          ) : null}
-        </ContentSection>
-
-        <ContentSection title="New Episodes" action="See all" onAction={onOpenLatestEpisodes} className="home-tertiary-section">
-          <TvShowsGrid tvState={latestEpisodesState} onSelectShow={onOpenTvShow} watchedIds={tvWatchedIds} watchlistIds={tvWatchlistIds} onToggleWatchlist={onToggleTvWatchlist} />
-        </ContentSection>
-      </section>
-    </>
-  )
-}
-
-function NextUpSection({ isSignedIn, continueWatchingState, movies, shows, books, onOpenMovie, onOpenTvShow, onOpenBook, onOpenWatchlist }) {
-  const continueShow = continueWatchingState.shows[0]
-  const priorityShow = shows.find((show) => Number(show.id) !== Number(continueShow?.id))
-  const priorityItems = [
-    movies[0] ? {
-      ...movies[0],
-      kind: 'movie',
-      kicker: 'High-priority movie',
-      detail: [movies[0].runtime, movies[0].streamingService].filter((value) => value && !value.includes('TBA')).join(' · ') || movies[0].meta,
-      actionLabel: 'Start movie',
-      artworkUrl: movies[0].posterUrl || movies[0].backdropUrl,
-    } : null,
-    priorityShow ? {
-        ...priorityShow,
-        kind: 'tv',
-        kicker: 'High-priority show',
-        detail: priorityShow.meta,
-        actionLabel: 'Start show',
-        artworkUrl: priorityShow.posterUrl || priorityShow.backdropUrl,
-      } : null,
-    books[0] ? {
-      ...books[0],
-      kind: 'book',
-      kicker: 'High-priority book',
-      detail: `${books[0].meta} · ${books[0].categoriesLabel}`,
-      actionLabel: 'Start reading',
-      artworkUrl: books[0].posterUrl,
-    } : null,
-  ].filter(Boolean).sort((left, right) => new Date(right.watchlistedAt || 0) - new Date(left.watchlistedAt || 0))
-  const items = [
-    continueShow ? {
-      ...continueShow,
-      kind: 'tv',
-      kicker: 'Continue next episode',
-      detail: `${continueShow.nextEpisodeLabel} · ${continueShow.nextEpisodeTitle}`,
-      actionLabel: 'Continue',
-      artworkUrl: continueShow.backdropUrl || continueShow.posterUrl,
-      featured: true,
-    } : null,
-    ...priorityItems,
-  ].filter(Boolean)
-
-  function openItem(item) {
-    if (item.kind === 'movie') onOpenMovie(item)
-    else if (item.kind === 'book') onOpenBook(item)
-    else onOpenTvShow(item)
-  }
-
-  return (
-    <section className="next-up-section" aria-labelledby="next-up-heading">
-      <div className="next-up-heading">
-        <div>
-          <p className="next-up-eyebrow">Ready when you are</p>
-          <h2 id="next-up-heading">Next up</h2>
-          <p>Continue a story or start a priority pick from your watchlist.</p>
-        </div>
-        <button type="button" className="section-link" onClick={onOpenWatchlist}>Open watchlist</button>
-      </div>
-      {!isSignedIn ? <SectionMessage message="Sign in to build your cross-media Next up queue." /> : null}
-      {isSignedIn && continueWatchingState.status === 'loading' ? <SectionMessage message="Building your Next up queue..." /> : null}
-      {isSignedIn && continueWatchingState.status !== 'loading' && items.length === 0 ? <SectionMessage message="Add a movie, show, or book to your watchlist to build this queue." /> : null}
-      {items.length ? <div className="next-up-grid">{items.map((item) => <NextUpCard key={`${item.featured ? 'continue' : item.kind}-${item.id}`} item={item} onOpen={() => openItem(item)} />)}</div> : null}
-    </section>
-  )
-}
-
-function NextUpCard({ item, onOpen }) {
-  const [artworkUnavailable, setArtworkUnavailable] = useState(false)
-  const showArtwork = Boolean(item.artworkUrl) && !artworkUnavailable
-  const KindIcon = item.kind === 'movie' ? ClapperIcon : item.kind === 'book' ? BookmarkIcon : TvIcon
-
-  return (
-    <article className={`next-up-card${item.featured ? ' featured' : ''}`}>
-      <button type="button" className="next-up-card-button" onClick={onOpen} aria-label={`${item.actionLabel}: ${item.title}`}>
-        <div className={`next-up-art${showArtwork ? ' has-image' : ''}`}>
-          {showArtwork ? <img src={item.artworkUrl} alt="" loading="lazy" onError={() => setArtworkUnavailable(true)} /> : <KindIcon />}
-          <span><KindIcon />{item.kicker}</span>
-        </div>
-        <div className="next-up-copy">
-          <h3>{item.title}</h3>
-          <p>{item.detail}</p>
-          <strong>{item.actionLabel}<ChevronRight /></strong>
-        </div>
-      </button>
-    </article>
-  )
-}
-
-function TonightPickArtwork({ pick }) {
-  const [artworkUnavailable, setArtworkUnavailable] = useState(false)
-  const showArtwork = Boolean(pick?.artworkUrl) && !artworkUnavailable
-
-  return (
-    <div className={`hero-art tonight-pick-art${showArtwork ? ' has-image' : ''}`} aria-hidden="true">
-      {showArtwork ? <img src={pick.artworkUrl} alt="" onError={() => setArtworkUnavailable(true)} /> : null}
-      <div className="tonight-pick-art-glow" />
-      <span className="tonight-pick-art-badge">Selected for you</span>
-      {pick ? <strong>{pick.kind === 'tv' ? 'Continue watching' : 'Movie night'}</strong> : <SparklesIcon />}
-    </div>
-  )
-}
-
 function LoginScreen({ authError, authStatus, onCancel, onSubmit }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -5885,7 +5196,23 @@ function AdminErrorLogsScreen({ user, onBack }) {
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(1)
   const [refreshKey, setRefreshKey] = useState(0)
+  const [clearState, setClearState] = useState({ status: 'idle', error: '' })
   const [state, setState] = useState({ status: 'loading', logs: [], total: 0, pageSize: 25, error: '' })
+
+  async function handleClearHistory() {
+    if (!window.confirm('Clear all error log history? This cannot be undone.')) return
+    setClearState({ status: 'loading', error: '' })
+    try {
+      const response = await fetch('/api/admin/error-logs', { method: 'DELETE', headers: buildAuthHeaders(user) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+      setPage(1)
+      setRefreshKey((value) => value + 1)
+      setClearState({ status: 'success', error: '' })
+    } catch (error) {
+      setClearState({ status: 'error', error: error instanceof Error ? error.message : 'Unable to clear error logs.' })
+    }
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -5918,9 +5245,11 @@ function AdminErrorLogsScreen({ user, onBack }) {
       </form>
       <label>Source <select value={source} onChange={(event) => { setSource(event.target.value); setPage(1) }}><option value="">All sources</option><option value="api">API</option><option value="job">Jobs</option></select></label>
       <button type="button" className="admin-outline-button" onClick={() => setRefreshKey((value) => value + 1)}>Refresh</button>
+      <button type="button" className="admin-outline-button" disabled={clearState.status === 'loading'} onClick={handleClearHistory}>{clearState.status === 'loading' ? 'Clearing…' : 'Clear history'}</button>
     </div>
     {state.status === 'loading' ? <SectionMessage message="Loading error logs..." /> : null}
     {state.status === 'error' ? <SectionMessage message={state.error} tone="error" /> : null}
+    {clearState.status === 'error' ? <SectionMessage message={clearState.error} tone="error" /> : null}
     {state.status === 'success' && state.logs.length === 0 ? <div className="admin-errors-empty">No error logs match these filters.</div> : null}
     {state.status === 'success' && state.logs.length > 0 ? <>
       <p className="admin-errors-count">{state.total.toLocaleString()} error{state.total === 1 ? '' : 's'} found</p>
@@ -6460,7 +5789,7 @@ function MoviesScreen({
   const isTopRatedListMode = screenMode === movieScreenModes.topRatedList && activeTab === 'Top Rated'
   const isUpcomingListMode = screenMode === movieScreenModes.upcomingList && activeTab === 'Upcoming'
   const isCatalogListMode = isGenreListMode || isPopularListMode || isNowPlayingListMode || isTopRatedListMode || isUpcomingListMode
-  const watchlistMovieIds = new Set(watchlistMovies.map((movie) => Number(movie.id)))
+  const watchlistMovieIds = useMemo(() => new Set(watchlistMovies.map((movie) => Number(movie.id))), [watchlistMovies])
 
   return (
     <section className="movies-page">
@@ -6697,7 +6026,7 @@ const gameTabs = [
 
 function GamesScreen({ activeTab, dashboardState, favoriteGames, gameActivityState, gameAchievementsState, gamesState, onTabChange, onPageChange, onToggleFavorite, onOpenGame, onOpenGameAchievements }) {
   const activeTabLabel = gameTabs.find((tab) => tab.id === activeTab)?.label || 'Popular'
-  const favoriteGameIds = new Set(favoriteGames.map((game) => game.id))
+  const favoriteGameIds = useMemo(() => new Set(favoriteGames.map((game) => game.id)), [favoriteGames])
 
   return (
     <section className="games-page">
@@ -9674,86 +9003,125 @@ function QuickMediaActions({ title, isInWatchlist = false, isWatched = false, on
   )
 }
 
-function ProgressCard({ item, onOpenTvShow, isInWatchlist = false, isWatched = false, onToggleWatchlist, onToggleWatched }) {
-  const [posterUnavailable, setPosterUnavailable] = useState(false)
-  const showPosterImage = Boolean(item.backdropUrl || item.posterUrl) && !posterUnavailable
+function HomeMediaCardShell({
+  item,
+  className,
+  posterSize,
+  artworkUrl,
+  artworkAlt,
+  fallbackTheme,
+  onOpen,
+  isInWatchlist = false,
+  isWatched = false,
+  onToggleWatchlist,
+  onToggleWatched,
+  watchedLabel = 'watched',
+  badge,
+  children,
+}) {
+  const [failedArtworkUrl, setFailedArtworkUrl] = useState(null)
+  const hasArtwork = Boolean(artworkUrl) && artworkUrl !== failedArtworkUrl
+  const openItem = () => onOpen?.(item)
 
   return (
-    <article className="media-card progress-card quick-media-card">
-      <button type="button" className="quick-media-card-open" onClick={() => onOpenTvShow?.(item)} aria-label={`Open ${item.title}`} />
-      <div className={`media-poster wide ${showPosterImage ? 'has-image theme-catalog' : 'theme-catalog'}`}>
-        {showPosterImage ? <img src={item.backdropUrl || item.posterUrl} alt={`${item.title} artwork`} className="movie-card-poster-image" loading="lazy" onError={() => setPosterUnavailable(true)} /> : null}
-        <QuickMediaActions title={item.title} isInWatchlist={isInWatchlist} isWatched={isWatched} onOpen={() => onOpenTvShow?.(item)} onToggleWatchlist={onToggleWatchlist ? () => onToggleWatchlist(item) : null} onToggleWatched={onToggleWatched ? () => onToggleWatched(item) : null} />
+    <article className={`media-card ${className} quick-media-card`}>
+      <button type="button" className="quick-media-card-open" onClick={openItem} aria-label={`Open ${item.title}`} />
+      <div className={`media-poster ${posterSize} ${hasArtwork ? 'has-image theme-catalog' : fallbackTheme || item.theme || 'theme-catalog'}`}>
+        {hasArtwork ? <img src={artworkUrl} alt={artworkAlt} className="movie-card-poster-image" loading="lazy" onError={() => setFailedArtworkUrl(artworkUrl)} /> : null}
+        {badge}
+        <QuickMediaActions
+          title={item.title}
+          isInWatchlist={isInWatchlist}
+          isWatched={isWatched}
+          watchedLabel={watchedLabel}
+          onOpen={openItem}
+          onToggleWatchlist={onToggleWatchlist ? () => onToggleWatchlist(item) : null}
+          onToggleWatched={onToggleWatched ? () => onToggleWatched(item) : null}
+        />
       </div>
-      <div className="media-copy">
-        <h3>{item.title}</h3>
-        <p>{item.latestWatchedEpisodeLabel} · {item.watchedEpisodeCount} of {item.airedEpisodeCount} episodes</p>
-        <div className="progress-row">
-          <div className="progress-track">
-            <span style={{ width: `${item.progress}%` }} />
-          </div>
-          <span className="progress-value">{item.progress}%</span>
-        </div>
-      </div>
+      <div className="media-copy">{children}</div>
     </article>
+  )
+}
+
+function ProgressCard({ item, onOpenTvShow, isInWatchlist = false, isWatched = false, onToggleWatchlist, onToggleWatched }) {
+  return (
+    <HomeMediaCardShell
+      item={item}
+      className="progress-card"
+      posterSize="wide"
+      artworkUrl={item.backdropUrl || item.posterUrl}
+      artworkAlt={`${item.title} artwork`}
+      fallbackTheme="theme-catalog"
+      onOpen={onOpenTvShow}
+      isInWatchlist={isInWatchlist}
+      isWatched={isWatched}
+      onToggleWatchlist={onToggleWatchlist}
+      onToggleWatched={onToggleWatched}
+    >
+      <h3>{item.title}</h3>
+      <p>{item.latestWatchedEpisodeLabel} · {item.watchedEpisodeCount} of {item.airedEpisodeCount} episodes</p>
+      <div className="progress-row">
+        <div className="progress-track">
+          <span style={{ width: `${item.progress}%` }} />
+        </div>
+        <span className="progress-value">{item.progress}%</span>
+      </div>
+    </HomeMediaCardShell>
   )
 }
 
 function RatingCard({ item, onOpenMovie, isInWatchlist = false, isWatched = false, onToggleWatchlist, onToggleWatched }) {
-  const [posterUnavailable, setPosterUnavailable] = useState(false)
-  const showPosterImage = Boolean(item.posterUrl) && !posterUnavailable
   const ratingLabel = typeof item.rating === 'number' ? item.rating.toFixed(1) : item.rating
 
   return (
-    <article className="media-card rating-card quick-media-card">
-      <button type="button" className="quick-media-card-open" onClick={() => onOpenMovie?.(item)} aria-label={`Open ${item.title}`} />
-      <div className={`media-poster tall ${showPosterImage ? 'has-image theme-catalog' : item.theme || 'theme-catalog'}`}>
-        {showPosterImage ? (
-          <img
-            src={item.posterUrl}
-            alt={`${item.title} poster`}
-            className="movie-card-poster-image"
-            loading="lazy"
-            onError={() => setPosterUnavailable(true)}
-          />
-        ) : null}
-        <QuickMediaActions title={item.title} isInWatchlist={isInWatchlist} isWatched={isWatched} onOpen={() => onOpenMovie?.(item)} onToggleWatchlist={onToggleWatchlist ? () => onToggleWatchlist(item) : null} onToggleWatched={onToggleWatched ? () => onToggleWatched(item) : null} />
+    <HomeMediaCardShell
+      item={item}
+      className="rating-card"
+      posterSize="tall"
+      artworkUrl={item.posterUrl}
+      artworkAlt={`${item.title} poster`}
+      onOpen={onOpenMovie}
+      isInWatchlist={isInWatchlist}
+      isWatched={isWatched}
+      onToggleWatchlist={onToggleWatchlist}
+      onToggleWatched={onToggleWatched}
+    >
+      <h3>{item.title}</h3>
+      <div className="rating-row">
+        <span className="star-rating">
+          <StarIcon />
+          {ratingLabel}
+        </span>
+        <span>{item.subtitle ?? item.year ?? ''}</span>
       </div>
-      <div className="media-copy">
-        <h3>{item.title}</h3>
-        <div className="rating-row">
-          <span className="star-rating">
-            <StarIcon />
-            {ratingLabel}
-          </span>
-          <span>{item.subtitle ?? item.year ?? ''}</span>
-        </div>
-      </div>
-    </article>
+    </HomeMediaCardShell>
   )
 }
 
 function HomeWatchlistCard({ item, onOpenMovie, onOpenTvShow, onOpenBook, isInWatchlist, isWatched, onToggleWatchlist, onToggleWatched }) {
-  const [artworkUnavailable, setArtworkUnavailable] = useState(false)
   const artworkUrl = item.kind === 'book' ? item.coverUrl : item.posterUrl || item.backdropUrl
-  const hasArtwork = Boolean(artworkUrl) && !artworkUnavailable
   const meta = item.kind === 'book' ? item.authorsLabel : item.kind === 'tv' ? item.seasonMeta || item.meta : item.meta
-  const onOpen = () => {
-    if (item.kind === 'book') onOpenBook?.(item)
-    else if (item.kind === 'tv') onOpenTvShow?.(item)
-    else onOpenMovie?.(item)
-  }
+  const onOpen = item.kind === 'book' ? onOpenBook : item.kind === 'tv' ? onOpenTvShow : onOpenMovie
 
   return (
-    <article className="media-card rating-card quick-media-card home-watchlist-card">
-      <button type="button" className="quick-media-card-open" onClick={onOpen} aria-label={`Open ${item.title}`} />
-      <div className={`media-poster tall ${hasArtwork ? 'has-image theme-catalog' : item.theme || 'theme-catalog'}`}>
-        {hasArtwork ? <img src={artworkUrl} alt={`${item.title} ${item.kind === 'book' ? 'cover' : 'poster'}`} className="movie-card-poster-image" loading="lazy" onError={() => setArtworkUnavailable(true)} /> : null}
-        <span className="home-media-kind" aria-hidden="true">{item.kind === 'book' ? 'Book' : item.kind === 'tv' ? 'TV' : 'Movie'}</span>
-        <QuickMediaActions title={item.title} isInWatchlist={isInWatchlist} isWatched={isWatched} watchedLabel={item.kind === 'book' ? 'read' : 'watched'} onOpen={onOpen} onToggleWatchlist={() => onToggleWatchlist?.(item)} onToggleWatched={() => onToggleWatched?.(item)} />
-      </div>
-      <div className="media-copy"><h3>{item.title}</h3><p>{meta || item.year}</p></div>
-    </article>
+    <HomeMediaCardShell
+      item={item}
+      className="rating-card home-watchlist-card"
+      posterSize="tall"
+      artworkUrl={artworkUrl}
+      artworkAlt={`${item.title} ${item.kind === 'book' ? 'cover' : 'poster'}`}
+      onOpen={onOpen}
+      isInWatchlist={isInWatchlist}
+      isWatched={isWatched}
+      watchedLabel={item.kind === 'book' ? 'read' : 'watched'}
+      onToggleWatchlist={onToggleWatchlist}
+      onToggleWatched={onToggleWatched}
+      badge={<span className="home-media-kind" aria-hidden="true">{item.kind === 'book' ? 'Book' : item.kind === 'tv' ? 'TV' : 'Movie'}</span>}
+    >
+      <h3>{item.title}</h3>
+      <p>{meta || item.year}</p>
+    </HomeMediaCardShell>
   )
 }
 
@@ -10619,25 +9987,6 @@ function mapContinueWatchingTvShowPayload(show) {
   }
 }
 
-function mapLatestEpisodeTvShowPayload(show) {
-  const episode = show.latestEpisode ?? {}
-  const seasonNumber = Number(episode.seasonNumber)
-  const episodeNumber = Number(episode.episodeNumber)
-  const episodeLabel = Number.isInteger(seasonNumber) && Number.isInteger(episodeNumber) ? `S${seasonNumber} E${episodeNumber}` : 'Latest episode'
-
-  return {
-    id: show.id,
-    title: show.title,
-    year: episode.airDate ? formatLongDate(episode.airDate) : 'Recently aired',
-    rating: typeof show.popularity === 'number' ? Math.round(show.popularity) : 0,
-    meta: episodeLabel,
-    seasonMeta: episode.title ? `${episodeLabel} · ${episode.title}` : episodeLabel,
-    posterUrl: show.posterUrl || null,
-    backdropUrl: show.backdropUrl || null,
-    theme: 'theme-catalog',
-  }
-}
-
 function mapWatchedMoviePayload(movie) {
   return {
     id: movie.id,
@@ -11365,10 +10714,6 @@ function readAppRoute(pathname = window.location.pathname, search = window.locat
   if (/^\/profile\/?$/.test(pathname)) return { kind: routeKinds.profile }
   if (/^\/news\/?$/.test(pathname)) {
     const params = new URLSearchParams(search)
-    const readId = (key) => {
-      const value = params.get(key)
-      return value && /^\d+$/.test(value) && Number(value) > 0 ? Number(value) : null
-    }
     const tab = params.get('tab') === 'saved' ? 'saved' : 'news'
     const category = NEWS_CATEGORIES.some((entry) => entry.key === params.get('category')) ? params.get('category') : null
     return { kind: routeKinds.news, tab, filters: { category } }

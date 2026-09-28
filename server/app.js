@@ -1808,6 +1808,13 @@ export async function createApp(pool, options = {}) {
     } catch (error) { next(error) }
   })
 
+  app.delete('/api/admin/error-logs', async (_request, response, next) => {
+    try {
+      await pool.query('DELETE FROM error_logs')
+      response.json({ cleared: true })
+    } catch (error) { next(error) }
+  })
+
   app.put('/api/admin/seasonal-themes/:themeKey/schedule', async (request, response, next) => {
     try {
       const user = await getAuthenticatedUser(pool, request)
