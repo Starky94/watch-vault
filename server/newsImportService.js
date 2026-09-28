@@ -1,5 +1,5 @@
 import { XMLParser } from 'fast-xml-parser'
-import { ensureNewsTables, ensureRssSourcesTable, linkNewsArticlesToActors, linkNewsArticlesToMovies, linkNewsArticlesToTvShows, listNewsActors, listNewsMovies, listNewsTvShows, listRssSources, upsertNewsArticles } from './database.js'
+import { ensureNewsTables, ensureRssSourcesTable, linkNewsArticlesToTvShows, listNewsTvShows, listRssSources, upsertNewsArticles } from './database.js'
 import { ENTERTAINMENT_NEWS_SOURCES } from './rssSources.js'
 
 export const ENTERTAINMENT_NEWS_FEEDS = ENTERTAINMENT_NEWS_SOURCES.map((source) => source.url)
@@ -49,7 +49,7 @@ export function canonicalizeNewsLink(value) {
   }
 }
 
-export function normalizeNewsActorName(value) {
+export function normalizeNewsCategory(value) {
   return textValue(value).normalize('NFKC').replace(/\s+/g, ' ').trim().toLocaleLowerCase()
 }
 
@@ -66,7 +66,7 @@ export function normalizeNewsItem(item) {
     ?? firstUrl(item?.image?.url ?? item?.image)
     ?? imageFromHtml(item?.['content:encoded'])
     ?? imageFromHtml(item?.description)
-  const categories = [...new Set(asArray(item?.category).map(normalizeNewsActorName).filter(Boolean))]
+  const categories = [...new Set(asArray(item?.category).map(normalizeNewsCategory).filter(Boolean))]
   return { title, link, publishedAt, photoUrl, categories }
 }
 
@@ -122,44 +122,21 @@ export async function importEntertainmentNews(pool, { fetchImpl = fetch, feeds }
 
   const articles = [...articleByLink.values()]
   if (articles.length === 0) {
-    return { fetchedCount, insertedCount: 0, updatedCount: 0, linkedActorCount: 0, linkedMovieCount: 0, linkedShowCount: 0, activeSourceCount: selectedFeeds.length, failedFeedCount: errors.length, errors }
+    return { fetchedCount, insertedCount: 0, updatedCount: 0, linkedShowCount: 0, activeSourceCount: selectedFeeds.length, failedFeedCount: errors.length, errors }
   }
-  const [{ articleIdsByLink, insertedCount, updatedCount }, actors, movies, shows] = await Promise.all([
+  const [{ articleIdsByLink, insertedCount, updatedCount }, shows] = await Promise.all([
     upsertNewsArticles(pool, articles),
-    listNewsActors(pool),
-    listNewsMovies(pool),
     listNewsTvShows(pool),
   ])
-  const actorIdsByName = new Map()
-  for (const actor of actors) {
-    const name = normalizeNewsActorName(actor.name)
+  const showIdsByName = new Map()
+  for (const show of shows) {
+    const name = normalizeNewsCategory(show.name)
     if (!name) continue
-    const actorIds = actorIdsByName.get(name) ?? []
-    actorIds.push(actor.id)
-    actorIdsByName.set(name, actorIds)
+    showIdsByName.set(name, [...(showIdsByName.get(name) ?? []), show.id])
   }
-
-  const actorLinks = articles.flatMap((article) => article.categories.flatMap((category) =>
-    (actorIdsByName.get(category) ?? []).map((actorId) => ({ articleId: articleIdsByLink.get(article.link), actorId }))
+  const showLinks = articles.flatMap((article) => article.categories.flatMap((category) =>
+    (showIdsByName.get(category) ?? []).map((entityId) => ({ articleId: articleIdsByLink.get(article.link), entityId }))
   ))
-  const createTitleIdsByName = (items, label) => {
-    const idsByName = new Map()
-    for (const item of items) {
-      const name = normalizeNewsActorName(item[label])
-      if (!name) continue
-      idsByName.set(name, [...(idsByName.get(name) ?? []), item.id])
-    }
-    return idsByName
-  }
-  const movieIdsByName = createTitleIdsByName(movies, 'title')
-  const showIdsByName = createTitleIdsByName(shows, 'name')
-  const createTitleLinks = (idsByName) => articles.flatMap((article) => article.categories.flatMap((category) =>
-    (idsByName.get(category) ?? []).map((entityId) => ({ articleId: articleIdsByLink.get(article.link), entityId }))
-  ))
-  const [linkedActorCount, linkedMovieCount, linkedShowCount] = await Promise.all([
-    linkNewsArticlesToActors(pool, actorLinks),
-    linkNewsArticlesToMovies(pool, createTitleLinks(movieIdsByName)),
-    linkNewsArticlesToTvShows(pool, createTitleLinks(showIdsByName)),
-  ])
-  return { fetchedCount, insertedCount, updatedCount, linkedActorCount, linkedMovieCount, linkedShowCount, activeSourceCount: selectedFeeds.length, failedFeedCount: errors.length, errors }
+  const linkedShowCount = await linkNewsArticlesToTvShows(pool, showLinks)
+  return { fetchedCount, insertedCount, updatedCount, linkedShowCount, activeSourceCount: selectedFeeds.length, failedFeedCount: errors.length, errors }
 }

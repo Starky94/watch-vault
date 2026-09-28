@@ -1,8 +1,10 @@
 import { defaultThemeSchedulerTimeZone, resolveScheduledTheme } from '../shared/themes.js'
-import { getActiveSiteTheme, saveActiveSiteTheme } from './database.js'
+import { ensureSeasonalThemeSchedulesTable, getActiveSiteTheme, getSeasonalThemesWithSavedSchedules, saveActiveSiteTheme } from './database.js'
 
 export async function runThemeScheduler(pool, { now = new Date(), timeZone = defaultThemeSchedulerTimeZone } = {}) {
-  const activeTheme = resolveScheduledTheme({ date: now, timeZone })
+  await ensureSeasonalThemeSchedulesTable(pool)
+  const themes = await getSeasonalThemesWithSavedSchedules(pool)
+  const activeTheme = resolveScheduledTheme({ date: now, timeZone, themes })
   const previousTheme = await getActiveSiteTheme(pool)
   const changed = previousTheme !== activeTheme
 

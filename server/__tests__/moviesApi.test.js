@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createApp, readMovieAvailability } from '../app.js'
+import { readMovieAvailability } from '../app.js'
+import { createApp, sessionCookieFor } from './sessionTestHelpers.js'
 import { addMovieReleaseReminderForUser, buildStatsInsights, countMovies, countStoredDataBytes, ensureMoviesTable, ensureSiteThemePreferencesTable, getActiveSiteTheme, getBookStatsForUser, getMostWatchedActorsForUser, getMovieStatsForUser, getPersonFilmographyPersonalStates, getPersonHistoryForUser, getStatsInsightsForUser, getStreamingPlatformsForUser, getTopRatedThisMonthForUser, getUserEnabledSections, hasMovieReleaseReminderForUser, listCalendarEventsForUser, listContinueWatchingTvShowsForUser, listGenres, listLatestEpisodeTvShows, listMovies, listRecentlyReleasedMovies, listSimilarMovies, listTopRatedMovies, listTvShows, listTvWatchlistShowsForUser, listUpcomingMovies, listWatchedMoviesByGenreForUser, listWatchedTvEpisodesForUser, removeMovieReleaseReminderForUser, saveActiveSiteTheme, saveUserEnabledSections, searchActors, searchBooks, searchGames, searchMovies, searchTvShows, updateTvEpisodeWatchStateForUser, upsertTvEpisodeRatingForUser } from '../database.js'
 
 function isSchemaSetupQuery(sql) {
@@ -63,6 +64,7 @@ function isSchemaSetupQuery(sql) {
     || sql.includes('CREATE TABLE IF NOT EXISTS user_section_preferences')
     || sql.includes('CREATE TABLE IF NOT EXISTS user_news_preferences')
     || sql.includes('CREATE TABLE IF NOT EXISTS site_theme_preferences')
+    || sql.includes('CREATE TABLE IF NOT EXISTS seasonal_theme_schedules')
     || sql.includes('CREATE TABLE IF NOT EXISTS admin_job_executions')
     || sql.includes('CREATE TABLE IF NOT EXISTS rss_sources')
     || sql.includes('ALTER TABLE rss_sources')
@@ -382,14 +384,14 @@ test('movie release reminder endpoints require authentication and toggle the ded
     const unauthenticated = await fetch(baseUrl, { method: 'POST' })
     assert.equal(unauthenticated.status, 401)
 
-    const added = await fetch(baseUrl, { method: 'POST', headers: { 'x-watchvault-username': 'florind' } })
+    const added = await fetch(baseUrl, { method: 'POST', headers: { Cookie: sessionCookieFor('florind') } })
     assert.equal(added.status, 201)
     assert.deepEqual(await added.json(), { hasReleaseReminder: true })
 
-    const duplicate = await fetch(baseUrl, { method: 'POST', headers: { 'x-watchvault-username': 'florind' } })
+    const duplicate = await fetch(baseUrl, { method: 'POST', headers: { Cookie: sessionCookieFor('florind') } })
     assert.equal(duplicate.status, 201)
 
-    const removed = await fetch(baseUrl, { method: 'DELETE', headers: { 'x-watchvault-username': 'florind' } })
+    const removed = await fetch(baseUrl, { method: 'DELETE', headers: { Cookie: sessionCookieFor('florind') } })
     assert.equal(removed.status, 200)
     assert.deepEqual(await removed.json(), { hasReleaseReminder: false })
   } finally {
@@ -403,6 +405,7 @@ test('POST /api/auth/login authenticates seeded users from the database', async 
       if (isSchemaSetupQuery(sql)) {
         return { rowCount: null }
       }
+
 
       if (sql.includes('FROM users') && sql.includes('AND password = $2')) {
         if (params[0] === 'florind' && params[1] === 'test') {
@@ -571,7 +574,7 @@ test('POST /api/auth/change-password updates the password for an authenticated u
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-watchvault-username': 'florind',
+        Cookie: sessionCookieFor('florind'),
       },
       body: JSON.stringify({
         currentPassword: 'test',
@@ -691,7 +694,7 @@ test('POST /api/auth/change-password rejects an incorrect current password', asy
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-watchvault-username': 'florind',
+        Cookie: sessionCookieFor('florind'),
       },
       body: JSON.stringify({
         currentPassword: 'wrong',
@@ -741,7 +744,7 @@ test('POST /api/auth/change-password validates new password requirements', async
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-watchvault-username': 'florind',
+        Cookie: sessionCookieFor('florind'),
       },
       body: JSON.stringify({
         currentPassword: 'test',
@@ -758,7 +761,7 @@ test('POST /api/auth/change-password validates new password requirements', async
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-watchvault-username': 'florind',
+        Cookie: sessionCookieFor('florind'),
       },
       body: JSON.stringify({
         currentPassword: 'test',
@@ -775,7 +778,7 @@ test('POST /api/auth/change-password validates new password requirements', async
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-watchvault-username': 'florind',
+        Cookie: sessionCookieFor('florind'),
       },
       body: JSON.stringify({
         currentPassword: 'test',
@@ -873,6 +876,8 @@ test('watchlist endpoints stay isolated per user and duplicate adds are idempote
         return { rowCount: null }
       }
 
+      if (sql.includes('FROM tv_watchlist_items') && sql.includes('WHERE users.username = $1')) return { rows: [] }
+
       if (sql.includes('deleted_watchlist AS')) {
         const [username, movieId] = params
 
@@ -967,7 +972,7 @@ test('watchlist endpoints stay isolated per user and duplicate adds are idempote
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-watchvault-username': 'florind',
+        Cookie: sessionCookieFor('florind'),
       },
       body: JSON.stringify({
         movieId: 42,
@@ -979,7 +984,7 @@ test('watchlist endpoints stay isolated per user and duplicate adds are idempote
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-watchvault-username': 'florind',
+        Cookie: sessionCookieFor('florind'),
       },
       body: JSON.stringify({
         movieId: 42,
@@ -989,14 +994,14 @@ test('watchlist endpoints stay isolated per user and duplicate adds are idempote
 
     const florindWatchlistResponse = await fetch(`http://127.0.0.1:${address.port}/api/watchlist`, {
       headers: {
-        'x-watchvault-username': 'florind',
+        Cookie: sessionCookieFor('florind'),
       },
     })
     const florindWatchlistPayload = await florindWatchlistResponse.json()
 
     const alexWatchlistResponse = await fetch(`http://127.0.0.1:${address.port}/api/watchlist`, {
       headers: {
-        'x-watchvault-username': 'alex',
+        Cookie: sessionCookieFor('alex'),
       },
     })
     const alexWatchlistPayload = await alexWatchlistResponse.json()
@@ -1004,23 +1009,23 @@ test('watchlist endpoints stay isolated per user and duplicate adds are idempote
     const removeResponse = await fetch(`http://127.0.0.1:${address.port}/api/watchlist/42`, {
       method: 'DELETE',
       headers: {
-        'x-watchvault-username': 'florind',
+        Cookie: sessionCookieFor('florind'),
       },
     })
     const removePayload = await removeResponse.json()
 
     const florindWatchlistAfterRemoveResponse = await fetch(`http://127.0.0.1:${address.port}/api/watchlist`, {
       headers: {
-        'x-watchvault-username': 'florind',
+        Cookie: sessionCookieFor('florind'),
       },
     })
     const florindWatchlistAfterRemovePayload = await florindWatchlistAfterRemoveResponse.json()
 
-    assert.equal(addFirstResponse.status, 200)
+    assert.equal(addFirstResponse.status, 200, JSON.stringify(addFirstPayload))
     assert.equal(addDuplicateResponse.status, 200)
     assert.equal(addFirstPayload.movie.id, 42)
     assert.equal(addDuplicatePayload.movie.id, 42)
-    assert.equal(florindWatchlistResponse.status, 200)
+    assert.equal(florindWatchlistResponse.status, 200, JSON.stringify(florindWatchlistPayload))
     assert.equal(florindWatchlistPayload.count, 1)
     assert.deepEqual(florindWatchlistPayload.movies[0], {
       id: 42,
@@ -1124,7 +1129,7 @@ test('POST /api/watchlist allows adds beyond 30 movies', async () => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-watchvault-username': 'florind',
+        Cookie: sessionCookieFor('florind'),
       },
       body: JSON.stringify({
         movieId: 999,
@@ -1197,7 +1202,7 @@ test('GET /api/watched/by-genre returns a user-scoped 30-item page', async () =>
   try {
     const address = server.address()
     const response = await fetch(`http://127.0.0.1:${address.port}/api/watched/by-genre?genre=sci-fi&page=1&limit=30`, {
-      headers: { 'x-watchvault-username': 'florind' },
+      headers: { Cookie: sessionCookieFor('florind') },
     })
     const payload = await response.json()
 
@@ -1256,15 +1261,15 @@ test('GET /api/stats/insights requires authentication and validates period and t
     let response = await fetch(baseUrl)
     assert.equal(response.status, 401)
 
-    response = await fetch(`${baseUrl}?period=decade`, { headers: { 'x-watchvault-username': 'florind' } })
+    response = await fetch(`${baseUrl}?period=decade`, { headers: { Cookie: sessionCookieFor('florind') } })
     assert.equal(response.status, 400)
     assert.deepEqual(await response.json(), { error: 'period must be one of: week, month, year' })
 
-    response = await fetch(`${baseUrl}?period=year&timeZone=Not/A_Real_Zone`, { headers: { 'x-watchvault-username': 'florind' } })
+    response = await fetch(`${baseUrl}?period=year&timeZone=Not/A_Real_Zone`, { headers: { Cookie: sessionCookieFor('florind') } })
     assert.equal(response.status, 400)
     assert.deepEqual(await response.json(), { error: 'timeZone must be a valid IANA timezone' })
 
-    response = await fetch(`${baseUrl}?period=year&timeZone=UTC`, { headers: { 'x-watchvault-username': 'florind' } })
+    response = await fetch(`${baseUrl}?period=year&timeZone=UTC`, { headers: { Cookie: sessionCookieFor('florind') } })
     assert.equal(response.status, 200)
     assert.deepEqual((await response.json()).topRatedThisMonth, [{ title: 'Movie A', posterPath: '/movie-a.jpg', mediaType: 'movie', score: 5, episodeCount: 0 }])
   } finally {
@@ -1569,7 +1574,7 @@ test('watched endpoints toggle watched state, remove watchlist entries, and retu
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-watchvault-username': 'florind',
+        Cookie: sessionCookieFor('florind'),
       },
       body: JSON.stringify({
         movieId: 42,
@@ -1579,14 +1584,14 @@ test('watched endpoints toggle watched state, remove watchlist entries, and retu
 
     const florindWatchedResponse = await fetch(`http://127.0.0.1:${address.port}/api/watched`, {
       headers: {
-        'x-watchvault-username': 'florind',
+        Cookie: sessionCookieFor('florind'),
       },
     })
     const florindWatchedPayload = await florindWatchedResponse.json()
 
     const alexWatchedResponse = await fetch(`http://127.0.0.1:${address.port}/api/watched`, {
       headers: {
-        'x-watchvault-username': 'alex',
+        Cookie: sessionCookieFor('alex'),
       },
     })
     const alexWatchedPayload = await alexWatchedResponse.json()
@@ -1594,7 +1599,7 @@ test('watched endpoints toggle watched state, remove watchlist entries, and retu
     const removeResponse = await fetch(`http://127.0.0.1:${address.port}/api/watched/42`, {
       method: 'DELETE',
       headers: {
-        'x-watchvault-username': 'florind',
+        Cookie: sessionCookieFor('florind'),
       },
     })
     const removePayload = await removeResponse.json()
@@ -1735,14 +1740,14 @@ test('Watch Together movie confirmations also update each confirmer’s watched 
     const confirm = async (username) => {
       const response = await fetch(`http://127.0.0.1:${address.port}/api/watched`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-watchvault-username': username },
+        headers: { 'Content-Type': 'application/json', Cookie: sessionCookieFor(username) },
         body: JSON.stringify({ movieId: 42, watchService: 'Netflix', watchTogether: true }),
       })
       return { response, payload: await response.json() }
     }
 
     const first = await confirm('florind')
-    assert.equal(first.response.status, 200)
+    assert.equal(first.response.status, 200, JSON.stringify(first.payload))
     assert.equal(first.payload.movie.id, 42)
     assert.deepEqual(first.payload.stats, { moviesWatched: 1, timeWatchedMinutes: 166, watchlistCount: 0, averageRating: null })
     assert.equal(first.payload.watchTogether.status, 'waiting_for_partner')
@@ -3769,14 +3774,14 @@ test('section preference APIs require authentication and validate updates', asyn
 
     const invalid = await fetch(`${baseUrl}/api/preferences/sections`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'x-watchvault-username': 'florin' },
+      headers: { 'Content-Type': 'application/json', Cookie: sessionCookieFor('florin') },
       body: JSON.stringify({ enabledSections: ['movies', 'music'] }),
     })
     assert.equal(invalid.status, 400)
 
     const update = await fetch(`${baseUrl}/api/preferences/sections`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'x-watchvault-username': 'florin' },
+      headers: { 'Content-Type': 'application/json', Cookie: sessionCookieFor('florin') },
       body: JSON.stringify({ enabledSections: ['games', 'calendar'] }),
     })
     assert.equal(update.status, 200)
@@ -3784,19 +3789,18 @@ test('section preference APIs require authentication and validate updates', asyn
 
     const legacyUpdate = await fetch(`${baseUrl}/api/admin/preferences/sections`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'x-watchvault-username': 'florin' },
+      headers: { 'Content-Type': 'application/json', Cookie: sessionCookieFor('florin') },
       body: JSON.stringify({ enabledSections: ['books'] }),
     })
-    assert.equal(legacyUpdate.status, 200)
-    assert.deepEqual((await legacyUpdate.json()).enabled, ['movies', 'tv', 'books'])
+    assert.equal(legacyUpdate.status, 403)
 
     const saved = await fetch(`${baseUrl}/api/preferences/sections`, {
-      headers: { 'x-watchvault-username': 'florin' },
+      headers: { Cookie: sessionCookieFor('florin') },
     })
-    assert.deepEqual((await saved.json()).enabled, ['movies', 'tv', 'books'])
+    assert.deepEqual((await saved.json()).enabled, ['movies', 'tv', 'games', 'calendar'])
 
     const otherUser = await fetch(`${baseUrl}/api/preferences/sections`, {
-      headers: { 'x-watchvault-username': 'alex' },
+      headers: { Cookie: sessionCookieFor('alex') },
     })
     assert.deepEqual((await otherUser.json()).enabled, ['movies', 'tv', 'books', 'games', 'calendar'])
   } finally {
@@ -3838,22 +3842,22 @@ test('news preference APIs persist category choices per user and require authent
 
     const invalid = await fetch(baseUrl, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'x-watchvault-username': 'florin' },
+      headers: { 'Content-Type': 'application/json', Cookie: sessionCookieFor('florin') },
       body: JSON.stringify({ enabledCategories: ['games', 'music'] }),
     })
     assert.equal(invalid.status, 400)
 
     const update = await fetch(baseUrl, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'x-watchvault-username': 'florin' },
+      headers: { 'Content-Type': 'application/json', Cookie: sessionCookieFor('florin') },
       body: JSON.stringify({ enabledCategories: ['games', 'formula-1'] }),
     })
     assert.equal(update.status, 200)
     assert.deepEqual((await update.json()).enabled, ['formula-1', 'games'])
 
-    const saved = await fetch(baseUrl, { headers: { 'x-watchvault-username': 'florin' } })
+    const saved = await fetch(baseUrl, { headers: { Cookie: sessionCookieFor('florin') } })
     assert.deepEqual((await saved.json()).enabled, ['formula-1', 'games'])
-    const otherUser = await fetch(baseUrl, { headers: { 'x-watchvault-username': 'alex' } })
+    const otherUser = await fetch(baseUrl, { headers: { Cookie: sessionCookieFor('alex') } })
     assert.deepEqual((await otherUser.json()).enabled, defaultCategories)
   } finally {
     await closeServer(server)
@@ -3909,25 +3913,25 @@ test('global theme APIs are public for reads and validate authenticated updates'
 
     for (const invalidTheme of ['spring', 'unknown-theme']) {
       const invalid = await fetch(`${baseUrl}/api/admin/theme`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-watchvault-username': 'florin' }, body: JSON.stringify({ activeTheme: invalidTheme }),
+        method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: sessionCookieFor('florind') }, body: JSON.stringify({ activeTheme: invalidTheme }),
       })
       assert.equal(invalid.status, 400)
     }
 
     const activate = await fetch(`${baseUrl}/api/admin/theme`, {
-      method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-watchvault-username': 'florin' }, body: JSON.stringify({ activeTheme: 'autumn' }),
+      method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: sessionCookieFor('florind') }, body: JSON.stringify({ activeTheme: 'autumn' }),
     })
     assert.deepEqual(await activate.json(), { activeTheme: 'autumn' })
     assert.deepEqual(await (await fetch(`${baseUrl}/api/theme`)).json(), { activeTheme: 'autumn' })
 
     const activateHalloween = await fetch(`${baseUrl}/api/admin/theme`, {
-      method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-watchvault-username': 'florin' }, body: JSON.stringify({ activeTheme: 'halloween' }),
+      method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: sessionCookieFor('florind') }, body: JSON.stringify({ activeTheme: 'halloween' }),
     })
     assert.deepEqual(await activateHalloween.json(), { activeTheme: 'halloween' })
     assert.deepEqual(await (await fetch(`${baseUrl}/api/theme`)).json(), { activeTheme: 'halloween' })
 
     const deactivate = await fetch(`${baseUrl}/api/admin/theme`, {
-      method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-watchvault-username': 'florin' }, body: JSON.stringify({ activeTheme: 'default' }),
+      method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: sessionCookieFor('florind') }, body: JSON.stringify({ activeTheme: 'default' }),
     })
     assert.deepEqual(await deactivate.json(), { activeTheme: 'default' })
   } finally {
@@ -3997,6 +4001,7 @@ test('POST /api/admin/jobs/:jobKey/run can dispatch a TV import job', async () =
         return { rowCount: null }
       }
 
+      if (sql.includes('INSERT INTO admin_job_executions')) return { rows: [{ last_executed_at: '2026-09-27T00:00:00.000Z' }] }
       throw new Error(`Unexpected query: ${sql}`)
     },
   }
@@ -4030,15 +4035,17 @@ test('POST /api/admin/jobs/:jobKey/run can dispatch a TV import job', async () =
     const address = server.address()
     const response = await fetch(`http://127.0.0.1:${address.port}/api/admin/jobs/tv-popular/run`, {
       method: 'POST',
+      headers: { Cookie: sessionCookieFor('florind') },
     })
     const payload = await response.json()
 
-    assert.equal(response.status, 200)
+    assert.equal(response.status, 200, JSON.stringify(payload))
     assert.deepEqual(payload, {
       job: 'tv-popular',
       fetchedCount: 30,
       insertedCount: 5,
       updatedCount: 25,
+      lastExecutedAt: '2026-09-27T00:00:00.000Z',
     })
     assert.deepEqual(invocations, [
       {
@@ -4062,6 +4069,7 @@ test('POST /api/admin/jobs/:jobKey/run dispatches the selected job and returns t
         return { rowCount: null }
       }
 
+      if (sql.includes('INSERT INTO admin_job_executions')) return { rows: [{ last_executed_at: '2026-09-27T00:00:00.000Z' }] }
       throw new Error(`Unexpected query: ${sql}`)
     },
   }
@@ -4095,15 +4103,17 @@ test('POST /api/admin/jobs/:jobKey/run dispatches the selected job and returns t
     const address = server.address()
     const response = await fetch(`http://127.0.0.1:${address.port}/api/admin/jobs/popular/run`, {
       method: 'POST',
+      headers: { Cookie: sessionCookieFor('florind') },
     })
     const payload = await response.json()
 
-    assert.equal(response.status, 200)
+    assert.equal(response.status, 200, JSON.stringify(payload))
     assert.deepEqual(payload, {
       job: 'popular',
       fetchedCount: 30,
       insertedCount: 8,
       updatedCount: 22,
+      lastExecutedAt: '2026-09-27T00:00:00.000Z',
     })
     assert.deepEqual(invocations, [
       {
@@ -4149,6 +4159,7 @@ test('POST /api/admin/jobs/:jobKey/run returns 404 for unknown jobs', async () =
     const address = server.address()
     const response = await fetch(`http://127.0.0.1:${address.port}/api/admin/jobs/popular/run`, {
       method: 'POST',
+      headers: { Cookie: sessionCookieFor('florind') },
     })
     const payload = await response.json()
 
@@ -4201,6 +4212,7 @@ test('POST /api/admin/jobs/:jobKey/run returns 500 when runtime config is missin
     const address = server.address()
     const response = await fetch(`http://127.0.0.1:${address.port}/api/admin/jobs/popular/run`, {
       method: 'POST',
+      headers: { Cookie: sessionCookieFor('florind') },
     })
     const payload = await response.json()
 
@@ -4254,6 +4266,7 @@ test('POST /api/admin/jobs/:jobKey/run returns 500 when the job fails', async ()
     const address = server.address()
     const response = await fetch(`http://127.0.0.1:${address.port}/api/admin/jobs/popular/run`, {
       method: 'POST',
+      headers: { Cookie: sessionCookieFor('florind') },
     })
     const payload = await response.json()
 
@@ -4849,7 +4862,7 @@ test('GET /api/tv/library returns saved TV show cards only for the authenticated
 
   try {
     const address = server.address()
-    const response = await fetch(`http://127.0.0.1:${address.port}/api/tv/library`, { headers: { 'x-watchvault-username': 'florind' } })
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/tv/library`, { headers: { Cookie: sessionCookieFor('florind') } })
     const payload = await response.json()
 
     assert.equal(response.status, 200)
@@ -4909,7 +4922,7 @@ test('GET /api/tv/library returns mapped in-progress TV shows for Continue Watch
 
   try {
     const address = server.address()
-    const response = await fetch(`http://127.0.0.1:${address.port}/api/tv/library`, { headers: { 'x-watchvault-username': 'florind' } })
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/tv/library`, { headers: { Cookie: sessionCookieFor('florind') } })
     const payload = await response.json()
 
     assert.equal(response.status, 200)
@@ -4969,7 +4982,7 @@ test('GET /api/tv/continue-watching returns paginated mapped in-progress shows',
 
   try {
     const address = server.address()
-    const response = await fetch(`http://127.0.0.1:${address.port}/api/tv/continue-watching?page=2&limit=30`, { headers: { 'x-watchvault-username': 'florind' } })
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/tv/continue-watching?page=2&limit=30`, { headers: { Cookie: sessionCookieFor('florind') } })
     const payload = await response.json()
 
     assert.equal(response.status, 200)
@@ -5548,7 +5561,7 @@ test('movie ratings update one user vote and return the combined WatchVault aver
     const baseUrl = `http://127.0.0.1:${address.port}/api/movies/42/rating`
     const rate = (username, score) => fetch(baseUrl, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'x-watchvault-username': username },
+      headers: { 'Content-Type': 'application/json', Cookie: sessionCookieFor(username) },
       body: JSON.stringify({ score }),
     })
 
@@ -5589,10 +5602,10 @@ test('movie rating endpoint rejects unauthenticated, invalid, and unknown-movie 
     let response = await fetch(`${baseUrl}/42/rating`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ score: 5 }) })
     assert.equal(response.status, 401)
 
-    response = await fetch(`${baseUrl}/42/rating`, { method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-watchvault-username': 'florind' }, body: JSON.stringify({ score: 3.2 }) })
+    response = await fetch(`${baseUrl}/42/rating`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: sessionCookieFor('florind') }, body: JSON.stringify({ score: 3.2 }) })
     assert.equal(response.status, 400)
 
-    response = await fetch(`${baseUrl}/404/rating`, { method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-watchvault-username': 'florind' }, body: JSON.stringify({ score: 4 }) })
+    response = await fetch(`${baseUrl}/404/rating`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: sessionCookieFor('florind') }, body: JSON.stringify({ score: 4 }) })
     assert.equal(response.status, 404)
   } finally {
     await closeServer(server)
@@ -5718,9 +5731,9 @@ test('discover endpoints proxy TMDB suggestions and apply validated filters', as
     assert.equal(resultResponse.status, 200)
     assert.equal(payload.results[0].title, 'Watched Film')
     assert.ok(requestedUrls.some((url) => url.includes('/discover/movie?sort_by=popularity.desc&with_runtime.gte=120&with_cast=4&with_keywords=9%7C10&page=1')))
-    const signedInMovieResponse = await originalFetch(`${baseUrl}?type=movie&runtime=long`, { headers: { 'x-watchvault-username': 'florind' } })
+    const signedInMovieResponse = await originalFetch(`${baseUrl}?type=movie&runtime=long`, { headers: { Cookie: sessionCookieFor('florind') } })
     assert.deepEqual((await signedInMovieResponse.json()).results.map((item) => item.id), [89, 90])
-    const signedInTvResponse = await originalFetch(`${baseUrl}?type=tv&runtime=short`, { headers: { 'x-watchvault-username': 'florind' } })
+    const signedInTvResponse = await originalFetch(`${baseUrl}?type=tv&runtime=short`, { headers: { Cookie: sessionCookieFor('florind') } })
     assert.deepEqual((await signedInTvResponse.json()).results.map((item) => item.id), [78])
     const invalidResponse = await originalFetch(`${baseUrl}?type=movie&runtime=long&keywordIds=1,2,3,4`)
     assert.equal(invalidResponse.status, 400)

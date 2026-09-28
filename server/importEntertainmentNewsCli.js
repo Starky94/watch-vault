@@ -7,7 +7,7 @@ async function run() {
   const pool = createPool(config.databaseUrl)
   try {
     const result = await importEntertainmentNews(pool)
-    console.log(`Fetched ${result.fetchedCount} news articles. Inserted ${result.insertedCount}, refreshed ${result.updatedCount}, and linked ${result.linkedActorCount} actor associations.`)
+    console.log(`Fetched ${result.fetchedCount} news articles. Inserted ${result.insertedCount}, refreshed ${result.updatedCount}, and linked ${result.linkedShowCount} TV show associations.`)
     for (const error of result.errors) console.error(`Feed failed (${error.feed}): ${error.message}`)
   } finally {
     await pool.end()

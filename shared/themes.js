@@ -2,13 +2,13 @@ export const defaultThemeKey = 'default'
 export const defaultThemeSchedulerTimeZone = 'Europe/Bucharest'
 
 export const seasonalThemes = [
-  { key: 'valentines-day', name: "Valentine's Day", emoji: '💕', date: '14 February', period: '7–14 Feb', available: false },
-  { key: 'lunar-new-year', name: 'Lunar New Year', emoji: '🧧', date: '17 February', period: '14–22 Feb', available: false },
-  { key: 'spring', name: 'Spring Theme', emoji: '🌸', date: '1 March', period: '1–7 Mar', available: false },
-  { key: 'st-patricks-day', name: "St. Patrick's Day", emoji: '☘️', date: '17 March', period: '15–17 Mar', available: false },
-  { key: 'april-fools-day', name: "April Fools' Day", emoji: '🤡', date: '1 April', period: '1 Apr only', available: false },
-  { key: 'orthodox-easter', name: 'Orthodox Easter', emoji: '🐣', date: '2 May', period: '1–4 May', available: false },
-  { key: 'summer', name: 'Summer Theme', emoji: '🌞', date: '1 June', period: '1–10 June', available: false },
+  { key: 'valentines-day', name: "Valentine's Day", emoji: '💕', date: '14 February', period: '7–14 Feb', schedule: { startsOn: '02-07', endsOn: '02-14' }, available: false },
+  { key: 'lunar-new-year', name: 'Lunar New Year', emoji: '🧧', date: '17 February', period: '14–22 Feb', schedule: { startsOn: '02-14', endsOn: '02-22' }, available: false },
+  { key: 'spring', name: 'Spring Theme', emoji: '🌸', date: '1 March', period: '1–7 Mar', schedule: { startsOn: '03-01', endsOn: '03-07' }, available: false },
+  { key: 'st-patricks-day', name: "St. Patrick's Day", emoji: '☘️', date: '17 March', period: '15–17 Mar', schedule: { startsOn: '03-15', endsOn: '03-17' }, available: false },
+  { key: 'april-fools-day', name: "April Fools' Day", emoji: '🤡', date: '1 April', period: '1 Apr only', schedule: { startsOn: '04-01', endsOn: '04-01' }, available: false },
+  { key: 'orthodox-easter', name: 'Orthodox Easter', emoji: '🐣', date: '2 May', period: '1–4 May', schedule: { startsOn: '05-01', endsOn: '05-04' }, available: false },
+  { key: 'summer', name: 'Summer Theme', emoji: '🌞', date: '1 June', period: '1–10 June', schedule: { startsOn: '06-01', endsOn: '06-10' }, available: false },
   {
     key: 'autumn',
     name: 'Autumn Theme',
@@ -29,8 +29,8 @@ export const seasonalThemes = [
     tmdbKeywords: ['halloween', 'haunted house', 'witch', 'ghost', 'supernatural'],
     available: true,
   },
-  { key: 'winter', name: 'Winter Theme', emoji: '❄️', date: '1 December', period: '1–27 Dec', available: false },
-  { key: 'new-years-eve', name: "New Year's Eve", emoji: '🎆', date: '31 December', period: '28 Dec–3 Jan', available: false },
+  { key: 'winter', name: 'Winter Theme', emoji: '❄️', date: '1 December', period: '1–27 Dec', schedule: { startsOn: '12-01', endsOn: '12-27' }, available: false },
+  { key: 'new-years-eve', name: "New Year's Eve", emoji: '🎆', date: '31 December', period: '28 Dec–3 Jan', schedule: { startsOn: '12-28', endsOn: '01-03' }, available: false },
 ]
 
 export const availableThemeKeys = new Set([
@@ -50,7 +50,7 @@ export function normalizeActiveTheme(themeKey) {
   return isAvailableTheme(themeKey) ? themeKey : defaultThemeKey
 }
 
-function parseMonthDay(value) {
+export function parseSeasonalMonthDay(value) {
   const match = typeof value === 'string' ? /^(\d{2})-(\d{2})$/.exec(value) : null
   if (!match) throw new Error(`Invalid seasonal theme date: ${value}`)
   const month = Number(match[1])
@@ -63,8 +63,8 @@ function parseMonthDay(value) {
 }
 
 function isMonthDayInPeriod(monthDay, startsOn, endsOn) {
-  const start = parseMonthDay(startsOn)
-  const end = parseMonthDay(endsOn)
+  const start = parseSeasonalMonthDay(startsOn)
+  const end = parseSeasonalMonthDay(endsOn)
   return start <= end ? monthDay >= start && monthDay <= end : monthDay >= start || monthDay <= end
 }
 
@@ -85,8 +85,8 @@ export function validateScheduledThemes(themes = seasonalThemes) {
   for (const theme of scheduledThemes) {
     if (!theme.schedule) throw new Error(`Available seasonal theme ${theme.key} requires a schedule.`)
     const { startsOn, endsOn } = theme.schedule
-    parseMonthDay(startsOn)
-    parseMonthDay(endsOn)
+    parseSeasonalMonthDay(startsOn)
+    parseSeasonalMonthDay(endsOn)
     for (let month = 1; month <= 12; month += 1) {
       const daysInMonth = new Date(Date.UTC(2024, month, 0)).getUTCDate()
       for (let day = 1; day <= daysInMonth; day += 1) {

@@ -32,6 +32,13 @@ const navItems = [
   { label: 'Watch Together', icon: UserIcon, view: primaryViews.watchTogether },
 ]
 
+const adminNavOrder = ['Home', 'Movies', 'TV Shows', 'Books', 'Games', 'Watch Together', 'Calendar', 'Watchlist', 'News']
+const adminNavItems = navItems.filter((item) => adminNavOrder.includes(item.label)).sort((a, b) => {
+  const aIndex = adminNavOrder.indexOf(a.label)
+  const bIndex = adminNavOrder.indexOf(b.label)
+  return (aIndex < 0 ? adminNavOrder.length : aIndex) - (bIndex < 0 ? adminNavOrder.length : bIndex)
+})
+
 const defaultEnabledSections = ['movies', 'tv', 'books', 'games', 'calendar']
 const defaultEnabledNewsCategories = NEWS_CATEGORIES.map(({ key }) => key)
 const requiredEnabledSections = ['movies', 'tv']
@@ -123,7 +130,7 @@ const moviesPageSize = 30
 const statsWatchedMoviesPageSize = 30
 const watchTogetherHistoryPageSize = 20
 const newsPageSize = 20
-const emptyNewsFilters = { actor: null, movie: null, show: null, category: null }
+const emptyNewsFilters = { category: null }
 const genreAccentPalette = ['#ff6b7a', '#7c8dff', '#ffd86f', '#84b3ff', '#ff6cb6', '#67e8f9', '#9ae66e']
 const statsActorColors = ['#c99a75', '#8f5e48', '#5e7792', '#a47265']
 
@@ -271,7 +278,8 @@ function App() {
   const igdbSearchRequestId = useRef(0)
   const igdbSearchStartedQueryRef = useRef('')
   const [activeSearchSource, setActiveSearchSource] = useState('watchvault')
-  const [user, setUser] = useState(() => readStoredUser())
+  const [user, setUser] = useState(null)
+  const [sessionStatus, setSessionStatus] = useState('loading')
   const [activeTheme, setActiveTheme] = useState(() => readCachedActiveTheme())
   const [themeState, setThemeState] = useState({ status: 'loading', pendingTheme: null, error: '', message: '' })
   const [enabledSections, setEnabledSections] = useState(defaultEnabledSections)
@@ -450,6 +458,7 @@ function App() {
     filelist: { configured: false, updatedAt: null },
     igdb: { configured: false, updatedAt: null },
     rssSources: [],
+    themeSchedules: [],
     sections: { enabled: defaultEnabledSections },
     error: '',
   })
@@ -650,13 +659,25 @@ function App() {
   }, [activeTheme])
 
   useEffect(() => {
-    if (user?.username && user?.fullName) {
-      window.localStorage.setItem(authStorageKey, JSON.stringify(user))
-      return
-    }
-
     window.localStorage.removeItem(authStorageKey)
-  }, [user])
+    let cancelled = false
+    fetch('/api/auth/me').then(async (response) => {
+      if (!response.ok) return null
+      const payload = await response.json()
+      return payload.user ?? null
+    }).then((restoredUser) => {
+      if (!cancelled) setUser(restoredUser)
+    }).catch(() => {
+      if (!cancelled) setUser(null)
+    }).finally(() => {
+      if (!cancelled) setSessionStatus('ready')
+    })
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
+    if (currentScreen === appScreens.admin && user?.role !== 'admin') setCurrentScreen(appScreens.dashboard)
+  }, [currentScreen, user])
 
   useEffect(() => {
     if (!user) {
@@ -745,6 +766,7 @@ function App() {
   }
 
   function handleOpenAdmin() {
+    if (user?.role !== 'admin') return
     if (currentRoute.kind === routeKinds.profile) {
       window.history.pushState({}, '', '/')
       setCurrentRoute({ kind: routeKinds.home })
@@ -777,7 +799,8 @@ function App() {
     handleNavigateToPath('/', { kind: routeKinds.home })
   }
 
-  function handleLogout() {
+  async function handleLogout() {
+    try { await fetch('/api/auth/logout', { method: 'POST' }) } catch { /* Clear local state even when offline. */ }
     setUser(null)
     setEnabledSections(defaultEnabledSections)
     setSectionsStatus('idle')
@@ -834,15 +857,6 @@ function App() {
     setCurrentRoute(nextRoute)
     setCurrentScreen(appScreens.dashboard)
     setActiveView(nextView)
-  }
-
-  function handleOpenRelatedNews(filters) {
-    const nextFilters = { ...emptyNewsFilters, ...filters }
-    handleNavigateToPath(
-      buildNewsPath(nextFilters),
-      { kind: routeKinds.news, tab: 'news', filters: nextFilters },
-      primaryViews.news,
-    )
   }
 
   function saveRecentSearch(query) {
@@ -1134,6 +1148,7 @@ function App() {
       }
 
       setUser(payload.user)
+      setSessionStatus('ready')
       setAuthStatus('success')
       setCurrentScreen(currentRoute.kind === routeKinds.profile ? appScreens.account : appScreens.dashboard)
     } catch (error) {
@@ -2636,6 +2651,14 @@ function App() {
         const response = await fetch('/api/admin/overview', { headers: buildAuthHeaders(user) })
         const payload = await response.json().catch(() => ({}))
 
+        if (response.status === 401 || response.status === 403) {
+          if (!cancelled) {
+            if (response.status === 401) setUser(null)
+            setCurrentScreen(appScreens.dashboard)
+          }
+          return
+        }
+
         if (!response.ok) {
           throw new Error(payload.error || `Request failed with status ${response.status}`)
         }
@@ -2654,6 +2677,7 @@ function App() {
             filelist: { configured: Boolean(payload?.filelist?.configured), updatedAt: payload?.filelist?.updatedAt ?? null },
             igdb: { configured: Boolean(payload?.igdb?.configured), updatedAt: payload?.igdb?.updatedAt ?? null },
             rssSources: Array.isArray(payload?.rssSources) ? payload.rssSources : [],
+            themeSchedules: Array.isArray(payload?.themeSchedules) ? payload.themeSchedules : [],
             sections: { enabled: normalizeEnabledSections(payload?.sections?.enabled) },
             error: '',
           })
@@ -2755,6 +2779,21 @@ function App() {
       rssSources: previousState.rssSources.map((source) => source.key === sourceKey ? payload : source),
     }))
     setAdminRefreshKey((value) => value + 1)
+    return payload
+  }
+
+  async function handleSaveThemeSchedule(themeKey, schedule) {
+    const response = await fetch(`/api/admin/seasonal-themes/${encodeURIComponent(themeKey)}/schedule`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...buildAuthHeaders(user) },
+      body: JSON.stringify(schedule),
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+    setAdminOverviewState((previousState) => ({
+      ...previousState,
+      themeSchedules: previousState.themeSchedules.map((entry) => entry.key === themeKey ? payload : entry),
+    }))
     return payload
   }
 
@@ -4010,16 +4049,16 @@ function App() {
   })
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${currentScreen === appScreens.account && user ? ' profile-shell' : ''}${currentScreen === appScreens.admin && user?.role === 'admin' ? ' admin-shell' : ''}`}>
       <aside className="sidebar">
         <Brand />
 
         <nav className="sidebar-nav" aria-label="Primary">
-          {navItems.filter(({ view }) => isPrimaryViewEnabled(view, enabledSections)).map(({ label, icon: Icon, view }) => (
+          {(currentScreen === appScreens.admin ? adminNavItems : navItems).filter(({ view }) => isPrimaryViewEnabled(view, enabledSections)).map(({ label, icon: Icon, view }) => (
             <button
               key={label}
               type="button"
-              className={`nav-item${view === activeView ? ' active' : ''}`}
+              className={`nav-item${currentScreen === appScreens.dashboard && view === activeView ? ' active' : ''}`}
               onClick={view ? () => handleMovieViewSelection(view) : undefined}
             >
               <Icon />
@@ -4028,9 +4067,27 @@ function App() {
           ))}
         </nav>
 
+        {currentScreen === appScreens.admin && user?.role === 'admin' ? (
+          <button type="button" className="nav-item admin-nav-item active" aria-current="page" onClick={handleOpenAdmin}>
+            <GearIcon /><span>Admin</span>
+          </button>
+        ) : null}
+
         <div className="sidebar-divider" />
 
-        <div className="genres">
+        {currentScreen === appScreens.account ? <details className="profile-genres-menu">
+          <summary>Genres <ChevronRight /></summary>
+          <div className="genres">
+            {genresState.status === 'loading' ? <SectionMessage message="Loading genres..." /> : null}
+            {genresState.status === 'error' ? <SectionMessage message={genresState.error} tone="error" /> : null}
+            {genresState.genres.map((genre, index) => (
+              <button key={genre.name} type="button" className="genre-item" onClick={() => handleOpenGenre(genre)}>
+                <span className="genre-dot" style={{ '--dot': genre.color || pickGenreAccentColor(genre.name, index) }} />
+                <span>{genre.name}</span>
+              </button>
+            ))}
+          </div>
+        </details> : <div className="genres">
           <div className="sidebar-section-title">
             <span>Genres</span>
             <ChevronRight />
@@ -4048,12 +4105,12 @@ function App() {
               <span>{genre.name}</span>
             </button>
           ))}
-        </div>
+        </div>}
 
       </aside>
 
       <main className="dashboard">
-        {currentScreen === appScreens.login || (currentScreen === appScreens.account && !user) ? (
+        {sessionStatus === 'loading' ? null : currentScreen === appScreens.login || (currentScreen === appScreens.account && !user) ? (
           <LoginScreen
             authError={authError}
             authStatus={authStatus}
@@ -4085,7 +4142,9 @@ function App() {
             />
             <MobileHeader
               onOpenAccount={handleOpenAccount}
+              onOpenAdmin={handleOpenAdmin}
               onOpenLogin={handleOpenLogin}
+              onLogout={handleLogout}
               searchError={searchError}
               searchInput={searchInput}
               onSearchInputChange={(value) => {
@@ -4101,7 +4160,7 @@ function App() {
               user={user}
             />
 
-            {currentScreen === appScreens.admin ? (
+            {currentScreen === appScreens.admin && user?.role === 'admin' ? (
               <AdminScreen
                 activeTheme={activeTheme}
                 adminOverviewState={adminOverviewState}
@@ -4114,6 +4173,7 @@ function App() {
                 onClearIgdbSettings={handleClearIgdbSettings}
                 onSetRssSourceEnabled={handleSetRssSourceEnabled}
                 onSetActiveTheme={handleSetActiveTheme}
+                onSaveThemeSchedule={handleSaveThemeSchedule}
                 themeState={themeState}
               />
             ) : currentScreen === appScreens.account ? (
@@ -4127,6 +4187,7 @@ function App() {
                 onSaveEnabledSections={handleSaveEnabledSections}
                 onSaveEnabledNewsCategories={handleSaveEnabledNewsCategories}
                 onSubmit={handleChangePassword}
+                onResetPassword={() => setChangePasswordState({ status: 'idle', error: '', message: '' })}
                 user={user}
               />
             ) : currentRoute.kind === routeKinds.search ? (
@@ -4189,7 +4250,6 @@ function App() {
                 onSubmitEpisodeRating={handleSubmitTvEpisodeRating}
                 onOpenTv={handleOpenTvDetail}
                 onOpenPerson={handleOpenPersonDetail}
-                onOpenRelatedNews={handleOpenRelatedNews}
                 onOpenLogin={handleOpenLogin}
                 isSignedIn={Boolean(user)}
                 watchlistIds={tvWatchlistIds}
@@ -4427,7 +4487,6 @@ function App() {
                 onOpenMovie={handleOpenMovieDetail}
                 onOpenTv={handleOpenTvDetail}
                 onOpenPerson={handleOpenPersonDetail}
-                onOpenRelatedNews={handleOpenRelatedNews}
                 isSignedIn={Boolean(user)}
                 onOpenLogin={handleOpenLogin}
                 onToggleMovieWatchlist={handleToggleMovieInWatchlist}
@@ -4442,7 +4501,6 @@ function App() {
                 similarMoviesState={similarMoviesState}
                 onBackToMovies={() => handleMovieViewSelection(primaryViews.movies)}
                 onOpenPerson={handleOpenPersonDetail}
-                onOpenRelatedNews={handleOpenRelatedNews}
                 onToggleWatched={handleToggleMovieWatched}
                 onToggleWatchlist={handleToggleMovieInWatchlist}
                 onToggleReleaseReminder={handleToggleMovieReleaseReminder}
@@ -4514,8 +4572,8 @@ function App() {
               />
             )}
 
-            {currentScreen === appScreens.dashboard ? (
-              <MobileNav activeView={activeView} enabledSections={enabledSections} setActiveView={handleMovieViewSelection} />
+            {currentScreen === appScreens.dashboard || (currentScreen === appScreens.account && user) ? (
+              <MobileNav activeView={currentScreen === appScreens.account ? null : activeView} enabledSections={enabledSections} setActiveView={handleMovieViewSelection} />
             ) : null}
           </>
         )}
@@ -4532,6 +4590,7 @@ function Brand() {
     <div className="brand">
       <div className="brand-mark" aria-hidden="true">
         <PlayLogo />
+        <span className="profile-brand-mark">W</span>
       </div>
       <div>
         <p className="brand-name">Watch<span>Vault</span></p>
@@ -4541,42 +4600,6 @@ function Brand() {
 }
 
 function DesktopTopbar({ alertsState, onOpenAdmin, onOpenAccount, onOpenAlert, onOpenAlerts, onOpenLogin, onLogout, onRespondToWatchTogetherRequest, onSearchInputChange, onSearchSubmit, onSearchSuggestionSelect, searchError, searchInput, user }) {
-  const [menuOpen, setMenuOpen] = useState(false)
-  const menuRef = useRef(null)
-
-  useEffect(() => {
-    if (!menuOpen) {
-      return
-    }
-
-    function handlePointerDown(event) {
-      if (menuRef.current && !menuRef.current.contains(event.target)) {
-        setMenuOpen(false)
-      }
-    }
-
-    document.addEventListener('mousedown', handlePointerDown)
-
-    return () => {
-      document.removeEventListener('mousedown', handlePointerDown)
-    }
-  }, [menuOpen])
-
-  function handleOpenAdminMenuItem() {
-    setMenuOpen(false)
-    onOpenAdmin()
-  }
-
-  function handleOpenAccountMenuItem() {
-    setMenuOpen(false)
-    onOpenAccount()
-  }
-
-  function handleLogoutMenuItem() {
-    setMenuOpen(false)
-    onLogout()
-  }
-
   return (
     <header className="topbar desktop-only">
       <form className="topbar-search" onSubmit={(event) => { event.preventDefault(); onSearchSubmit() }}>
@@ -4587,58 +4610,79 @@ function DesktopTopbar({ alertsState, onOpenAdmin, onOpenAccount, onOpenAlert, o
 
       <div className="topbar-actions">
         <AlertInbox alertsState={alertsState} onOpenAlert={onOpenAlert} onOpenAlerts={onOpenAlerts} onOpenLogin={onOpenLogin} onRespondToWatchTogetherRequest={onRespondToWatchTogetherRequest} user={user} />
-
-        {user ? (
-          <div className={`profile-menu${menuOpen ? ' open' : ''}`} ref={menuRef}>
-            <button
-              type="button"
-              className="profile-button"
-              onClick={() => setMenuOpen((value) => !value)}
-              aria-expanded={menuOpen}
-              aria-haspopup="menu"
-            >
-              <div className="avatar">{getUserInitial(user.fullName)}</div>
-              <span>{user.fullName}</span>
-              <ChevronDown />
-            </button>
-
-            {menuOpen ? (
-              <div className="profile-dropdown" role="menu" aria-label="Profile options">
-                <div className="profile-dropdown-user">
-                  <strong>{user.fullName}</strong>
-                  <span>@{user.username}</span>
-                </div>
-                <button type="button" className="profile-dropdown-item" onClick={handleOpenAccountMenuItem} role="menuitem">
-                  <UserIcon />
-                  <span>Profile</span>
-                </button>
-                <button type="button" className="profile-dropdown-item" onClick={handleOpenAdminMenuItem} role="menuitem">
-                  <ShieldIcon />
-                  <span>Admin</span>
-                </button>
-                <button
-                  type="button"
-                  className="profile-dropdown-item profile-dropdown-item-logout"
-                  onClick={handleLogoutMenuItem}
-                  role="menuitem"
-                >
-                  <LogoutIcon />
-                  <span>Logout</span>
-                </button>
-              </div>
-            ) : null}
-          </div>
-        ) : (
-          <button type="button" className="profile-button sign-in-trigger" onClick={onOpenLogin}>
-            <span>Sign In</span>
-          </button>
-        )}
+        {user ? <ProfileMenu user={user} onOpenAccount={onOpenAccount} onOpenAdmin={onOpenAdmin} onLogout={onLogout} /> : <button type="button" className="profile-button sign-in-trigger" onClick={onOpenLogin}><span>Sign In</span></button>}
       </div>
     </header>
   )
 }
 
-function MobileHeader({ alertsState, onOpenAccount, onOpenAlert, onOpenAlerts, onOpenLogin, onRespondToWatchTogetherRequest, onSearchInputChange, onSearchSubmit, onSearchSuggestionSelect, searchError, searchInput, user }) {
+function ProfileMenu({ mobile = false, onOpenAccount, onOpenAdmin, onLogout, user }) {
+  const [menuOpen, setMenuOpen] = useState(false)
+  const menuRef = useRef(null)
+  const buttonRef = useRef(null)
+  const menuId = mobile ? 'mobile-profile-options' : 'desktop-profile-options'
+
+  useEffect(() => {
+    if (!menuOpen) return
+
+    function handlePointerDown(event) {
+      if (menuRef.current && !menuRef.current.contains(event.target)) setMenuOpen(false)
+    }
+
+    function handleKeyDown(event) {
+      if (event.key === 'Escape') {
+        setMenuOpen(false)
+        buttonRef.current?.focus()
+      }
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [menuOpen])
+
+  function handleAction(action) {
+    setMenuOpen(false)
+    action()
+  }
+
+  return (
+    <div className={`profile-menu${mobile ? ' mobile-profile-menu' : ''}${menuOpen ? ' open' : ''}`} ref={menuRef}>
+      <button
+        ref={buttonRef}
+        type="button"
+        className={mobile ? 'avatar-button' : 'profile-button'}
+        aria-label={mobile ? `Open account menu for ${user.fullName}` : undefined}
+        aria-expanded={menuOpen}
+        aria-controls={menuOpen ? menuId : undefined}
+        onClick={() => setMenuOpen((value) => !value)}
+      >
+        <div className={`avatar${mobile ? ' small' : ''}`}>{getUserInitial(user.fullName)}</div>
+        {!mobile ? <><span>{user.fullName}</span><ChevronDown /></> : null}
+      </button>
+
+      {menuOpen ? <nav id={menuId} className="profile-dropdown" aria-label="Account options">
+        <div className="profile-dropdown-user">
+          <div className="avatar small" aria-hidden="true">{getUserInitial(user.fullName)}</div>
+          <div><strong>{user.fullName}</strong><span>@{user.username}</span></div>
+        </div>
+        <div className="profile-dropdown-actions">
+          <button type="button" className="profile-dropdown-item" onClick={() => handleAction(onOpenAccount)}><UserIcon /><span>Profile</span></button>
+          {user.role === 'admin' ? <button type="button" className="profile-dropdown-item" onClick={() => handleAction(onOpenAdmin)}><ShieldIcon /><span>Admin</span></button> : null}
+        </div>
+        <div className="profile-dropdown-footer">
+          <button type="button" className="profile-dropdown-item profile-dropdown-item-logout" onClick={() => handleAction(onLogout)}><LogoutIcon /><span>Logout</span></button>
+        </div>
+      </nav> : null}
+    </div>
+  )
+}
+
+function MobileHeader({ alertsState, onOpenAccount, onOpenAdmin, onOpenAlert, onOpenAlerts, onOpenLogin, onLogout, onRespondToWatchTogetherRequest, onSearchInputChange, onSearchSubmit, onSearchSuggestionSelect, searchError, searchInput, user }) {
   const [searchOpen, setSearchOpen] = useState(false)
 
   return (
@@ -4651,11 +4695,7 @@ function MobileHeader({ alertsState, onOpenAccount, onOpenAlert, onOpenAlerts, o
             <SearchIcon />
           </button>
           <AlertInbox alertsState={alertsState} onOpenAlert={onOpenAlert} onOpenAlerts={onOpenAlerts} onOpenLogin={onOpenLogin} onRespondToWatchTogetherRequest={onRespondToWatchTogetherRequest} user={user} />
-          {user ? (
-            <button type="button" className="avatar-button" aria-label={`Open ${user.fullName}'s profile`} onClick={onOpenAccount}>
-              <div className="avatar small">{getUserInitial(user.fullName)}</div>
-            </button>
-          ) : (
+          {user ? <ProfileMenu mobile user={user} onOpenAccount={onOpenAccount} onOpenAdmin={onOpenAdmin} onLogout={onLogout} /> : (
             <button type="button" className="mobile-sign-in-button" onClick={onOpenLogin}>
               Sign In
             </button>
@@ -5068,7 +5108,7 @@ function NewsScreen({ route, user, enabledNewsCategories = defaultEnabledNewsCat
     return () => window.removeEventListener('scroll', updateScrollToTopVisibility)
   }, [])
 
-  const filterKey = `${tab}:${filters.actor ?? ''}:${filters.movie ?? ''}:${filters.show ?? ''}:${filters.category ?? ''}:${enabledNewsCategories.join(',')}`
+  const filterKey = `${tab}:${filters.category ?? ''}:${enabledNewsCategories.join(',')}`
   const loadPage = useCallback(async (page) => {
     if (loadingRef.current || !mountedRef.current) return
     if (tab === 'saved' && !user) {
@@ -5208,10 +5248,10 @@ function NewsScreen({ route, user, enabledNewsCategories = defaultEnabledNewsCat
       <NewsFilters filters={filters} enabledCategories={enabledNewsCategories} onChange={onNavigateNews} />
       {tab === 'saved' && !user ? <div className="news-feed-message"><p>Sign in to view and manage your saved articles.</p><button type="button" className="secondary-button" onClick={onOpenLogin}>Sign in</button></div> : null}
       {tab !== 'saved' || user ? <>{feed.status === 'loading' ? <NewsFeedSkeleton /> : null}
-      {feed.status !== 'loading' && feed.articles.length === 0 ? <SectionMessage message={filters.actor || filters.movie || filters.show || filters.category ? 'No articles match these filters.' : tab === 'saved' ? 'You have no saved articles yet.' : 'No stored news articles are available yet.'} /> : null}</> : null}
+      {feed.status !== 'loading' && feed.articles.length === 0 ? <SectionMessage message={filters.category ? 'No articles match these filters.' : tab === 'saved' ? 'You have no saved articles yet.' : 'No stored news articles are available yet.'} /> : null}</> : null}
       {feed.articles.length > 0 ? (
         <div className="news-feed" aria-live="polite">
-          {feed.articles.map((article, index) => <NewsArticleCard key={article.id} article={article} featured={index === 0} filters={filters} onFilter={onNavigateNews} isLikePending={likeAction.articleId === article.id} likeError={likeAction.errorArticleId === article.id ? likeAction.error : ''} onLike={handleLike} isSavePending={saveAction.articleId === article.id} saveError={saveAction.errorArticleId === article.id ? saveAction.error : ''} onSave={handleSave} />)}
+          {feed.articles.map((article, index) => <NewsArticleCard key={article.id} article={article} featured={index === 0} isLikePending={likeAction.articleId === article.id} likeError={likeAction.errorArticleId === article.id ? likeAction.error : ''} onLike={handleLike} isSavePending={saveAction.articleId === article.id} saveError={saveAction.errorArticleId === article.id ? saveAction.error : ''} onSave={handleSave} />)}
         </div>
       ) : null}
       {feed.status === 'loading-more' ? <div className="news-loading-more"><SpinnerIcon /><span>Loading more news…</span></div> : null}
@@ -5240,65 +5280,15 @@ function NewsTabs({ activeTab, onChange }) {
 }
 
 function NewsFilters({ filters, enabledCategories = defaultEnabledNewsCategories, onChange }) {
-  const [options, setOptions] = useState({ actors: [], titles: [], selected: { actor: null, movie: null, show: null } })
-  const [actorQuery, setActorQuery] = useState('')
-  const [titleQuery, setTitleQuery] = useState('')
-  const requestId = useRef(0)
-  const selectionKey = `${filters.actor ?? ''}:${filters.movie ?? ''}:${filters.show ?? ''}`
-
-  useEffect(() => {
-    const controller = new AbortController()
-    const id = ++requestId.current
-    const params = new URLSearchParams()
-    if (actorQuery.trim()) params.set('q', actorQuery.trim())
-    if (filters.actor) params.set('actor', filters.actor)
-    if (filters.movie) params.set('movie', filters.movie)
-    if (filters.show) params.set('show', filters.show)
-    fetch(`/api/news/filters?${params.toString()}`, { signal: controller.signal })
-      .then(async (response) => {
-        const payload = await response.json().catch(() => ({}))
-        if (!response.ok) throw new Error(payload.error || 'Unable to load filters')
-        if (id === requestId.current) setOptions({ actors: Array.isArray(payload.actors) ? payload.actors : [], titles: Array.isArray(payload.titles) ? payload.titles : [], selected: payload.selected || {} })
-      })
-      .catch((error) => { if (error.name !== 'AbortError' && id === requestId.current) setOptions((current) => ({ ...current, actors: [], titles: [] })) })
-    return () => controller.abort()
-  }, [actorQuery, filters.actor, filters.movie, filters.show, selectionKey])
-
-  useEffect(() => {
-    if (!titleQuery.trim()) return undefined
-    const controller = new AbortController()
-    const params = new URLSearchParams({ q: titleQuery.trim() })
-    if (filters.actor) params.set('actor', filters.actor)
-    if (filters.movie) params.set('movie', filters.movie)
-    if (filters.show) params.set('show', filters.show)
-    fetch(`/api/news/filters?${params.toString()}`, { signal: controller.signal })
-      .then(async (response) => {
-        const payload = await response.json().catch(() => ({}))
-        if (!response.ok) throw new Error(payload.error || 'Unable to load filters')
-        setOptions((current) => ({ ...current, titles: Array.isArray(payload.titles) ? payload.titles : [], selected: payload.selected || current.selected }))
-      })
-      .catch(() => {})
-    return () => controller.abort()
-  }, [titleQuery, filters.actor, filters.movie, filters.show, selectionKey])
-
-  const selectedActor = options.selected?.actor
-  const selectedTitle = options.selected?.movie ?? options.selected?.show
-  const clear = (key) => {
-    const next = { ...filters, [key]: null }
-    if (key === 'movie' || key === 'show') { next.movie = null; next.show = null }
-    onChange(next)
-  }
   return <div className="news-filters" aria-label="Filter news">
     <div className="news-category-filters" aria-label="News categories">
       {[{ key: null, name: 'All' }, ...NEWS_CATEGORIES.filter(({ key }) => enabledCategories.includes(key))].map((category) => <button type="button" key={category.key ?? 'all'} className={filters.category === category.key ? 'is-active' : ''} aria-pressed={filters.category === category.key} onClick={() => onChange({ ...filters, category: category.key })}>{category.name}</button>)}
     </div>
-    <div className="news-filter-control"><label htmlFor="news-actor-filter">Actor</label><input id="news-actor-filter" value={actorQuery} onChange={(event) => setActorQuery(event.target.value)} placeholder={selectedActor?.name || 'Search linked actors'} />{actorQuery.trim() ? <div className="news-filter-options">{options.actors.map((actor) => <button type="button" key={actor.id} onClick={() => { onChange({ ...filters, actor: actor.id }); setActorQuery('') }}>{actor.name}</button>)}</div> : null}{selectedActor ? <button type="button" className="news-active-filter" onClick={() => clear('actor')}>{selectedActor.name} <span aria-hidden="true">×</span></button> : null}</div>
-    <div className="news-filter-control"><label htmlFor="news-title-filter">Movie or show</label><input id="news-title-filter" value={titleQuery} onChange={(event) => setTitleQuery(event.target.value)} placeholder={selectedTitle?.name || 'Search linked titles'} />{titleQuery.trim() ? <div className="news-filter-options">{options.titles.map((title) => <button type="button" key={`${title.kind}-${title.id}`} onClick={() => { onChange({ ...filters, movie: title.kind === 'movie' ? title.id : null, show: title.kind === 'show' ? title.id : null }); setTitleQuery('') }}><span>{title.name}</span><small>{title.kind === 'movie' ? 'Movie' : 'TV show'}</small></button>)}</div> : null}{selectedTitle ? <button type="button" className="news-active-filter" onClick={() => clear('movie')}>{selectedTitle.name} <span aria-hidden="true">×</span></button> : null}</div>
-    {(filters.actor || filters.movie || filters.show || filters.category) ? <button type="button" className="news-clear-filters" onClick={() => onChange(emptyNewsFilters)}>Clear filters</button> : null}
+    {filters.category ? <button type="button" className="news-clear-filters" onClick={() => onChange(emptyNewsFilters)}>Clear filters</button> : null}
   </div>
 }
 
-function NewsArticleCard({ article, featured = false, filters, onFilter, isLikePending, likeError, onLike, isSavePending, saveError, onSave }) {
+function NewsArticleCard({ article, featured = false, isLikePending, likeError, onLike, isSavePending, saveError, onSave }) {
   const [imageUnavailable, setImageUnavailable] = useState(false)
   const showImage = Boolean(article.photoUrl) && !imageUnavailable
   const source = getNewsSource(article.link)
@@ -5315,10 +5305,8 @@ function NewsArticleCard({ article, featured = false, filters, onFilter, isLikeP
             <h2>{article.title}</h2>
             <span className="news-read-link"><GlobeIcon />Read article</span>
           </a>
-          {(article.actors?.length || article.movies?.length || article.shows?.length) ? <div className="news-article-links" aria-label="Related people and titles">
-            {article.actors?.map((actor) => <button type="button" className="news-article-link actor" key={`actor-${actor.id}`} onClick={() => onFilter({ ...filters, actor: actor.id })}>{actor.name}</button>)}
-            {article.movies?.map((movie) => <button type="button" className="news-article-link movie" key={`movie-${movie.id}`} onClick={() => onFilter({ ...filters, movie: movie.id, show: null })}>{movie.name}</button>)}
-            {article.shows?.map((show) => <button type="button" className="news-article-link show" key={`show-${show.id}`} onClick={() => onFilter({ ...filters, movie: null, show: show.id })}>{show.name}</button>)}
+          {article.shows?.length ? <div className="news-article-links" aria-label="TV shows">
+            {article.shows.map((show) => <span className="news-article-link show" key={`show-${show.id}`}>{show.name}</span>)}
           </div> : null}
         </div>
       </div>
@@ -5848,7 +5836,17 @@ function LoginScreen({ authError, authStatus, onCancel, onSubmit }) {
   )
 }
 
-function AdminScreen({ activeTheme, adminOverviewState, adminRunState, onBack, onRunJob, onSaveFilelistSettings, onClearFilelistSettings, onSaveIgdbSettings, onClearIgdbSettings, onSetActiveTheme, onSetRssSourceEnabled, themeState }) {
+function formatThemeMonthDay(value) {
+  const [month, day] = value.split('-').map(Number)
+  return new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(new Date(Date.UTC(2024, month - 1, day)))
+}
+
+function formatThemeSchedulePeriod(schedule) {
+  if (schedule.startsOn === schedule.endsOn) return `${formatThemeMonthDay(schedule.startsOn)} only`
+  return `${formatThemeMonthDay(schedule.startsOn)}–${formatThemeMonthDay(schedule.endsOn)}`
+}
+
+function AdminScreen({ activeTheme, adminOverviewState, adminRunState, onBack, onRunJob, onSaveFilelistSettings, onClearFilelistSettings, onSaveIgdbSettings, onClearIgdbSettings, onSetActiveTheme, onSetRssSourceEnabled, onSaveThemeSchedule, themeState }) {
   const [filelistUsername, setFilelistUsername] = useState('')
   const [filelistPasskey, setFilelistPasskey] = useState('')
   const [filelistState, setFilelistState] = useState({ status: 'idle', error: '' })
@@ -5856,6 +5854,21 @@ function AdminScreen({ activeTheme, adminOverviewState, adminRunState, onBack, o
   const [igdbPrivateKey, setIgdbPrivateKey] = useState('')
   const [igdbState, setIgdbState] = useState({ status: 'idle', error: '' })
   const [rssSourceState, setRssSourceState] = useState({ pendingKey: null, error: '' })
+  const [themeScheduleEdits, setThemeScheduleEdits] = useState({})
+  const [themeScheduleStates, setThemeScheduleStates] = useState({})
+  const [jobSearch, setJobSearch] = useState('')
+  const [showAllJobs, setShowAllJobs] = useState(false)
+  const [showAllThemes, setShowAllThemes] = useState(false)
+  const [editingTheme, setEditingTheme] = useState(null)
+  const [narrowLayout, setNarrowLayout] = useState(() => window.matchMedia('(max-width: 1100px)').matches)
+  const [openIntegration, setOpenIntegration] = useState(() => window.matchMedia('(max-width: 1100px)').matches ? 'filelist' : null)
+
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 1100px)')
+    const handleChange = () => setNarrowLayout(media.matches)
+    media.addEventListener('change', handleChange)
+    return () => media.removeEventListener('change', handleChange)
+  }, [])
 
   async function handleFilelistSave(event) {
     event.preventDefault()
@@ -5907,216 +5920,208 @@ function AdminScreen({ activeTheme, adminOverviewState, adminRunState, onBack, o
     }
   }
 
+  async function handleThemeScheduleSave(event, theme, schedule) {
+    event.preventDefault()
+    setThemeScheduleStates((previous) => ({ ...previous, [theme.key]: { status: 'loading', error: '', message: '' } }))
+    try {
+      const saved = await onSaveThemeSchedule(theme.key, schedule)
+      setThemeScheduleEdits((previous) => ({ ...previous, [theme.key]: { startsOn: saved.startsOn, endsOn: saved.endsOn } }))
+      setThemeScheduleStates((previous) => ({ ...previous, [theme.key]: { status: 'success', error: '', message: 'Dates saved.' } }))
+      setEditingTheme(null)
+    } catch (error) {
+      setThemeScheduleStates((previous) => ({ ...previous, [theme.key]: { status: 'error', error: error instanceof Error ? error.message : 'Unable to save seasonal theme dates.', message: '' } }))
+    }
+  }
+
+  const adminMetrics = [
+    { label: 'Movies', value: adminOverviewState.totalMovies, icon: FilmStripIcon },
+    { label: 'Books', value: adminOverviewState.totalBooks, icon: BookOpenIcon },
+    { label: 'Games', value: adminOverviewState.totalGames, icon: GamepadIcon },
+    { label: 'TV Shows', value: adminOverviewState.totalTvShows, icon: TvIcon },
+    { label: 'Actors', value: adminOverviewState.totalActors, icon: UserIcon },
+    { label: 'News', value: adminOverviewState.totalNewsArticles, icon: NewsIcon },
+    { label: 'Data size', value: adminOverviewState.storedDataBytes, icon: DatabaseIcon },
+  ]
+  const featuredJobKeys = ['popular', 'tv-popular', 'entertainment-news', 'books', 'theme-scheduler']
+  const sortedJobs = [...adminOverviewState.crons].sort((a, b) => {
+    const aRank = featuredJobKeys.indexOf(a.key)
+    const bRank = featuredJobKeys.indexOf(b.key)
+    return (aRank < 0 ? featuredJobKeys.length : aRank) - (bRank < 0 ? featuredJobKeys.length : bRank)
+  })
+  const matchingJobs = sortedJobs.filter((job) => `${job.name} ${job.frequency} ${job.execution}`.toLowerCase().includes(jobSearch.trim().toLowerCase()))
+  const visibleJobs = jobSearch.trim() || showAllJobs ? matchingJobs : matchingJobs.slice(0, narrowLayout ? 3 : 5)
+  const sortedThemes = [...seasonalThemes].sort((a, b) => Number(b.available) - Number(a.available))
+  const visibleThemes = showAllThemes ? sortedThemes : sortedThemes.filter((theme) => theme.available)
+  const overviewMessage = adminOverviewState.status === 'error' ? `Could not load admin data. ${adminOverviewState.error}` : 'Loading admin settings...'
+
   return (
     <section className="admin-page">
       <div className="admin-heading">
         <div>
           <p className="admin-kicker">Admin Panel</p>
           <h1>Import Control Center</h1>
-          <p>Inspect the current importer loops, manually run a job, and monitor the totals stored in the database.</p>
+          <p>Monitor imports, manage sources and update site settings.</p>
         </div>
-        <button type="button" className="secondary-button admin-back-button" onClick={onBack}>
-          <ChevronLeftIcon />
-          <span>Back to dashboard</span>
+        <button type="button" className="admin-back-button" onClick={onBack}>
+          <ChevronLeftIcon /><span>Back to dashboard</span>
         </button>
       </div>
 
-      <section className="admin-summary-grid">
-        <article className="admin-summary-card">
-          <span>Total Movies Stored</span>
-          <strong>{adminOverviewState.status === 'success' ? formatAdminTotal(adminOverviewState.totalMovies) : '--'}</strong>
-          <p>Imported movies currently available in the local database.</p>
-        </article>
-        <article className="admin-summary-card">
-          <span>Total Books Stored</span>
-          <strong>{adminOverviewState.status === 'success' ? formatAdminTotal(adminOverviewState.totalBooks) : '--'}</strong>
-          <p>Imported books currently available in the local database.</p>
-        </article>
-        <article className="admin-summary-card">
-          <span>Total Games Stored</span>
-          <strong>{adminOverviewState.status === 'success' ? formatAdminTotal(adminOverviewState.totalGames) : '--'}</strong>
-          <p>Imported IGDB games currently available in the local database.</p>
-        </article>
-        <article className="admin-summary-card">
-          <span>Total TV Shows Stored</span>
-          <strong>{adminOverviewState.status === 'success' ? formatAdminTotal(adminOverviewState.totalTvShows) : '--'}</strong>
-          <p>Imported TV shows currently available in the local database.</p>
-        </article>
-        <article className="admin-summary-card">
-          <span>Total Actors Stored</span>
-          <strong>{adminOverviewState.status === 'success' ? formatAdminTotal(adminOverviewState.totalActors) : '--'}</strong>
-          <p>Cast members currently stored in the local database.</p>
-        </article>
-        <article className="admin-summary-card">
-          <span>Total News Articles Stored</span>
-          <strong>{adminOverviewState.status === 'success' ? formatAdminTotal(adminOverviewState.totalNewsArticles) : '--'}</strong>
-          <p>News articles currently stored in the local database.</p>
-        </article>
-        <article className="admin-summary-card">
-          <span>Stored Data Size</span>
-          <strong>{adminOverviewState.status === 'success' ? formatAdminBytes(adminOverviewState.storedDataBytes) : '--'}</strong>
-          <p>Total size used by the app tables currently stored in the database.</p>
-        </article>
+      <section className="admin-summary-grid" aria-label="Database summary">
+        {adminMetrics.map(({ label, value, icon: Icon }) => (
+          <article key={label} className="admin-summary-card">
+            <Icon />
+            <div><span>{label}</span><strong>{adminOverviewState.status === 'success' ? label === 'Data size' ? formatAdminBytes(value) : formatAdminTotal(value) : '--'}</strong></div>
+          </article>
+        ))}
       </section>
 
-      <section className="content-section admin-content-section rss-sources-section">
-        <div className="section-header"><div><h2>RSS Sources</h2><span>Choose which category feeds the hourly News Import reads. Changes apply to its next scheduled or manual run.</span></div></div>
-        <div className="rss-sources-list" aria-label="RSS sources">
-          {NEWS_CATEGORIES.map((category) => <section key={category.key} className="rss-source-category" aria-label={`${category.name} RSS sources`}>
-            <h3>{category.name}</h3>
-            {adminOverviewState.rssSources.filter((source) => source.category === category.key).map((source) => {
+      <div className="admin-panel-grid admin-panel-grid-top">
+        <section className="admin-content-section admin-jobs-section" aria-labelledby="admin-jobs-title">
+          <div className="admin-section-heading admin-jobs-heading">
+            <div><h2 id="admin-jobs-title">Current jobs</h2><p>Automated import jobs and scheduled tasks.</p></div>
+            <label className="admin-job-search"><SearchIcon /><span className="visually-hidden">Search jobs</span><input type="search" value={jobSearch} onChange={(event) => setJobSearch(event.target.value)} placeholder="Search jobs..." /></label>
+          </div>
+          {adminOverviewState.status === 'loading' || adminOverviewState.status === 'idle' ? <SectionMessage message="Loading admin jobs and database totals..." /> : null}
+          {adminOverviewState.status === 'error' ? <SectionMessage message={`Could not load admin data. ${adminOverviewState.error}`} tone="error" /> : null}
+          {adminOverviewState.status === 'success' ? <>
+            <div className="admin-jobs-list" role="table" aria-label="Admin jobs">
+              <div className="admin-jobs-header" role="row"><span role="columnheader">Name</span><span role="columnheader">Frequency</span><span role="columnheader">Last run</span><span role="columnheader">Status</span><span role="columnheader">Action</span></div>
+              {visibleJobs.map((job) => {
+                const runState = adminRunState[job.key] ?? adminRunIdleState
+                const status = runState.status === 'loading' ? 'Running' : runState.status === 'success' ? 'Success' : runState.status === 'error' ? 'Error' : 'Ready'
+                return <article key={job.key} className="admin-job-row" role="row">
+                  <div className="admin-job-name" role="cell"><strong>{job.name}</strong><span>{job.frequency}</span></div>
+                  <span className="admin-job-frequency" role="cell">{job.frequency}</span>
+                  <div className="admin-job-last" role="cell"><span className="admin-mobile-label">Last run</span><time dateTime={job.lastExecutedAt || undefined}>{formatAdminJobExecutionDate(job.lastExecutedAt)}</time></div>
+                  <div className={`admin-status admin-status-${runState.status}`} role="cell"><i aria-hidden="true" />{status}</div>
+                  <div className="admin-job-action-cell" role="cell"><button type="button" className="admin-run-button" onClick={() => onRunJob(job.key)} disabled={runState.status === 'loading'} aria-label={`Run ${job.name} manually`}>{runState.status === 'loading' ? <SpinnerIcon /> : <RunJobIcon />}<span>Run</span></button></div>
+                  {runState.message ? <p className={`admin-job-message${runState.status === 'error' ? ' error' : ''}`} role={runState.status === 'error' ? 'alert' : 'status'}>{runState.message}</p> : null}
+                </article>
+              })}
+            </div>
+            {matchingJobs.length === 0 ? <p className="admin-empty-message">No jobs match “{jobSearch}”.</p> : null}
+            {!jobSearch.trim() && sortedJobs.length > (narrowLayout ? 3 : 5) ? <button type="button" className="admin-view-all" onClick={() => setShowAllJobs((value) => !value)} aria-expanded={showAllJobs}>{showAllJobs ? 'Show fewer jobs' : `View all ${sortedJobs.length} jobs`} <span aria-hidden="true">{showAllJobs ? '↑' : '→'}</span></button> : null}
+          </> : null}
+        </section>
+
+        <section className="admin-content-section admin-rss-section" aria-labelledby="admin-rss-title">
+          <div className="admin-section-heading"><h2 id="admin-rss-title">RSS Sources</h2><p>Manage RSS feeds for news and content updates.</p></div>
+          {adminOverviewState.status === 'success' ? <div className="admin-rss-list" aria-label="RSS sources">
+            <div className="admin-rss-header"><span>Name</span><span>Category</span><span>Status</span><span>Action</span></div>
+            {adminOverviewState.rssSources.map((source) => {
               const pending = rssSourceState.pendingKey === source.key
-              return <article key={source.key} className={`rss-source-row${source.enabled ? ' active' : ''}`}>
-                <div><strong>{source.name}</strong><a href={source.url} target="_blank" rel="noreferrer">{source.url}</a></div>
-                <span className={`rss-source-status${source.enabled ? ' active' : ''}`}>{source.enabled ? 'Active' : 'Inactive'}</span>
-                <button type="button" className={source.enabled ? 'secondary-button' : 'primary-button'} aria-pressed={source.enabled} aria-label={`${source.enabled ? 'Deactivate' : 'Activate'} ${source.name} RSS source`} disabled={pending} onClick={() => handleRssSourceToggle(source)}>{pending ? 'Saving…' : source.enabled ? 'Deactivate' : 'Activate'}</button>
+              const category = NEWS_CATEGORIES.find((item) => item.key === source.category)
+              return <article key={source.key} className="admin-rss-row">
+                <a href={source.url} target="_blank" rel="noreferrer" title={source.url}>{source.name}</a>
+                <span className={`admin-category-badge admin-category-${source.category}`}>{category?.name ?? source.category}</span>
+                <span className={`admin-status admin-status-${source.enabled ? 'active' : 'inactive'}`}><i aria-hidden="true" />{source.enabled ? 'Active' : 'Inactive'}</span>
+                <button type="button" className={source.enabled ? 'admin-outline-button' : 'admin-accent-button'} aria-pressed={source.enabled} aria-label={`${source.enabled ? 'Deactivate' : 'Activate'} ${source.name} RSS source`} disabled={pending} onClick={() => handleRssSourceToggle(source)}>{pending ? 'Saving…' : source.enabled ? 'Deactivate' : 'Activate'}</button>
               </article>
             })}
-          </section>)}
-        </div>
-        {rssSourceState.error ? <p className="filelist-settings-error" role="alert">{rssSourceState.error}</p> : null}
-      </section>
+          </div> : <SectionMessage message={overviewMessage} tone={adminOverviewState.status === 'error' ? 'error' : undefined} />}
+          {rssSourceState.error ? <p className="filelist-settings-error" role="alert">{rssSourceState.error}</p> : null}
+        </section>
+      </div>
 
-      <section className="content-section admin-content-section">
-        <div className="section-header">
-          <h2>Current Jobs</h2>
-        </div>
-
-        {adminOverviewState.status === 'loading' || adminOverviewState.status === 'idle' ? (
-          <SectionMessage message="Loading admin jobs and database totals..." />
-        ) : null}
-
-        {adminOverviewState.status === 'error' ? (
-          <SectionMessage message={`Could not load admin data. ${adminOverviewState.error}`} tone="error" />
-        ) : null}
-
-        {adminOverviewState.status === 'success' ? (
-          <div className="admin-jobs-list" role="table" aria-label="Admin jobs">
-            <div className="admin-jobs-header" role="row">
-              <span role="columnheader">Name</span>
-              <span role="columnheader">Execution</span>
-              <span role="columnheader">Frequency</span>
-              <span role="columnheader">Last execution date</span>
-              <span role="columnheader">Action</span>
-            </div>
-
-            {adminOverviewState.crons.map((job) => {
-              const runState = adminRunState[job.key] ?? adminRunIdleState
-              const isRunning = runState.status === 'loading'
-
-              return (
-                <article key={job.key} className="admin-job-row" role="row">
-                  <div className="admin-job-cell">
-                    <strong>{job.name}</strong>
-                    <p>{runState.message || 'Ready to run manually.'}</p>
-                  </div>
-                  <div className="admin-job-cell">
-                    <span>{job.execution}</span>
-                  </div>
-                  <div className="admin-job-cell">
-                    <span>{job.frequency}</span>
-                  </div>
-                  <div className="admin-job-cell">
-                    <time dateTime={job.lastExecutedAt || undefined}>{formatAdminJobExecutionDate(job.lastExecutedAt)}</time>
-                  </div>
-                  <div className="admin-job-action-cell">
-                    <button
-                      type="button"
-                      className={`admin-run-button${runState.status === 'error' ? ' error' : ''}${runState.status === 'success' ? ' success' : ''}`}
-                      onClick={() => onRunJob(job.key)}
-                      disabled={isRunning}
-                      aria-label={`Run ${job.name} manually`}
-                    >
-                      {isRunning ? <SpinnerIcon /> : <RunJobIcon />}
-                    </button>
-                  </div>
-                </article>
-              )
+      <div className="admin-panel-grid admin-panel-grid-bottom">
+        <section className="admin-content-section admin-themes-section" aria-labelledby="admin-themes-title">
+          <div className="admin-section-heading"><h2 id="admin-themes-title">Seasonal themes</h2><p>Manage seasonal themes and their active dates.</p></div>
+          {adminOverviewState.status === 'success' ? <><div className="admin-themes-list">
+            <div className="admin-themes-header"><span>Name</span><span>Active dates</span><span>Status</span><span>Action</span></div>
+            {visibleThemes.map((theme) => {
+              const savedSchedule = adminOverviewState.themeSchedules.find((entry) => entry.key === theme.key) ?? theme.schedule
+              const schedule = themeScheduleEdits[theme.key] ?? savedSchedule
+              const isActive = theme.key === activeTheme
+              const isPending = themeState.status === 'loading' && themeState.pendingTheme === theme.key
+              const isSaving = themeScheduleStates[theme.key]?.status === 'loading'
+              const isEditing = narrowLayout || editingTheme === theme.key
+              const label = !theme.available ? 'Coming soon' : isPending ? (isActive ? 'Deactivating…' : 'Activating…') : isActive ? 'Deactivate' : 'Activate'
+              return <article key={theme.key} className="admin-theme-row">
+                <div className="admin-theme-name"><strong>{theme.name}</strong><span className={`admin-status admin-status-mobile admin-status-${isActive ? 'active' : 'inactive'}`}><i aria-hidden="true" />{isActive ? 'Active' : 'Inactive'}</span></div>
+                <span className="admin-theme-dates">{formatThemeSchedulePeriod(savedSchedule)}</span>
+                <span className={`admin-status admin-theme-status admin-status-${isActive ? 'active' : 'inactive'}`}><i aria-hidden="true" />{isActive ? 'Active' : 'Inactive'}</span>
+                <div className="admin-theme-actions"><button type={isEditing ? 'submit' : 'button'} form={isEditing ? `admin-theme-form-${theme.key}` : undefined} className="admin-outline-button" aria-expanded={!narrowLayout ? isEditing : undefined} onClick={!isEditing ? () => setEditingTheme(theme.key) : undefined} disabled={isSaving || (isEditing && (schedule.startsOn === savedSchedule.startsOn && schedule.endsOn === savedSchedule.endsOn))}>{isSaving ? 'Saving…' : 'Save dates'}</button><button type="button" className={isActive ? 'admin-outline-button' : 'admin-accent-button'} aria-label={theme.available ? `${isActive ? 'Deactivate' : 'Activate'} ${theme.name} theme` : `${theme.name} is coming soon`} aria-pressed={isActive} disabled={!theme.available || themeState.status === 'loading'} onClick={() => onSetActiveTheme(isActive ? defaultThemeKey : theme.key)}>{label}</button></div>
+                {isEditing ? <form id={`admin-theme-form-${theme.key}`} className="admin-theme-form" onSubmit={(event) => handleThemeScheduleSave(event, theme, schedule)}>
+                  <label>Start date<input type="text" inputMode="numeric" autoComplete="off" pattern="(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])" title="Use MM-DD format" placeholder="MM-DD" aria-label={`${theme.name} start date (MM-DD)`} value={schedule.startsOn} disabled={isSaving} onChange={(event) => { setThemeScheduleEdits((previous) => ({ ...previous, [theme.key]: { ...schedule, startsOn: event.target.value } })); setThemeScheduleStates((previous) => ({ ...previous, [theme.key]: { status: 'idle', error: '', message: '' } })) }} required /></label>
+                  <label>End date<input type="text" inputMode="numeric" autoComplete="off" pattern="(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])" title="Use MM-DD format" placeholder="MM-DD" aria-label={`${theme.name} end date (MM-DD)`} value={schedule.endsOn} disabled={isSaving} onChange={(event) => { setThemeScheduleEdits((previous) => ({ ...previous, [theme.key]: { ...schedule, endsOn: event.target.value } })); setThemeScheduleStates((previous) => ({ ...previous, [theme.key]: { status: 'idle', error: '', message: '' } })) }} required /></label>
+                </form> : null}
+                {themeScheduleStates[theme.key]?.message ? <small className="admin-theme-feedback" role="status">{themeScheduleStates[theme.key].message}</small> : null}
+                {themeScheduleStates[theme.key]?.error ? <small className="admin-theme-feedback error" role="alert">{themeScheduleStates[theme.key].error}</small> : null}
+              </article>
             })}
           </div>
-        ) : null}
-      </section>
+          {sortedThemes.length > 2 ? <button type="button" className="admin-view-all" onClick={() => setShowAllThemes((value) => !value)} aria-expanded={showAllThemes}>{showAllThemes ? 'Show featured themes' : `View all ${sortedThemes.length} themes`} <span aria-hidden="true">{showAllThemes ? '↑' : '→'}</span></button> : null}</> : <SectionMessage message={overviewMessage} tone={adminOverviewState.status === 'error' ? 'error' : undefined} />}
+          {themeState.message ? <p className="filelist-settings-success" role="status">{themeState.message}</p> : null}
+          {themeState.error ? <p className="filelist-settings-error" role="alert">{themeState.error}</p> : null}
+        </section>
 
-      <section className="content-section admin-content-section seasonal-themes-section">
-        <div className="section-header">
-          <div>
-            <h2>Seasonal Themes</h2>
-            <span>Preview upcoming website themes and their suggested activation windows.</span>
+        <section className="admin-content-section admin-integrations-section" aria-labelledby="admin-integrations-title">
+          <div className="admin-section-heading"><h2 id="admin-integrations-title">Integrations</h2><p>Manage external integrations and credentials.</p></div>
+          {adminOverviewState.status === 'success' ? <><div className="admin-integration">
+            <div className="admin-integration-row"><span className="admin-integration-icon filelist">F</span><strong>Filelist</strong><span className={`admin-status admin-status-${adminOverviewState.filelist?.configured ? 'active' : 'inactive'}`}><i aria-hidden="true" />{adminOverviewState.filelist?.configured ? 'Configured' : 'Not configured'}</span><button type="button" className="admin-outline-button" aria-expanded={openIntegration === 'filelist'} aria-controls="admin-filelist-form" onClick={() => setOpenIntegration(openIntegration === 'filelist' ? null : 'filelist')}>{openIntegration === 'filelist' ? 'Hide credentials' : 'Manage credentials'}</button></div>
+            {openIntegration === 'filelist' ? <div id="admin-filelist-form" className="admin-integration-details"><form className="filelist-settings-form" onSubmit={handleFilelistSave}><label>Username<input value={filelistUsername} onChange={(event) => setFilelistUsername(event.target.value)} required placeholder="Enter username" /></label><label>Passkey<input type="password" value={filelistPasskey} onChange={(event) => setFilelistPasskey(event.target.value)} required placeholder="Enter passkey" /></label><div className="filelist-settings-actions"><button type="submit" className="admin-accent-button" disabled={filelistState.status === 'loading'}>{filelistState.status === 'loading' ? 'Saving…' : 'Save credentials'}</button>{adminOverviewState.filelist?.configured ? <button type="button" className="admin-outline-button" disabled={filelistState.status === 'loading'} onClick={handleFilelistClear}>Clear credentials</button> : null}</div></form>{filelistState.status === 'success' ? <p className="filelist-settings-success" role="status">Filelist settings updated.</p> : null}{filelistState.status === 'error' ? <p className="filelist-settings-error" role="alert">{filelistState.error}</p> : null}</div> : null}
           </div>
-        </div>
-        <div className="seasonal-themes-list" role="table" aria-label="Seasonal themes">
-          <div className="seasonal-themes-header" role="row">
-            <span role="columnheader">Event / Theme</span>
-            <span role="columnheader">Date in 2026</span>
-            <span role="columnheader">Suggested website theme period</span>
-            <span role="columnheader">Action</span>
-          </div>
-          {seasonalThemes.map((theme) => {
-            const isActive = theme.key === activeTheme
-            const isPending = themeState.status === 'loading' && themeState.pendingTheme === theme.key
-            const label = !theme.available ? 'Coming soon' : isPending ? (isActive ? 'Deactivating…' : 'Activating…') : isActive ? 'Deactivate' : 'Activate'
-            return (
-            <article key={theme.key} className={`seasonal-theme-row${isActive ? ' active' : ''}`} role="row">
-              <div className="seasonal-theme-cell seasonal-theme-name" role="cell">
-                <span className="seasonal-theme-mobile-label">Event / Theme</span>
-                <span aria-hidden="true">{theme.emoji}</span>
-                <strong>{theme.name}</strong>{isActive ? <em>Active</em> : null}
-              </div>
-              <div className="seasonal-theme-cell" role="cell">
-                <span className="seasonal-theme-mobile-label">Date in 2026</span>
-                <span>{theme.date}</span>
-              </div>
-              <div className="seasonal-theme-cell" role="cell">
-                <span className="seasonal-theme-mobile-label">Suggested website theme period</span>
-                <span>{theme.period}</span>
-              </div>
-              <div className="seasonal-theme-action-cell" role="cell">
-                <button
-                  type="button"
-                  className={isActive ? 'secondary-button' : 'primary-button'}
-                  aria-label={theme.available ? `${isActive ? 'Deactivate' : 'Activate'} ${theme.name} theme` : `${theme.name} is coming soon`}
-                  aria-pressed={isActive}
-                  disabled={!theme.available || themeState.status === 'loading'}
-                  onClick={() => onSetActiveTheme(isActive ? defaultThemeKey : theme.key)}
-                >{label}</button>
-              </div>
-            </article>
-            )
-          })}
-        </div>
-        {themeState.message ? <p className="filelist-settings-success" role="status">{themeState.message}</p> : null}
-        {themeState.error ? <p className="filelist-settings-error" role="alert">{themeState.error}</p> : null}
-      </section>
-
-      <section className="content-section admin-content-section filelist-settings-section">
-        <div className="section-header"><div><h2>Filelist</h2><span>{adminOverviewState.filelist?.configured ? 'Your encrypted credentials are saved.' : 'Configure your credentials to search from movie pages.'}</span></div></div>
-        <form className="filelist-settings-form" onSubmit={handleFilelistSave}>
-          <label>Filelist username<input value={filelistUsername} onChange={(event) => setFilelistUsername(event.target.value)} required placeholder={adminOverviewState.filelist?.configured ? 'Saved — enter to replace' : 'Username'} /></label>
-          <label>Filelist passkey<input type="password" value={filelistPasskey} onChange={(event) => setFilelistPasskey(event.target.value)} required placeholder={adminOverviewState.filelist?.configured ? 'Saved — enter to replace' : 'Passkey'} /></label>
-          <div className="filelist-settings-actions"><button type="submit" className="primary-button" disabled={filelistState.status === 'loading'}>{filelistState.status === 'loading' ? 'Saving...' : adminOverviewState.filelist?.configured ? 'Replace credentials' : 'Save credentials'}</button>{adminOverviewState.filelist?.configured ? <button type="button" className="secondary-button" disabled={filelistState.status === 'loading'} onClick={handleFilelistClear}>Clear credentials</button> : null}</div>
-        </form>
-        {filelistState.status === 'success' ? <p className="filelist-settings-success" role="status">Filelist settings saved.</p> : null}
-        {filelistState.status === 'error' ? <p className="filelist-settings-error" role="alert">{filelistState.error}</p> : null}
-      </section>
-
-      <section className="content-section admin-content-section filelist-settings-section">
-        <div className="section-header"><div><h2>IGDB API</h2><span>{adminOverviewState.igdb?.configured ? 'Encrypted app-wide IGDB credentials are saved.' : 'Add app-wide credentials for future IGDB-powered game data.'}</span></div></div>
-        <form className="filelist-settings-form" onSubmit={handleIgdbSave}>
-          <label>IGDB client ID<input value={igdbClientId} onChange={(event) => setIgdbClientId(event.target.value)} required placeholder={adminOverviewState.igdb?.configured ? 'Saved — enter to replace' : 'Client ID'} /></label>
-          <label>IGDB private key<input type="password" value={igdbPrivateKey} onChange={(event) => setIgdbPrivateKey(event.target.value)} required placeholder={adminOverviewState.igdb?.configured ? 'Saved — enter to replace' : 'Private key'} /></label>
-          <div className="filelist-settings-actions"><button type="submit" className="primary-button" disabled={igdbState.status === 'loading'}>{igdbState.status === 'loading' ? 'Saving...' : adminOverviewState.igdb?.configured ? 'Replace credentials' : 'Save credentials'}</button>{adminOverviewState.igdb?.configured ? <button type="button" className="secondary-button" disabled={igdbState.status === 'loading'} onClick={handleIgdbClear}>Clear credentials</button> : null}</div>
-        </form>
-        {igdbState.status === 'success' ? <p className="filelist-settings-success" role="status">IGDB settings saved.</p> : null}
-        {igdbState.status === 'error' ? <p className="filelist-settings-error" role="alert">{igdbState.error}</p> : null}
-      </section>
+          <div className="admin-integration">
+            <div className="admin-integration-row"><span className="admin-integration-icon igdb">IGDB</span><strong>IGDB API</strong><span className={`admin-status admin-status-${adminOverviewState.igdb?.configured ? 'active' : 'inactive'}`}><i aria-hidden="true" />{adminOverviewState.igdb?.configured ? 'Configured' : 'Not configured'}</span><button type="button" className="admin-outline-button" aria-expanded={openIntegration === 'igdb'} aria-controls="admin-igdb-form" onClick={() => setOpenIntegration(openIntegration === 'igdb' ? null : 'igdb')}>{openIntegration === 'igdb' ? 'Hide credentials' : 'Manage credentials'}</button></div>
+            {openIntegration === 'igdb' ? <div id="admin-igdb-form" className="admin-integration-details"><form className="filelist-settings-form" onSubmit={handleIgdbSave}><label>Client ID<input value={igdbClientId} onChange={(event) => setIgdbClientId(event.target.value)} required placeholder="Enter client ID" /></label><label>Private key<input type="password" value={igdbPrivateKey} onChange={(event) => setIgdbPrivateKey(event.target.value)} required placeholder="Enter private key" /></label><div className="filelist-settings-actions"><button type="submit" className="admin-accent-button" disabled={igdbState.status === 'loading'}>{igdbState.status === 'loading' ? 'Saving…' : 'Save credentials'}</button>{adminOverviewState.igdb?.configured ? <button type="button" className="admin-outline-button" disabled={igdbState.status === 'loading'} onClick={handleIgdbClear}>Clear credentials</button> : null}</div></form>{igdbState.status === 'success' ? <p className="filelist-settings-success" role="status">IGDB settings updated.</p> : null}{igdbState.status === 'error' ? <p className="filelist-settings-error" role="alert">{igdbState.error}</p> : null}</div> : null}
+          </div></> : <SectionMessage message={overviewMessage} tone={adminOverviewState.status === 'error' ? 'error' : undefined} />}
+        </section>
+      </div>
+      <p className="admin-page-footer">Scroll for more settings and configuration <span aria-hidden="true">⌄</span></p>
     </section>
   )
 }
 
-function AccountScreen({ changePasswordState, enabledSections, enabledNewsCategories, sectionsStatus, newsPreferencesStatus, onBack, onSaveEnabledSections, onSaveEnabledNewsCategories, onSubmit, user }) {
+const profileSections = [
+  { key: 'movies', name: 'Movies', description: 'Always visible in your navigation.', icon: FilmStripIcon },
+  { key: 'tv', name: 'TV Shows', description: 'Always visible in your navigation.', icon: TvIcon },
+  { key: 'books', name: 'Books', description: 'Show books in your navigation.', icon: BookOpenIcon },
+  { key: 'games', name: 'Games', description: 'Show games in your navigation.', icon: GamepadIcon },
+  { key: 'calendar', name: 'Calendar', description: 'Show calendar in your navigation.', icon: CalendarIcon },
+]
+
+const profileNewsDescriptions = {
+  'formula-1': 'Get the latest Formula 1 news and updates.',
+  games: 'Get the latest games news and updates.',
+  movies: 'Get the latest movie news and updates.',
+  'tv-shows': 'Get the latest TV show news and updates.',
+}
+
+const profileNewsIcons = {
+  'formula-1': FlagIcon,
+  games: GamepadIcon,
+  movies: FilmStripIcon,
+  'tv-shows': TvIcon,
+}
+
+function ProfilePreference({ checked, description, disabled, icon: Icon, name, onChange, required }) {
+  return <label className={`profile-preference${disabled ? ' disabled' : ''}`}>
+    <Icon />
+    <span className="profile-preference-copy"><strong>{name}</strong><small>{description}</small></span>
+    {required ? <span className="profile-required">Required</span> : null}
+    <input type="checkbox" role="switch" aria-label={`${name} ${required ? 'navigation section' : 'preference'}`} checked={checked} disabled={disabled || required} onChange={onChange} />
+    {required ? <LockIcon /> : null}
+  </label>
+}
+
+function ProfilePasswordField({ autoComplete, label, name, onChange, placeholder, value, visible, onToggleVisibility }) {
+  return <div className="profile-password-field">
+    <label htmlFor={`profile-${name}`}>{label}</label>
+    <span className="profile-password-input">
+      <input id={`profile-${name}`} type={visible ? 'text' : 'password'} name={name} autoComplete={autoComplete} value={value} onChange={onChange} placeholder={placeholder} required />
+      <button type="button" aria-label={`${visible ? 'Hide' : 'Show'} ${label.toLowerCase()}`} aria-pressed={visible} onClick={onToggleVisibility}>
+        {visible ? <EyeOffIcon /> : <EyeIcon />}
+      </button>
+    </span>
+  </div>
+}
+
+function AccountScreen({ changePasswordState, enabledSections, enabledNewsCategories, sectionsStatus, newsPreferencesStatus, onBack, onSaveEnabledSections, onSaveEnabledNewsCategories, onSubmit, onResetPassword, user }) {
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
+  const [visiblePasswords, setVisiblePasswords] = useState({})
   const [sectionState, setSectionState] = useState({ status: 'idle', error: '' })
   const [newsPreferenceState, setNewsPreferenceState] = useState({ status: 'idle', error: '' })
 
@@ -6125,6 +6130,7 @@ function AccountScreen({ changePasswordState, enabledSections, enabledNewsCatego
       setCurrentPassword('')
       setNewPassword('')
       setConfirmPassword('')
+      setVisiblePasswords({})
     }
   }, [changePasswordState.status])
 
@@ -6135,6 +6141,18 @@ function AccountScreen({ changePasswordState, enabledSections, enabledNewsCatego
       newPassword,
       confirmPassword,
     })
+  }
+
+  function handleCancel() {
+    setCurrentPassword('')
+    setNewPassword('')
+    setConfirmPassword('')
+    setVisiblePasswords({})
+    onResetPassword()
+  }
+
+  function togglePasswordVisibility(name) {
+    setVisiblePasswords((current) => ({ ...current, [name]: !current[name] }))
   }
 
   async function handleSectionChange(section) {
@@ -6179,111 +6197,56 @@ function AccountScreen({ changePasswordState, enabledSections, enabledNewsCatego
 
       <div className="account-card profile-identity-card">
         <div className="avatar">{getUserInitial(user.fullName)}</div>
-        <div><h2>{user.fullName}</h2><p>@{user.username}</p></div>
+        <div><h2>{user.fullName}</h2><p>@{user.username}</p><small>Your account</small></div>
       </div>
 
-      <div className="account-card">
-        <div className="account-card-copy">
-          <p className="login-kicker">Security</p>
-          <h2>Change password</h2>
-          <p>Your signed-in session stays active after the change. Use the new password the next time you sign in.</p>
+      <div className="profile-settings-grid">
+        <div className="profile-preferences-column">
+          <div className="account-card profile-settings-card">
+            <div className="account-card-copy">
+              <h2>Visible sections</h2>
+              <p>Choose what appears in your navigation.</p>
+            </div>
+            <fieldset className="profile-preference-list" disabled={sectionsStatus !== 'ready' || sectionState.status === 'loading'}>
+              <legend className="visually-hidden">Visible sections</legend>
+              {profileSections.map(({ key, name, description, icon }) => <ProfilePreference key={key} checked={enabledSections.includes(key)} description={description} disabled={sectionsStatus !== 'ready' || sectionState.status === 'loading'} icon={icon} name={name} onChange={() => handleSectionChange(key)} required={requiredEnabledSections.includes(key)} />)}
+            </fieldset>
+            {sectionState.status === 'success' ? <p className="filelist-settings-success" role="status">Section preferences saved.</p> : null}
+            {sectionState.status === 'error' ? <p className="filelist-settings-error" role="alert">{sectionState.error}</p> : null}
+          </div>
+
+          <div className="account-card profile-settings-card">
+            <div className="account-card-copy">
+              <h2>News preferences</h2>
+              <p>Choose the topics you want in your news feed.</p>
+            </div>
+            <fieldset className="profile-preference-list" disabled={newsPreferencesStatus !== 'ready' || newsPreferenceState.status === 'loading'}>
+              <legend className="visually-hidden">News topics</legend>
+              {NEWS_CATEGORIES.map(({ key, name }) => <ProfilePreference key={key} checked={enabledNewsCategories.includes(key)} description={profileNewsDescriptions[key]} disabled={newsPreferencesStatus !== 'ready' || newsPreferenceState.status === 'loading'} icon={profileNewsIcons[key]} name={name} onChange={() => handleNewsCategoryChange(key)} />)}
+            </fieldset>
+            {newsPreferenceState.status === 'success' ? <p className="filelist-settings-success" role="status">News preferences saved.</p> : null}
+            {newsPreferenceState.status === 'error' ? <p className="filelist-settings-error" role="alert">{newsPreferenceState.error}</p> : null}
+          </div>
         </div>
 
-        <form className="login-form" onSubmit={handleSubmit}>
-          <label className="login-field">
-            <span>Current Password</span>
-            <input
-              type="password"
-              name="currentPassword"
-              autoComplete="current-password"
-              value={currentPassword}
-              onChange={(event) => setCurrentPassword(event.target.value)}
-              required
-            />
-          </label>
-
-          <label className="login-field">
-            <span>New Password</span>
-            <input
-              type="password"
-              name="newPassword"
-              autoComplete="new-password"
-              value={newPassword}
-              onChange={(event) => setNewPassword(event.target.value)}
-              required
-            />
-          </label>
-
-          <label className="login-field">
-            <span>Confirm New Password</span>
-            <input
-              type="password"
-              name="confirmPassword"
-              autoComplete="new-password"
-              value={confirmPassword}
-              onChange={(event) => setConfirmPassword(event.target.value)}
-              required
-            />
-          </label>
-
-          {changePasswordState.error ? <p className="login-error">{changePasswordState.error}</p> : null}
-          {changePasswordState.message ? <p className="account-success">{changePasswordState.message}</p> : null}
-
-          <div className="login-actions">
-            <button type="submit" className="primary-button" disabled={changePasswordState.status === 'loading'}>
-              <span>{changePasswordState.status === 'loading' ? 'Updating...' : 'Update Password'}</span>
-            </button>
-            <button type="button" className="secondary-button" onClick={onBack}>
-              <span>Cancel</span>
-            </button>
+        <div className="account-card profile-security-card">
+          <div className="account-card-copy">
+            <p className="login-kicker">Security</p>
+            <h2>Change password</h2>
+            <p>Keep your account secure with a strong password.</p>
           </div>
-        </form>
-      </div>
-
-      <div className="account-card">
-        <div className="account-card-copy">
-          <p className="login-kicker">Navigation</p>
-          <h2>Visible sections</h2>
-          <p>Choose which primary sections appear in your navigation. Movies and TV Shows are always available.</p>
+          <form className="profile-password-form" onSubmit={handleSubmit}>
+            <ProfilePasswordField autoComplete="current-password" label="Current password" name="currentPassword" onChange={(event) => setCurrentPassword(event.target.value)} onToggleVisibility={() => togglePasswordVisibility('current')} placeholder="Enter your current password" value={currentPassword} visible={Boolean(visiblePasswords.current)} />
+            <ProfilePasswordField autoComplete="new-password" label="New password" name="newPassword" onChange={(event) => setNewPassword(event.target.value)} onToggleVisibility={() => togglePasswordVisibility('new')} placeholder="Enter your new password" value={newPassword} visible={Boolean(visiblePasswords.new)} />
+            <ProfilePasswordField autoComplete="new-password" label="Confirm new password" name="confirmPassword" onChange={(event) => setConfirmPassword(event.target.value)} onToggleVisibility={() => togglePasswordVisibility('confirm')} placeholder="Confirm your new password" value={confirmPassword} visible={Boolean(visiblePasswords.confirm)} />
+            {changePasswordState.error ? <p className="login-error" role="alert">{changePasswordState.error}</p> : null}
+            {changePasswordState.message ? <p className="account-success" role="status">{changePasswordState.message}</p> : null}
+            <div className="profile-password-actions">
+              <button type="submit" className="primary-button" disabled={changePasswordState.status === 'loading'}>{changePasswordState.status === 'loading' ? 'Updating...' : 'Update password'}</button>
+              <button type="button" className="secondary-button" onClick={handleCancel} disabled={changePasswordState.status === 'loading'}>Cancel</button>
+            </div>
+          </form>
         </div>
-        <fieldset className="section-preferences-control" disabled={sectionsStatus !== 'ready' || sectionState.status === 'loading'}>
-          <legend>Enabled sections</legend>
-          <div className="section-preferences-options">
-            {[['movies', 'Movies'], ['tv', 'TV Shows'], ['books', 'Books'], ['games', 'Games'], ['calendar', 'Calendar']].map(([section, label]) => {
-              const required = requiredEnabledSections.includes(section)
-              const selected = enabledSections.includes(section)
-              return <label key={section} className={`section-preference-option${selected ? ' selected' : ''}${required ? ' required' : ''}`}>
-                <input type="checkbox" checked={selected} disabled={required} onChange={() => handleSectionChange(section)} />
-                <span>{label}</span>
-                {required ? <small>Required</small> : null}
-              </label>
-            })}
-          </div>
-        </fieldset>
-        {sectionState.status === 'success' ? <p className="filelist-settings-success" role="status">Section preferences saved.</p> : null}
-        {sectionState.status === 'error' ? <p className="filelist-settings-error" role="alert">{sectionState.error}</p> : null}
-      </div>
-
-      <div className="account-card">
-        <div className="account-card-copy">
-          <p className="login-kicker">News</p>
-          <h2>News preferences</h2>
-          <p>Choose which categories appear in your news feed and saved articles.</p>
-        </div>
-        <fieldset className="section-preferences-control" disabled={newsPreferencesStatus !== 'ready' || newsPreferenceState.status === 'loading'}>
-          <legend>Show news from</legend>
-          <div className="section-preferences-options">
-            {NEWS_CATEGORIES.map(({ key, name }) => {
-              const selected = enabledNewsCategories.includes(key)
-              return <label key={key} className={`section-preference-option${selected ? ' selected' : ''}`}>
-                <input type="checkbox" checked={selected} onChange={() => handleNewsCategoryChange(key)} />
-                <span>{name}</span>
-              </label>
-            })}
-          </div>
-        </fieldset>
-        {newsPreferenceState.status === 'success' ? <p className="filelist-settings-success" role="status">News preferences saved.</p> : null}
-        {newsPreferenceState.status === 'error' ? <p className="filelist-settings-error" role="alert">{newsPreferenceState.error}</p> : null}
       </div>
     </section>
   )
@@ -7843,7 +7806,7 @@ function TvWatchlistPanel({ items, onOpenWatchlist, onSelectShow }) {
   )
 }
 
-function TvDetailPage({ tvDetailState, tvReviewsState, user, onBackToTv, onToggleWatchlist, onUpdateEpisodes, onSubmitEpisodeRating, onOpenTv, onOpenPerson, onOpenRelatedNews, onOpenLogin, isSignedIn, watchlistIds, tvEpisodeRatingActionState }) {
+function TvDetailPage({ tvDetailState, tvReviewsState, user, onBackToTv, onToggleWatchlist, onUpdateEpisodes, onSubmitEpisodeRating, onOpenTv, onOpenPerson, onOpenLogin, isSignedIn, watchlistIds, tvEpisodeRatingActionState }) {
   const [seasonNumber, setSeasonNumber] = useState(null)
   const [trailer, setTrailer] = useState(null)
   const [catchUpEpisode, setCatchUpEpisode] = useState(null)
@@ -7941,7 +7904,7 @@ function TvDetailPage({ tvDetailState, tvReviewsState, user, onBackToTv, onToggl
         <div className="tv-detail-main"><h1>{show.title}</h1><div className="tv-detail-meta"><span>{show.year}</span><span>{show.genresLabel}</span><span>{show.maturityRating}</span></div>
           <div className="tv-detail-statline"><span className="tv-detail-rating"><StarIcon /> {show.voteAverage}<small>TMDB</small></span><span>{totalEpisodes} Episodes</span><span>{show.seasons.length} {show.seasons.length === 1 ? 'Season' : 'Seasons'}</span><span><TvIcon /> {show.network || 'TBA'}</span></div>
           <p className={`tv-detail-summary${isOverviewExpanded ? ' expanded' : ''}`}>{show.overview}</p>{show.overview?.length > 150 ? <button type="button" className="tv-detail-more" onClick={() => setIsOverviewExpanded((expanded) => !expanded)}>{isOverviewExpanded ? 'Less' : 'More'}</button> : null}
-          <div className="tv-detail-actions"><button type="button" className={`primary-button tv-detail-primary${isWatchlist ? ' is-active' : ''}`} onClick={() => onToggleWatchlist(show)}><PlusIcon /><span>{isWatchlist ? 'In Watchlist' : 'Add to Watchlist'}</span></button><div className="tv-detail-secondary-actions">{show.trailer ? <button type="button" className="secondary-button" onClick={() => setTrailer(show.trailer)}><PlayIcon /><span>Trailer</span></button> : null}<button type="button" className="secondary-button" onClick={() => onOpenRelatedNews({ show: Number(show.id) })}><NewsIcon /><span>Related News</span></button><button type="button" className="secondary-button" onClick={handleOpenFilelist} disabled={!filelistTarget} title={!filelistTarget ? 'You are caught up on all aired episodes.' : undefined}><BarsIcon /><span>Filelist</span></button></div></div>
+          <div className="tv-detail-actions"><button type="button" className={`primary-button tv-detail-primary${isWatchlist ? ' is-active' : ''}`} onClick={() => onToggleWatchlist(show)}><PlusIcon /><span>{isWatchlist ? 'In Watchlist' : 'Add to Watchlist'}</span></button><div className="tv-detail-secondary-actions">{show.trailer ? <button type="button" className="secondary-button" onClick={() => setTrailer(show.trailer)}><PlayIcon /><span>Trailer</span></button> : null}<button type="button" className="secondary-button" onClick={handleOpenFilelist} disabled={!filelistTarget} title={!filelistTarget ? 'You are caught up on all aired episodes.' : undefined}><BarsIcon /><span>Filelist</span></button></div></div>
         </div>
       </div>
     </article>
@@ -8031,7 +7994,6 @@ function MovieDetailPage({
   similarMoviesState,
   onBackToMovies,
   onOpenPerson,
-  onOpenRelatedNews,
   onOpenMovie,
   onToggleWatched,
   onToggleWatchlist,
@@ -8306,10 +8268,6 @@ function MovieDetailPage({
             <button type="button" className="secondary-button movie-detail-secondary ghost desktop-only" onClick={handleOpenTrailer} disabled={isTrailerLoading}>
               <PlayIcon />
               <span>{isTrailerLoading ? 'Loading...' : 'Trailer'}</span>
-            </button>
-            <button type="button" className="secondary-button movie-detail-secondary ghost" onClick={() => onOpenRelatedNews({ movie: Number(movie.id) })}>
-              <NewsIcon />
-              <span>Related News</span>
             </button>
             <div ref={overflowRef} className="movie-action-overflow">
               <button type="button" className="secondary-button movie-detail-secondary ghost movie-action-overflow-trigger" aria-expanded={isOverflowOpen} aria-haspopup="menu" onClick={() => { setOverflowMenuOffset(0); setIsOverflowOpen((open) => !open) }}><MoreIcon /><span>More</span></button>
@@ -8689,7 +8647,7 @@ function MoviePosterFrame({ movie }) {
   )
 }
 
-function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOpenTv, onOpenPerson, onOpenRelatedNews, isSignedIn, onOpenLogin, onToggleMovieWatchlist, onToggleMovieWatched, onToggleTvWatchlist, favoriteActorIds, onToggleFavorite }) {
+function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOpenTv, onOpenPerson, isSignedIn, onOpenLogin, onToggleMovieWatchlist, onToggleMovieWatched, onToggleTvWatchlist, favoriteActorIds, onToggleFavorite }) {
   const filmographyPageSize = 5
   const [filmographyRole, setFilmographyRole] = useState('all')
   const [filmographyMedia, setFilmographyMedia] = useState('all')
@@ -8822,10 +8780,6 @@ function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOp
             <button type="button" className="secondary-button movie-detail-secondary" onClick={() => onToggleFavorite(person)}>
               <StarOutlineIcon />
               <span>{isFavorite ? 'Favorited' : isSignedIn ? 'Favorite' : 'Sign in to Favorite'}</span>
-            </button>
-            <button type="button" className="secondary-button movie-detail-secondary ghost" onClick={() => onOpenRelatedNews({ actor: Number(person.id) })}>
-              <NewsIcon />
-              <span>Related News</span>
             </button>
             <button type="button" className="secondary-button movie-detail-secondary ghost" onClick={handleShare}>
               <ShareIcon />
@@ -10226,25 +10180,8 @@ function buildStatsDashboardMetrics({ movieStats, tvStats }) {
   ]
 }
 
-function buildAuthHeaders(user) {
-  if (!user?.username) {
-    return {}
-  }
-
-  return {
-    'x-watchvault-username': user.username,
-  }
-}
-
-function readStoredUser() {
-  try {
-    const storedUser = window.localStorage.getItem(authStorageKey)
-    const parsedUser = storedUser ? JSON.parse(storedUser) : null
-    return parsedUser?.username && parsedUser?.fullName ? parsedUser : null
-  } catch {
-    window.localStorage.removeItem(authStorageKey)
-    return null
-  }
+function buildAuthHeaders() {
+  return {}
 }
 
 function normalizeEnabledSections(sections) {
@@ -11311,10 +11248,9 @@ function readAppRoute(pathname = window.location.pathname, search = window.locat
       const value = params.get(key)
       return value && /^\d+$/.test(value) && Number(value) > 0 ? Number(value) : null
     }
-    const movie = readId('movie')
     const tab = params.get('tab') === 'saved' ? 'saved' : 'news'
     const category = NEWS_CATEGORIES.some((entry) => entry.key === params.get('category')) ? params.get('category') : null
-    return { kind: routeKinds.news, tab, filters: { actor: readId('actor'), movie, show: movie ? null : readId('show'), category } }
+    return { kind: routeKinds.news, tab, filters: { category } }
   }
 
   if (/^\/stats\/?$/.test(pathname)) {
@@ -11408,9 +11344,6 @@ function buildNewsPath(filters = emptyNewsFilters, tab = 'news') {
   const params = new URLSearchParams()
   if (tab === 'saved') params.set('tab', 'saved')
   if (NEWS_CATEGORIES.some((category) => category.key === filters.category)) params.set('category', filters.category)
-  if (Number.isInteger(filters.actor) && filters.actor > 0) params.set('actor', filters.actor)
-  if (Number.isInteger(filters.movie) && filters.movie > 0) params.set('movie', filters.movie)
-  if (Number.isInteger(filters.show) && filters.show > 0 && !params.has('movie')) params.set('show', filters.show)
   const query = params.toString()
   return query ? `/news?${query}` : '/news'
 }
@@ -11419,9 +11352,6 @@ function buildNewsApiPath(page, filters = emptyNewsFilters, tab = 'news') {
   const params = new URLSearchParams({ page: String(page), limit: String(newsPageSize) })
   if (tab === 'saved') params.set('saved', 'true')
   if (NEWS_CATEGORIES.some((category) => category.key === filters.category)) params.set('category', filters.category)
-  if (Number.isInteger(filters.actor) && filters.actor > 0) params.set('actor', filters.actor)
-  if (Number.isInteger(filters.movie) && filters.movie > 0) params.set('movie', filters.movie)
-  if (Number.isInteger(filters.show) && filters.show > 0 && !params.has('movie')) params.set('show', filters.show)
   return `/api/news?${params.toString()}`
 }
 
@@ -11875,6 +11805,26 @@ function ClapperIcon() {
   )
 }
 
+function FilmStripIcon() {
+  return <IconBase><rect x="4" y="3" width="16" height="18" rx="1.5" /><path d="M8 3v18M16 3v18M4 8h4M4 13h4M4 18h4M16 8h4M16 13h4M16 18h4" /></IconBase>
+}
+
+function BookOpenIcon() {
+  return <IconBase><path d="M12 6.5C9.3 4.7 6.7 4.2 3.5 5v13c3.2-.8 5.8-.3 8.5 1.5 2.7-1.8 5.3-2.3 8.5-1.5V5c-3.2-.8-5.8-.3-8.5 1.5ZM12 6.5v13" /></IconBase>
+}
+
+function FlagIcon() {
+  return <IconBase><path d="M5 21V4m0 2c2.4-1.8 4.7-1.8 7.2-.2 2.3 1.4 4.5 1.4 6.8-.1v11c-2.3 1.5-4.5 1.5-6.8.1C9.7 15.2 7.4 15.2 5 17" /></IconBase>
+}
+
+function EyeIcon() {
+  return <IconBase><path d="M2.5 12s3.4-5.5 9.5-5.5 9.5 5.5 9.5 5.5-3.4 5.5-9.5 5.5S2.5 12 2.5 12Z" /><circle cx="12" cy="12" r="2.5" /></IconBase>
+}
+
+function EyeOffIcon() {
+  return <IconBase><path d="M3 3 21 21M9.7 6.8A11.4 11.4 0 0 1 12 6.5c6.1 0 9.5 5.5 9.5 5.5a13.5 13.5 0 0 1-3.4 3.6M6 8.2A14.4 14.4 0 0 0 2.5 12s3.4 5.5 9.5 5.5c.9 0 1.8-.1 2.6-.4M10 10a2.8 2.8 0 0 0 4 4" /></IconBase>
+}
+
 function TvIcon() {
   return (
     <IconBase>
@@ -11940,6 +11890,10 @@ function ShieldIcon() {
   )
 }
 
+function GearIcon() {
+  return <IconBase><path d="M10 2.7h4l.6 2.1 1.8.8 2-.9 2.8 2.8-.9 2 .8 1.8 2.1.7v4l-2.1.6-.8 1.8.9 2-2.8 2.8-2-.9-1.8.8-.6 2.1h-4l-.7-2.1-1.8-.8-2 .9-2.8-2.8.9-2-.8-1.8-2.1-.6v-4l2.1-.7.8-1.8-.9-2 2.8-2.8 2 .9 1.8-.8.7-2.1Z" /><circle cx="12" cy="12" r="3" /></IconBase>
+}
+
 function TrophyIcon() {
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 4h8v5a4 4 0 0 1-8 0V4Z" /><path d="M8 6H5v1a4 4 0 0 0 4 4" /><path d="M16 6h3v1a4 4 0 0 1-4 4" /><path d="M12 13v4" /><path d="M8 21h8" /><path d="M10 17h4" /></svg>
 }
@@ -11998,6 +11952,10 @@ function BarsIcon() {
       <path d="M17.5 19v-7" />
     </IconBase>
   )
+}
+
+function DatabaseIcon() {
+  return <IconBase><ellipse cx="12" cy="5.5" rx="7.5" ry="3" /><path d="M4.5 5.5v12c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-12M4.5 11.5c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3" /></IconBase>
 }
 
 function MoreIcon() {

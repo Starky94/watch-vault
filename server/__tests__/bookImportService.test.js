@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { importBooks, normalizeBook, sanitizeBookDescription } from '../bookImportService.js'
 import { buildRelatedBooksUrl, buildTitleSearchUrl, buildVolumeByIdUrl, buildVolumesUrl, fetchBooksByCategory, searchBooksByTitle } from '../googleBooksClient.js'
 import { addBookToReadForUser, addBookToWatchlistForUser, ensureBooksTable, getBookCommunityRating, listReadBooksForUser, listWatchlistBooksForUser, removeBookFromReadForUser, removeBookFromWatchlistForUser, upsertBookRatingForUser, upsertBooks } from '../database.js'
-import { createApp } from '../app.js'
+import { createApp, sessionCookieFor } from './sessionTestHelpers.js'
 
 test('Google Books request targets a small book-only category query', () => {
   const url = new URL(buildVolumesUrl({ apiKey: 'test-key', category: 'Science Fiction' }))
@@ -230,7 +230,7 @@ test('book read API authenticates, returns history, and supports marking read an
     const invalidFormat = await fetch(`http://127.0.0.1:${port}/api/read/books`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bookId: 'volume-id', readingFormat: 'paperback' }) })
     assert.equal(invalidFormat.status, 400)
 
-    const headers = { 'Content-Type': 'application/json', 'x-watchvault-username': 'reader' }
+    const headers = { 'Content-Type': 'application/json', Cookie: sessionCookieFor('reader') }
     const history = await fetch(`http://127.0.0.1:${port}/api/read/books`, { headers })
     assert.deepEqual(await history.json(), { count: 1, books: [{ id: 'volume-id', title: 'Example Book', year: '2024', meta: 'Ada Author', categoriesLabel: 'Fiction', type: 'Books', posterUrl: 'https://example.test/cover.jpg', watchlistedAt: null, readAt: '2026-07-21T00:00:00.000Z', readingFormat: 'ebook', completionMetadata: { tropes: ['Found family', 'Slow burn'] } }] })
 
@@ -241,7 +241,7 @@ test('book read API authenticates, returns history, and supports marking read an
     assert.equal(addedPayload.removedFromWatchlist, true)
     assert.deepEqual(addedPayload.book.completionMetadata, { tropes: ['Found family', 'Slow burn'] })
 
-    const removed = await fetch(`http://127.0.0.1:${port}/api/read/books/volume-id`, { method: 'DELETE', headers: { 'x-watchvault-username': 'reader' } })
+    const removed = await fetch(`http://127.0.0.1:${port}/api/read/books/volume-id`, { method: 'DELETE', headers: { Cookie: sessionCookieFor('reader') } })
     assert.deepEqual(await removed.json(), { removed: true })
   } finally {
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
@@ -268,7 +268,7 @@ test('book rating API validates scores, authenticates users, and returns refresh
     const unauthenticated = await fetch(`http://127.0.0.1:${port}/api/books/volume-id/rating`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ score: 4.5 }) })
     assert.equal(unauthenticated.status, 401)
 
-    const headers = { 'Content-Type': 'application/json', 'x-watchvault-username': 'reader' }
+    const headers = { 'Content-Type': 'application/json', Cookie: sessionCookieFor('reader') }
     const saved = await fetch(`http://127.0.0.1:${port}/api/books/volume-id/rating`, { method: 'PUT', headers, body: JSON.stringify({ score: 4.5 }) })
     assert.equal(saved.status, 200)
     assert.deepEqual(await saved.json(), { communityRating: { average: 4.5, voteCount: 1, yourScore: 4.5 } })
@@ -318,7 +318,7 @@ test('book watchlist API authenticates and returns saved books', async () => {
     const unauthenticated = await fetch(`http://127.0.0.1:${port}/api/watchlist/books`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bookId: 'volume-id' }) })
     assert.equal(unauthenticated.status, 401)
 
-    const headers = { 'Content-Type': 'application/json', 'x-watchvault-username': 'reader' }
+    const headers = { 'Content-Type': 'application/json', Cookie: sessionCookieFor('reader') }
     const added = await fetch(`http://127.0.0.1:${port}/api/watchlist/books`, { method: 'POST', headers, body: JSON.stringify({ bookId: 'volume-id' }) })
     assert.equal(added.status, 200)
     assert.deepEqual((await added.json()).book, {
@@ -329,7 +329,7 @@ test('book watchlist API authenticates and returns saved books', async () => {
     const additionalBook = await fetch(`http://127.0.0.1:${port}/api/watchlist/books`, { method: 'POST', headers, body: JSON.stringify({ bookId: 'full-book' }) })
     assert.equal(additionalBook.status, 200)
 
-    const removed = await fetch(`http://127.0.0.1:${port}/api/watchlist/books/volume-id`, { method: 'DELETE', headers: { 'x-watchvault-username': 'reader' } })
+    const removed = await fetch(`http://127.0.0.1:${port}/api/watchlist/books/volume-id`, { method: 'DELETE', headers: { Cookie: sessionCookieFor('reader') } })
     assert.equal(removed.status, 200)
     assert.deepEqual(await removed.json(), { removed: true })
   } finally {

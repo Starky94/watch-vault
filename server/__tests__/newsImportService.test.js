@@ -1,8 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { adminJobs } from '../adminJobs.js'
-import { createApp } from '../app.js'
-import { addNewsArticleLikeForUser, addNewsArticleSaveForUser, countNewsArticles, ensureRssSourcesTable, listNewsArticles, listRssSources, removeNewsArticleLikeForUser, removeNewsArticleSaveForUser, updateRssSourceEnabled } from '../database.js'
+import { createApp, sessionCookieFor } from './sessionTestHelpers.js'
+import { addNewsArticleLikeForUser, addNewsArticleSaveForUser, countNewsArticles, ensureNewsTables, ensureRssSourcesTable, listNewsArticles, listRssSources, removeNewsArticleLikeForUser, removeNewsArticleSaveForUser, updateRssSourceEnabled } from '../database.js'
 import { importEntertainmentNews, normalizeNewsItem, parseNewsFeed } from '../newsImportService.js'
 
 function response(body, { ok = true, status = 200 } = {}) {
@@ -25,14 +25,8 @@ function createPool() {
         articles.set(link, { id: row.id, title: params[0], publishedAt: params[2], photoUrl: params[3], category: params[4] })
         return { rows: [row], rowCount: 1 }
       }
-      if (sql.includes('INSERT INTO news_article_actors')) {
-        const key = params.join(':')
-        const inserted = !links.has(key)
-        links.add(key)
-        return { rows: [], rowCount: inserted ? 1 : 0 }
-      }
-      if (sql.includes('INSERT INTO news_article_movies') || sql.includes('INSERT INTO news_article_tv_shows')) {
-        const key = `${sql.includes('movies') ? 'movie' : 'show'}:${params.join(':')}`
+      if (sql.includes('INSERT INTO news_article_tv_shows')) {
+        const key = `show:${params.join(':')}`
         const inserted = !links.has(key)
         links.add(key)
         return { rows: [], rowCount: inserted ? 1 : 0 }
@@ -47,10 +41,6 @@ function createPool() {
     calls,
     async query(sql) {
       calls.push({ sql })
-      if (sql.includes('SELECT DISTINCT cast_members.id')) {
-        return { rows: [{ id: 10, name: 'Ada Actor' }, { id: 11, name: 'Bea Performer' }] }
-      }
-      if (sql.includes('SELECT id, tmdb_id, title')) return { rows: [{ id: 20, tmdb_id: 101, title: 'Shared Title' }] }
       if (sql.includes('SELECT id, tmdb_id, name')) return { rows: [{ id: 30, tmdb_id: 202, name: 'Shared Title' }] }
       return { rows: [] }
     },
@@ -73,7 +63,7 @@ test('RSS parser normalizes requested fields and standard media image sources', 
   assert.equal(normalizeNewsItem({ title: 'HTML image', link: 'https://example.test/h', description: '<img src="https://example.test/h.jpg">' }).photoUrl, 'https://example.test/h.jpg')
 })
 
-test('news import deduplicates article links, links exact actor categories, and tolerates a failed feed', async () => {
+test('news import deduplicates articles, links TV show categories, and tolerates a failed feed', async () => {
   const pool = createPool()
   const xml = (categories) => `<rss><channel><item><title>Story</title><link>https://example.test/story#top</link><pubDate>Mon, 01 Sep 2026 12:00:00 GMT</pubDate>${categories.map((category) => `<category>${category}</category>`).join('')}</item></channel></rss>`
   const feeds = ['one', 'two', 'failed']
@@ -81,18 +71,16 @@ test('news import deduplicates article links, links exact actor categories, and 
     feeds,
     fetchImpl: async (url) => {
       if (url === 'failed') throw new Error('network unavailable')
-      return response(url === 'one' ? xml(['Ada Actor', 'Not An Actor']) : xml(['Bea Performer', 'Ada']))
+      return response(url === 'one' ? xml(['Shared Title', 'Not A Show']) : xml(['Shared Title']))
     },
   })
 
   assert.deepEqual({ ...result, errors: result.errors.map(({ feed }) => feed) }, {
-    fetchedCount: 2, insertedCount: 1, updatedCount: 0, linkedActorCount: 2, linkedMovieCount: 0, linkedShowCount: 0, activeSourceCount: 3, failedFeedCount: 1, errors: ['failed'],
+    fetchedCount: 2, insertedCount: 1, updatedCount: 0, linkedShowCount: 1, activeSourceCount: 3, failedFeedCount: 1, errors: ['failed'],
   })
   assert.equal(pool.articles.size, 1)
-  assert.deepEqual([...pool.links].sort(), ['1:10', '1:11'])
-  const actorQuery = pool.calls.find(({ sql }) => sql.includes('SELECT DISTINCT cast_members.id'))?.sql
-  assert.match(actorQuery, /movie_cast\.credit_type = 'actor'/)
-  assert.match(actorQuery, /tv_show_credits\.credit_type = 'actor'/)
+  assert.deepEqual([...pool.links], ['show:1:30'])
+  assert.equal(pool.calls.some(({ sql }) => /(?:INSERT INTO|FROM) news_article_(actors|movies)/.test(sql)), false)
 })
 
 test('news import loads enabled RSS sources from the registry and skips all-disabled sources', async () => {
@@ -118,7 +106,7 @@ test('news import loads enabled RSS sources from the registry and skips all-disa
     return baseQuery(sql, params)
   }
   const inactive = await importEntertainmentNews(pool, { fetchImpl: async () => { throw new Error('A disabled source must not be requested') } })
-  assert.deepEqual(inactive, { fetchedCount: 0, insertedCount: 0, updatedCount: 0, linkedActorCount: 0, linkedMovieCount: 0, linkedShowCount: 0, activeSourceCount: 0, failedFeedCount: 0, errors: [] })
+  assert.deepEqual(inactive, { fetchedCount: 0, insertedCount: 0, updatedCount: 0, linkedShowCount: 0, activeSourceCount: 0, failedFeedCount: 0, errors: [] })
 })
 
 test('news import stores each feed category and keeps the first category for duplicate links', async () => {
@@ -195,31 +183,31 @@ test('RSS source admin API requires authentication and validates source updates'
   const endpoint = `http://127.0.0.1:${server.address().port}/api/admin/rss-sources/ign-movies`
   try {
     assert.equal((await fetch(endpoint, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false }) })).status, 401)
-    assert.equal((await fetch(endpoint.replace('ign-movies', 'unknown'), { method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-watchvault-username': 'ada' }, body: JSON.stringify({ enabled: false }) })).status, 404)
-    assert.equal((await fetch(endpoint, { method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-watchvault-username': 'ada' }, body: JSON.stringify({ enabled: 'false' }) })).status, 400)
-    const response = await fetch(endpoint, { method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-watchvault-username': 'ada' }, body: JSON.stringify({ enabled: false }) })
+    assert.equal((await fetch(endpoint.replace('ign-movies', 'unknown'), { method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: sessionCookieFor('florind') }, body: JSON.stringify({ enabled: false }) })).status, 404)
+    assert.equal((await fetch(endpoint, { method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: sessionCookieFor('florind') }, body: JSON.stringify({ enabled: 'false' }) })).status, 400)
+    const response = await fetch(endpoint, { method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: sessionCookieFor('florind') }, body: JSON.stringify({ enabled: false }) })
     assert.deepEqual(await response.json(), { key: 'ign-movies', name: 'IGN Movies', url: 'https://feeds.feedburner.com/ign/movies-articles', category: 'movies', enabled: false, updatedAt: '2026-09-15T10:00:00.000Z' })
   } finally {
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
   }
 })
 
-test('news import links an exact title category to both movies and shows', async () => {
+test('news import links exact show categories only', async () => {
   const pool = createPool()
   const feed = '<rss><channel><item><title>Story</title><link>https://example.test/story</link><category>Shared Title</category></item></channel></rss>'
   const result = await importEntertainmentNews(pool, { feeds: ['one'], fetchImpl: async () => response(feed) })
-  assert.deepEqual({ linkedActorCount: result.linkedActorCount, linkedMovieCount: result.linkedMovieCount, linkedShowCount: result.linkedShowCount }, { linkedActorCount: 0, linkedMovieCount: 1, linkedShowCount: 1 })
-  assert.equal(pool.links.has('movie:1:20'), true)
+  assert.equal(result.linkedShowCount, 1)
   assert.equal(pool.links.has('show:1:30'), true)
+  assert.equal([...pool.links].some((key) => key.startsWith('movie:')), false)
 })
 
-test('news import preserves deduplicated actor associations when an article is refreshed', async () => {
+test('news import preserves deduplicated show associations when an article is refreshed', async () => {
   const pool = createPool()
-  const feed = '<rss><channel><item><title>Story</title><link>https://example.test/story</link><category>Ada Actor</category></item></channel></rss>'
+  const feed = '<rss><channel><item><title>Story</title><link>https://example.test/story</link><category>Shared Title</category></item></channel></rss>'
   const first = await importEntertainmentNews(pool, { feeds: ['one'], fetchImpl: async () => response(feed) })
   const second = await importEntertainmentNews(pool, { feeds: ['one'], fetchImpl: async () => response(feed) })
-  assert.equal(first.linkedActorCount, 1)
-  assert.deepEqual({ insertedCount: second.insertedCount, updatedCount: second.updatedCount, linkedActorCount: second.linkedActorCount }, { insertedCount: 0, updatedCount: 1, linkedActorCount: 0 })
+  assert.equal(first.linkedShowCount, 1)
+  assert.deepEqual({ insertedCount: second.insertedCount, updatedCount: second.updatedCount, linkedShowCount: second.linkedShowCount }, { insertedCount: 0, updatedCount: 1, linkedShowCount: 0 })
 })
 
 test('entertainment news is registered as an hourly admin job', () => {
@@ -264,7 +252,7 @@ test('news articles are ordered newest-first with a stable fallback and paginati
   assert.deepEqual(executedParams, [21, 42])
 })
 
-test('news article queries apply actor and title filters as an intersection', async () => {
+test('news article queries ignore the removed TV show filter but still include show labels', async () => {
   let executedSql = ''
   let executedParams = []
   await listNewsArticles({
@@ -273,11 +261,20 @@ test('news article queries apply actor and title filters as an intersection', as
       executedParams = params
       return { rows: [] }
     },
-  }, { actorId: 7, movieId: 8, limit: 21, page: 2 })
-  assert.match(executedSql, /news_article_actors filter_actor_link/)
-  assert.match(executedSql, /news_article_movies filter_movie_link/)
-  assert.match(executedSql, /WHERE .* AND /s)
-  assert.deepEqual(executedParams, [7, 8, 21, 21])
+  }, { showId: 9, limit: 21, page: 2 })
+  assert.doesNotMatch(executedSql, /filter_show_link/)
+  assert.match(executedSql, /news_article_tv_shows JOIN tv_shows/)
+  assert.doesNotMatch(executedSql, /news_article_(actors|movies)/)
+  assert.deepEqual(executedParams, [21, 21])
+})
+
+test('news table setup drops obsolete actor/movie associations and retains show associations', async () => {
+  const queries = []
+  await ensureNewsTables({ async query(sql) { queries.push(sql); return { rows: [] } } })
+  assert.ok(queries.some((sql) => /DROP TABLE IF EXISTS news_article_actors, news_article_movies/.test(sql)))
+  assert.ok(queries.some((sql) => /CREATE TABLE IF NOT EXISTS news_article_tv_shows/.test(sql)))
+  assert.ok(queries.some((sql) => /news_article_tv_shows_show_idx/.test(sql)))
+  assert.ok(queries.every((sql) => !/CREATE TABLE IF NOT EXISTS news_article_(actors|movies)/.test(sql)))
 })
 
 test('news article category filter combines with the saved feed', async () => {
@@ -310,7 +307,7 @@ test('public news API maps stored rows and exposes batches for infinite scrollin
       if (!sql.includes('FROM news_articles') || !sql.includes('ORDER BY COALESCE')) return { rows: [], rowCount: 0 }
       newsQueries.push(params)
       if (params[1] === 0) {
-        return { rows: [{ id: '11', title: 'First &#8216;story&#8217;', link: 'https://variety.com/first', published_at: '2026-09-14T08:00:00.000Z', photo_url: 'https://images.test/first.jpg', category: 'movies', actors: [{ id: 7, name: 'Ada Actor' }], movies: [{ id: 8, name: 'Example Movie' }], shows: [{ id: 9, name: 'Example Show' }] }] }
+        return { rows: [{ id: '11', title: 'First &#8216;story&#8217;', link: 'https://variety.com/first', published_at: '2026-09-14T08:00:00.000Z', photo_url: 'https://images.test/first.jpg', category: 'movies', shows: [{ id: 9, name: 'Example Show' }] }] }
       }
       if (params[1] === 3) {
         return { rows: [
@@ -333,10 +330,12 @@ test('public news API maps stored rows and exposes batches for infinite scrollin
     assert.equal(firstResponse.status, 200)
     assert.deepEqual(firstPayload, {
       count: 1,
-      articles: [{ id: 11, title: 'First ‘story’', link: 'https://variety.com/first', publishedAt: '2026-09-14T08:00:00.000Z', photoUrl: 'https://images.test/first.jpg', category: 'movies', likeCount: 0, likedByCurrentUser: false, savedByCurrentUser: false, actors: [{ id: 7, name: 'Ada Actor' }], movies: [{ id: 8, name: 'Example Movie' }], shows: [{ id: 9, name: 'Example Show' }] }],
+      articles: [{ id: 11, title: 'First ‘story’', link: 'https://variety.com/first', publishedAt: '2026-09-14T08:00:00.000Z', photoUrl: 'https://images.test/first.jpg', category: 'movies', likeCount: 0, likedByCurrentUser: false, savedByCurrentUser: false, shows: [{ id: 9, name: 'Example Show' }] }],
       pagination: { page: 1, pageSize: 20, hasNextPage: false, hasPreviousPage: false },
     })
     assert.equal((await fetch(`${baseUrl}?category=unknown`)).status, 400)
+    const legacyFilters = await fetch(`${baseUrl}?actor=not-an-id&movie=not-an-id&show=not-an-id`)
+    assert.equal(legacyFilters.status, 200)
 
     const nextPayload = await fetch(`${baseUrl}?page=2&limit=2`).then((response) => response.json())
     assert.equal(nextPayload.count, 2)
@@ -345,7 +344,7 @@ test('public news API maps stored rows and exposes batches for infinite scrollin
 
     const emptyPayload = await fetch(`${baseUrl}?page=3&limit=2`).then((response) => response.json())
     assert.deepEqual(emptyPayload, { count: 0, articles: [], pagination: { page: 3, pageSize: 2, hasNextPage: false, hasPreviousPage: true } })
-    assert.deepEqual(newsQueries, [[21, 0], [3, 3], [3, 6]])
+    assert.deepEqual(newsQueries, [[21, 0], [21, 0], [3, 3], [3, 6]])
   } finally {
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
   }
@@ -418,11 +417,11 @@ test('saved news queries constrain to the viewer and order by save time', async 
       executedParams = params
       return { rows: [] }
     },
-  }, { userId: 42, savedOnly: true, actorId: 7, limit: 3, page: 2 })
+  }, { userId: 42, savedOnly: true, limit: 3, page: 2 })
   assert.match(executedSql, /news_article_saves saved_filter/)
   assert.match(executedSql, /SELECT saved_order\.created_at FROM news_article_saves saved_order/)
-  assert.match(executedSql, /news_article_actors filter_actor_link/)
-  assert.deepEqual(executedParams, [7, 42, 3, 3])
+  assert.doesNotMatch(executedSql, /filter_show_link/)
+  assert.deepEqual(executedParams, [42, 3, 3])
 })
 
 test('news article queries include totals and the authenticated viewer like state', async () => {
@@ -458,7 +457,7 @@ test('news like API requires a user and reports the authenticated user state', a
         return { rows: [], rowCount: 1 }
       }
       if (sql.includes('FROM news_articles') && sql.includes('ORDER BY COALESCE')) {
-        return { rows: [{ id: '11', title: 'Liked story', link: 'https://example.test/liked', published_at: null, photo_url: null, like_count: likes.size, liked_by_current_user: likes.has('11:7'), actors: [], movies: [], shows: [] }] }
+        return { rows: [{ id: '11', title: 'Liked story', link: 'https://example.test/liked', published_at: null, photo_url: null, like_count: likes.size, liked_by_current_user: likes.has('11:7'), shows: [] }] }
       }
       return { rows: [], rowCount: 0 }
     },
@@ -470,12 +469,12 @@ test('news like API requires a user and reports the authenticated user state', a
 
   try {
     assert.equal((await fetch(baseUrl, { method: 'POST' })).status, 401)
-    assert.deepEqual(await fetch(baseUrl, { method: 'POST', headers: { 'x-watchvault-username': 'ada' } }).then((response) => response.json()), { likeCount: 1, likedByCurrentUser: true })
-    assert.deepEqual(await fetch(baseUrl, { method: 'POST', headers: { 'x-watchvault-username': 'ada' } }).then((response) => response.json()), { likeCount: 1, likedByCurrentUser: true })
-    const feed = await fetch(`${baseUrl.replace('/11/like', '')}`, { headers: { 'x-watchvault-username': 'ada' } }).then((response) => response.json())
+    assert.deepEqual(await fetch(baseUrl, { method: 'POST', headers: { Cookie: sessionCookieFor('ada') } }).then((response) => response.json()), { likeCount: 1, likedByCurrentUser: true })
+    assert.deepEqual(await fetch(baseUrl, { method: 'POST', headers: { Cookie: sessionCookieFor('ada') } }).then((response) => response.json()), { likeCount: 1, likedByCurrentUser: true })
+    const feed = await fetch(`${baseUrl.replace('/11/like', '')}`, { headers: { Cookie: sessionCookieFor('ada') } }).then((response) => response.json())
     assert.deepEqual(feed.articles.map(({ likeCount, likedByCurrentUser }) => ({ likeCount, likedByCurrentUser })), [{ likeCount: 1, likedByCurrentUser: true }])
-    assert.deepEqual(await fetch(baseUrl, { method: 'DELETE', headers: { 'x-watchvault-username': 'ada' } }).then((response) => response.json()), { likeCount: 0, likedByCurrentUser: false })
-    assert.equal((await fetch(`${baseUrl.replace('/11/', '/99/')}`, { method: 'POST', headers: { 'x-watchvault-username': 'ada' } })).status, 404)
+    assert.deepEqual(await fetch(baseUrl, { method: 'DELETE', headers: { Cookie: sessionCookieFor('ada') } }).then((response) => response.json()), { likeCount: 0, likedByCurrentUser: false })
+    assert.equal((await fetch(`${baseUrl.replace('/11/', '/99/')}`, { method: 'POST', headers: { Cookie: sessionCookieFor('ada') } })).status, 404)
   } finally {
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
   }
@@ -498,7 +497,7 @@ test('news save API persists the viewer state and serves the saved feed', async 
       }
       if (sql.includes('FROM news_articles') && sql.includes('ORDER BY')) {
         const isSavedFeed = sql.includes('news_article_saves saved_filter')
-        return { rows: !isSavedFeed || saves.has('11:7') ? [{ id: '11', title: 'Saved story', link: 'https://example.test/saved', published_at: null, photo_url: null, like_count: 0, liked_by_current_user: false, saved_by_current_user: saves.has('11:7'), actors: [], movies: [], shows: [] }] : [] }
+        return { rows: !isSavedFeed || saves.has('11:7') ? [{ id: '11', title: 'Saved story', link: 'https://example.test/saved', published_at: null, photo_url: null, like_count: 0, liked_by_current_user: false, saved_by_current_user: saves.has('11:7'), shows: [] }] : [] }
       }
       return { rows: [], rowCount: 0 }
     },
@@ -507,7 +506,7 @@ test('news save API persists the viewer state and serves the saved feed', async 
   const server = app.listen(0, '127.0.0.1')
   await new Promise((resolve) => server.once('listening', resolve))
   const baseUrl = `http://127.0.0.1:${server.address().port}/api/news/11/save`
-  const headers = { 'x-watchvault-username': 'ada' }
+  const headers = { Cookie: sessionCookieFor('ada') }
   try {
     assert.equal((await fetch(baseUrl, { method: 'POST' })).status, 401)
     assert.deepEqual(await fetch(baseUrl, { method: 'POST', headers }).then((response) => response.json()), { savedByCurrentUser: true })

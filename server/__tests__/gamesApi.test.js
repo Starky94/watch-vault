@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createApp } from '../app.js'
+import { createApp, sessionCookieFor } from './sessionTestHelpers.js'
 import { encryptFilelistValue } from '../filelist.js'
 
 async function closeServer(server) {
@@ -193,7 +193,7 @@ test('GET /api/games/played requires authentication and returns the newest playe
     const address = server.address()
     const unauthenticated = await fetch(`http://127.0.0.1:${address.port}/api/games/played`)
     assert.equal(unauthenticated.status, 401)
-    const response = await fetch(`http://127.0.0.1:${address.port}/api/games/played`, { headers: { 'x-watchvault-username': 'florind' } })
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/games/played`, { headers: { Cookie: sessionCookieFor('florind') } })
     assert.equal(response.status, 200)
     assert.deepEqual(await response.json(), {
       count: 2,
@@ -219,7 +219,7 @@ test('GET /api/games/activity returns persisted play, tracker, and completion me
     const address = server.address()
     const unauthenticated = await fetch(`http://127.0.0.1:${address.port}/api/games/activity`)
     assert.equal(unauthenticated.status, 401)
-    const response = await fetch(`http://127.0.0.1:${address.port}/api/games/activity`, { headers: { 'x-watchvault-username': 'florind' } })
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/games/activity`, { headers: { Cookie: sessionCookieFor('florind') } })
     assert.equal(response.status, 200)
     assert.deepEqual(await response.json(), { gamesPlayed: 4, playtimeMinutes: 755, lastCompletedAt: '2026-08-25T10:00:00.000Z' })
   } finally { await closeServer(server) }

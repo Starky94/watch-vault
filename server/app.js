@@ -1,4 +1,5 @@
 import express from 'express'
+import crypto from 'node:crypto'
 import { loadConfig } from './config.js'
 import { NEWS_CATEGORIES } from '../shared/newsCategories.js'
 import {
@@ -32,16 +33,23 @@ import {
   getAchievementProgressDetailsForUser,
   getBookAchievementsForUser,
   findUserByCredentials,
-  findUserByUsername,
+  ensureUserRoles,
+  ensureUserSessionsTable,
+  createUserSession,
+  findUserBySession,
+  deleteUserSession,
   ensureSiteThemePreferencesTable,
+  ensureSeasonalThemeSchedulesTable,
   ensureAdminJobExecutionsTable,
   ensureRssSourcesTable,
   getActiveSiteTheme,
+  getSeasonalThemesWithSavedSchedules,
   getAdminJobLastExecutions,
   listRssSources,
   recordAdminJobExecution,
   updateRssSourceEnabled,
   saveActiveSiteTheme,
+  saveSeasonalThemeSchedule,
   ensureUserSectionPreferencesTable,
   ensureUserNewsPreferencesTable,
   getUserEnabledSections,
@@ -114,7 +122,6 @@ import {
   listGenres,
   listMovieSummariesByTmdbIds,
   listNewsArticles,
-  listNewsFilterOptions,
   removeNewsArticleLikeForUser,
   removeNewsArticleSaveForUser,
   searchActors,
@@ -189,7 +196,7 @@ import { normalizeBook, sanitizeBookDescription } from './bookImportService.js'
 import { fetchBookById, fetchRelatedBooksByCategory, searchBooksByTitle } from './googleBooksClient.js'
 import { buildFilelistSearchUrl, buildFilelistTvEpisodeQuery, decryptFilelistValue, encryptFilelistValue, mapFilelistResults } from './filelist.js'
 import { fetchIgdbAccessToken, igdbRequest } from './igdbClient.js'
-import { getSeasonalTheme, isAvailableTheme } from '../shared/themes.js'
+import { getSeasonalTheme, isAvailableTheme, parseSeasonalMonthDay, seasonalThemes, validateScheduledThemes } from '../shared/themes.js'
 import { entertainmentNewsSourceKeys, newsCategoryKeys } from './rssSources.js'
 
 const bookReadingFormats = new Set(['physical', 'ebook', 'audiobook'])
@@ -246,6 +253,11 @@ export async function createApp(pool, options = {}) {
     hydrateGame = hydrateGameByIgdbId,
     hydrateTvShow = hydrateTvShowByTmdbId,
     fetchImpl = fetch,
+    persistSession = createUserSession,
+    initializeAuthSchema = async () => {
+      await ensureUserRoles(pool)
+      await ensureUserSessionsTable(pool)
+    },
     loadRuntimeConfig = () =>
       loadConfig({
         requireDatabase: false,
@@ -314,6 +326,7 @@ export async function createApp(pool, options = {}) {
   }
 
   await ensureMoviesTable(pool)
+  await initializeAuthSchema()
   await ensureNewsTables(pool)
   await ensureMovieKeywordTables(pool)
   await ensureBooksTable(pool)
@@ -321,13 +334,24 @@ export async function createApp(pool, options = {}) {
   await ensureTvDetailTables(pool)
   await ensureAchievementTables(pool)
   await ensureSiteThemePreferencesTable(pool)
+  await ensureSeasonalThemeSchedulesTable(pool)
   await ensureAdminJobExecutionsTable(pool)
   await ensureRssSourcesTable(pool)
   await ensureUserSectionPreferencesTable(pool)
   await ensureUserNewsPreferencesTable(pool)
 
   const app = express()
+  app.locals.resolveSession = options.resolveSession ?? findUserBySession
+  app.set('trust proxy', 1)
   app.use(express.json())
+  app.use('/api/admin', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      if (user.role !== 'admin') return response.status(403).json({ error: 'Admin access required' })
+      next()
+    } catch (error) { next(error) }
+  })
 
   app.get('/api/health', async (_request, response) => {
     response.json({ ok: true })
@@ -664,12 +688,34 @@ export async function createApp(pool, options = {}) {
       return
     }
 
+    const token = crypto.randomBytes(32).toString('base64url')
+    await persistSession(pool, { userId: user.id, tokenHash: hashSessionToken(token), expiresAt: new Date(Date.now() + sessionDurationMs) })
+    response.cookie(sessionCookieName, token, sessionCookieOptions(request))
     response.json({
       user: {
         username: user.username,
         fullName: user.full_name,
+        role: user.role,
       },
     })
+  })
+
+  app.get('/api/auth/me', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      response.json({ user: { username: user.username, fullName: user.full_name, role: user.role } })
+    } catch (error) { next(error) }
+  })
+
+  app.post('/api/auth/logout', async (request, response, next) => {
+    try {
+      const token = readSessionToken(request)
+      if (token) await deleteUserSession(pool, hashSessionToken(token))
+      const { maxAge: _maxAge, ...clearOptions } = sessionCookieOptions(request)
+      response.clearCookie(sessionCookieName, clearOptions)
+      response.status(204).end()
+    } catch (error) { next(error) }
   })
 
   app.post('/api/auth/change-password', async (request, response, next) => {
@@ -1718,12 +1764,13 @@ export async function createApp(pool, options = {}) {
       await ensureFilelistTables(pool)
       await ensureIgdbCredentialsTable(pool)
       await ensureRssSourcesTable(pool)
-      const [credential, enabledSections, igdbCredential, lastExecutions, rssSources] = await Promise.all([
+      const [credential, enabledSections, igdbCredential, lastExecutions, rssSources, scheduledThemes] = await Promise.all([
         getFilelistCredentialStatus(pool, user.id),
         getUserEnabledSections(pool, user.id),
         getIgdbCredentialStatus(pool),
         getAdminJobLastExecutions(pool, jobs.map((job) => job.key)),
         listRssSources(pool),
+        getSeasonalThemesWithSavedSchedules(pool),
       ])
       response.json({
         crons: listAdminJobs(jobs, lastExecutions),
@@ -1739,8 +1786,32 @@ export async function createApp(pool, options = {}) {
         filelist: { configured: Boolean(credential), updatedAt: credential?.updated_at ?? null },
         igdb: { configured: Boolean(igdbCredential), updatedAt: igdbCredential?.updated_at ?? null },
         rssSources: rssSources.map((source) => ({ key: source.source_key, name: source.name, url: source.url, category: source.category, enabled: Boolean(source.enabled), updatedAt: source.updated_at })),
+        themeSchedules: scheduledThemes.map((theme) => ({ key: theme.key, startsOn: theme.schedule.startsOn, endsOn: theme.schedule.endsOn })),
         sections: { enabled: enabledSections },
       })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.put('/api/admin/seasonal-themes/:themeKey/schedule', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const theme = seasonalThemes.find(({ key }) => key === request.params.themeKey)
+      if (!theme) return response.status(404).json({ error: `Unknown seasonal theme: ${request.params.themeKey}` })
+      const startsOn = request.body?.startsOn
+      const endsOn = request.body?.endsOn
+      try {
+        parseSeasonalMonthDay(startsOn)
+        parseSeasonalMonthDay(endsOn)
+        const currentThemes = await getSeasonalThemesWithSavedSchedules(pool)
+        validateScheduledThemes(currentThemes.map((item) => item.key === theme.key ? { ...item, schedule: { startsOn, endsOn } } : item))
+      } catch (error) {
+        return response.status(400).json({ error: error instanceof Error ? error.message : 'The seasonal theme dates are invalid.' })
+      }
+      const saved = await saveSeasonalThemeSchedule(pool, { themeKey: theme.key, startsOn, endsOn, updatedByUserId: user.id })
+      response.json({ key: saved.theme_key, startsOn: saved.starts_on, endsOn: saved.ends_on })
     } catch (error) {
       next(error)
     }
@@ -1785,8 +1856,6 @@ export async function createApp(pool, options = {}) {
           likeCount: Number(article.like_count) || 0,
           likedByCurrentUser: Boolean(article.liked_by_current_user),
           savedByCurrentUser: Boolean(article.saved_by_current_user),
-          actors: Array.isArray(article.actors) ? article.actors.map((actor) => ({ id: Number(actor.id), name: actor.name })) : [],
-          movies: Array.isArray(article.movies) ? article.movies.map((movie) => ({ id: Number(movie.id), name: movie.name })) : [],
           shows: Array.isArray(article.shows) ? article.shows.map((show) => ({ id: Number(show.id), name: show.name })) : [],
         })),
         pagination: buildPaginationPayload(pagination, articles.length > pagination.limit),
@@ -1847,22 +1916,6 @@ export async function createApp(pool, options = {}) {
       const result = await removeNewsArticleSaveForUser(pool, { articleId, userId: user.id })
       if (result.status === 'missing_article') return response.status(404).json({ error: `Article ${articleId} was not found` })
       response.json({ savedByCurrentUser: result.savedByCurrentUser })
-    } catch (error) {
-      next(error)
-    }
-  })
-
-  app.get('/api/news/filters', async (request, response, next) => {
-    try {
-      const filters = readNewsFilters(request)
-      if (filters.error) return response.status(400).json({ error: filters.error })
-      const query = typeof request.query.q === 'string' ? request.query.q.trim().slice(0, 120) : ''
-      const options = await listNewsFilterOptions(pool, { query, ...filters })
-      response.json({
-        actors: options.actors.map((actor) => ({ id: Number(actor.id), name: actor.name })),
-        titles: options.titles.map((title) => ({ kind: title.kind, id: Number(title.id), name: title.name })),
-        selected: options.selected,
-      })
     } catch (error) {
       next(error)
     }
@@ -3496,21 +3549,9 @@ function readPaginationQuery(request, { defaultLimit = 30 } = {}) {
 }
 
 function readNewsFilters(request) {
-  const parse = (key) => {
-    const value = request.query[key]
-    if (value === undefined || value === '') return null
-    if (typeof value !== 'string' || !/^\d+$/.test(value)) return Number.NaN
-    const id = Number(value)
-    return Number.isSafeInteger(id) && id > 0 ? id : Number.NaN
-  }
-  const actorId = parse('actor')
-  const movieId = parse('movie')
-  const showId = parse('show')
   const category = request.query.category === undefined || request.query.category === '' ? null : request.query.category
   if (category !== null && (typeof category !== 'string' || !newsCategoryKeys.has(category))) return { error: 'Unknown news category' }
-  if ([actorId, movieId, showId].some(Number.isNaN)) return { error: 'News filters must be positive integer IDs' }
-  if (movieId && showId) return { error: 'Choose either a movie or a show filter' }
-  return { actorId, movieId, showId, category }
+  return { category }
 }
 
 function decodeHtmlEntities(value) {
@@ -3910,14 +3951,28 @@ function resolveProfilePath(profilePath) {
 }
 
 async function getAuthenticatedUser(pool, request) {
-  const usernameHeader = request.get('x-watchvault-username')
-  const username = typeof usernameHeader === 'string' ? usernameHeader.trim() : ''
+  if (Object.hasOwn(request, 'authenticatedUser')) return request.authenticatedUser
+  const token = readSessionToken(request)
+  request.authenticatedUser = token ? await request.app.locals.resolveSession(pool, hashSessionToken(token)) : null
+  return request.authenticatedUser
+}
 
-  if (!username) {
-    return null
-  }
+const sessionCookieName = 'watchvault_session'
+const sessionDurationMs = 30 * 24 * 60 * 60 * 1000
 
-  return findUserByUsername(pool, username)
+function hashSessionToken(token) {
+  return crypto.createHash('sha256').update(token).digest('hex')
+}
+
+function readSessionToken(request) {
+  const cookie = request.get('cookie')?.split(';').map((part) => part.trim()).find((part) => part.startsWith(`${sessionCookieName}=`))
+  if (!cookie) return null
+  const token = cookie.slice(sessionCookieName.length + 1)
+  return /^[A-Za-z0-9_-]{43}$/.test(token) ? token : null
+}
+
+function sessionCookieOptions(request) {
+  return { httpOnly: true, sameSite: 'strict', secure: request.secure, path: '/api', maxAge: sessionDurationMs }
 }
 
 function mapWatchlistMovie(movie) {

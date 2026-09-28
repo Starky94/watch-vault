@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createApp } from '../app.js'
+import { createApp, sessionCookieFor } from './sessionTestHelpers.js'
 import { buildWatchTogetherRelationshipSummary, buildWatchTogetherStats, calculateCurrentWatchTogetherStreak, ensureWatchTogetherTables, evaluateWatchTogetherAchievementsForUser, getWatchTogetherAchievementProgressDetailsForUser, getWatchTogetherAchievementsForUser } from '../database.js'
 import { ACHIEVEMENTS } from '../achievements.js'
 import { WATCH_TOGETHER_ACHIEVEMENTS, WATCH_TOGETHER_AUTOMATIC_GENRE_RULES } from '../watchTogetherAchievements.js'
@@ -180,7 +180,7 @@ test('Watch Together achievement progress API returns mapped shared contributors
   }
   await routeLayer.route.stack[0].handle({
     params: { achievementId: 'watch-together-better-together' },
-    get(name) { return name.toLowerCase() === 'x-watchvault-username' ? 'florind' : undefined },
+    app, get(name) { return name.toLowerCase() === 'cookie' ? sessionCookieFor('florind') : undefined },
   }, response, (error) => { throw error })
   assert.equal(response.statusCode, 200)
   assert.equal(response.payload.achievement.id, 'watch-together-better-together')

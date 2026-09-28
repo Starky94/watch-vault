@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createApp } from '../app.js'
+import { createApp, sessionCookieFor } from './sessionTestHelpers.js'
 import { deleteExpiredUnretainedNewsArticles } from '../database.js'
 import { nextNewsCleanupRunAt, runNewsCleanup } from '../newsCleanupService.js'
 
@@ -8,7 +8,7 @@ function date(value) {
   return new Date(value)
 }
 
-test('news cleanup deletes only expired, unsaved, unmapped articles using the publication date', async () => {
+test('news cleanup deletes only expired, unsaved, unlinked articles using the publication date', async () => {
   const now = date('2026-09-15T12:00:00.000Z')
   const articles = [
     { id: 1, publishedAt: '2026-09-08T11:59:59.999Z', saved: false, mapped: false },
@@ -37,8 +37,7 @@ test('news cleanup deletes only expired, unsaved, unmapped articles using the pu
   assert.match(executedSql, /published_at IS NOT NULL/)
   assert.match(executedSql, /published_at < \$1/)
   assert.match(executedSql, /NOT EXISTS[\s\S]*news_article_saves/)
-  assert.match(executedSql, /NOT EXISTS[\s\S]*news_article_actors/)
-  assert.match(executedSql, /NOT EXISTS[\s\S]*news_article_movies/)
+  assert.doesNotMatch(executedSql, /news_article_(actors|movies)/)
   assert.match(executedSql, /NOT EXISTS[\s\S]*news_article_tv_shows/)
 })
 
@@ -93,7 +92,7 @@ test('authenticated Admin can manually run the news cleanup job', async () => {
     const baseUrl = `http://127.0.0.1:${server.address().port}`
     const response = await fetch(`${baseUrl}/api/admin/jobs/news-cleanup/run`, {
       method: 'POST',
-      headers: { 'x-watchvault-username': 'florin' },
+      headers: { Cookie: sessionCookieFor('florind') },
     })
     assert.equal(response.status, 200)
     assert.deepEqual(await response.json(), {

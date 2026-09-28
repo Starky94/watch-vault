@@ -1,20 +1,29 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createApp } from '../app.js'
+import { createApp, sessionCookieFor } from './sessionTestHelpers.js'
+import { getSeasonalThemesWithSavedSchedules } from '../database.js'
 import { runThemeScheduler } from '../themeScheduler.js'
-import { defaultThemeKey, resolveScheduledTheme, validateScheduledThemes } from '../../shared/themes.js'
+import { defaultThemeKey, resolveScheduledTheme, seasonalThemes, validateScheduledThemes } from '../../shared/themes.js'
 
 function date(value) {
   return new Date(value)
 }
 
-function createThemePool(initialTheme = defaultThemeKey) {
+function createThemePool(initialTheme = defaultThemeKey, initialSchedules = []) {
   let activeTheme = initialTheme
   const calls = []
+  const schedules = new Map(initialSchedules)
   return {
     calls,
     async query(sql, params = []) {
       calls.push({ sql, params })
+      if (sql.includes('SELECT theme_key, starts_on, ends_on FROM seasonal_theme_schedules')) {
+        return { rows: [...schedules].map(([theme_key, schedule]) => ({ theme_key, starts_on: schedule.startsOn, ends_on: schedule.endsOn })) }
+      }
+      if (sql.includes('INSERT INTO seasonal_theme_schedules')) {
+        schedules.set(params[0], { startsOn: params[1], endsOn: params[2] })
+        return { rows: [{ theme_key: params[0], starts_on: params[1], ends_on: params[2] }] }
+      }
       if (sql.includes('SELECT active_theme')) return { rows: [{ active_theme: activeTheme }] }
       if (sql.includes('RETURNING active_theme')) {
         activeTheme = params[0]
@@ -50,6 +59,8 @@ test('seasonal theme resolver honors Halloween boundaries in Bucharest', () => {
 })
 
 test('available Autumn and Halloween schedules do not overlap', () => {
+  assert.ok(seasonalThemes.every((theme) => theme.schedule?.startsOn && theme.schedule?.endsOn))
+  assert.deepEqual(seasonalThemes.find(({ key }) => key === 'new-years-eve').schedule, { startsOn: '12-28', endsOn: '01-03' })
   assert.doesNotThrow(() => validateScheduledThemes())
 })
 
@@ -62,6 +73,10 @@ test('seasonal theme resolver uses the requested timezone and supports cross-yea
   assert.equal(resolveScheduledTheme({ date: date('2026-12-31T12:00:00Z'), themes: crossYearThemes }), 'new-years')
   assert.equal(resolveScheduledTheme({ date: date('2027-01-03T12:00:00Z'), themes: crossYearThemes }), 'new-years')
   assert.equal(resolveScheduledTheme({ date: date('2027-01-04T12:00:00Z'), themes: crossYearThemes }), 'default')
+  assert.throws(() => validateScheduledThemes([
+    ...crossYearThemes,
+    { key: 'january', available: true, schedule: { startsOn: '01-02', endsOn: '01-04' } },
+  ]), /overlap/i)
 })
 
 test('unavailable themes are ignored and enabled overlapping periods are rejected', () => {
@@ -92,6 +107,57 @@ test('theme scheduler persists only a required change without an activating user
   assert.deepEqual(deactivation, { activeTheme: 'default', previousTheme: 'autumn', changed: true, timeZone: 'Europe/Bucharest' })
 })
 
+test('theme scheduler uses persisted annual windows and ignores saved windows for unavailable themes', async () => {
+  const pool = createThemePool('default', [
+    ['autumn', { startsOn: '09-06', endsOn: '09-12' }],
+    ['valentines-day', { startsOn: '09-01', endsOn: '09-10' }],
+  ])
+  const beforeSavedWindow = await runThemeScheduler(pool, { now: date('2026-09-05T12:00:00Z'), timeZone: 'UTC' })
+  assert.equal(beforeSavedWindow.activeTheme, 'default')
+  const insideSavedWindow = await runThemeScheduler(pool, { now: date('2026-09-07T12:00:00Z'), timeZone: 'UTC' })
+  assert.equal(insideSavedWindow.activeTheme, 'autumn')
+})
+
+test('authenticated Admin can save seasonal windows; invalid, overlapping, and unauthenticated writes fail', async () => {
+  const pool = createThemePool()
+  const app = await createApp(pool)
+  const server = app.listen(0, '127.0.0.1')
+  await new Promise((resolve, reject) => {
+    server.once('listening', resolve)
+    server.once('error', reject)
+  })
+
+  try {
+    const baseUrl = `http://127.0.0.1:${server.address().port}`
+    const url = `${baseUrl}/api/admin/seasonal-themes/valentines-day/schedule`
+    const unauthenticated = await fetch(url, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ startsOn: '02-07', endsOn: '02-14' }),
+    })
+    assert.equal(unauthenticated.status, 401)
+
+    const invalid = await fetch(url, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: sessionCookieFor('florind') }, body: JSON.stringify({ startsOn: '02-31', endsOn: '03-02' }),
+    })
+    assert.equal(invalid.status, 400)
+
+    const overlapping = await fetch(`${baseUrl}/api/admin/seasonal-themes/autumn/schedule`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: sessionCookieFor('florind') }, body: JSON.stringify({ startsOn: '10-20', endsOn: '10-25' }),
+    })
+    assert.equal(overlapping.status, 400)
+    assert.match((await overlapping.json()).error, /overlap/i)
+
+    const saved = await fetch(url, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: sessionCookieFor('florind') }, body: JSON.stringify({ startsOn: '02-08', endsOn: '02-15' }),
+    })
+    assert.equal(saved.status, 200)
+    assert.deepEqual(await saved.json(), { key: 'valentines-day', startsOn: '02-08', endsOn: '02-15' })
+    const reloaded = await getSeasonalThemesWithSavedSchedules(pool)
+    assert.deepEqual(reloaded.find(({ key }) => key === 'valentines-day').schedule, { startsOn: '02-08', endsOn: '02-15' })
+  } finally {
+    await closeServer(server)
+  }
+})
+
 test('authenticated Admin can run the seasonal scheduler and receive the public theme result', async () => {
   const pool = createThemePool('default')
   const app = await createApp(pool, {
@@ -117,7 +183,7 @@ test('authenticated Admin can run the seasonal scheduler and receive the public 
 
     const run = await fetch(`${baseUrl}/api/admin/jobs/theme-scheduler/run`, {
       method: 'POST',
-      headers: { 'x-watchvault-username': 'florin' },
+      headers: { Cookie: sessionCookieFor('florind') },
     })
     assert.equal(run.status, 200)
     assert.deepEqual(await run.json(), {
