@@ -77,6 +77,7 @@ fi
 
 echo "Creating release archive for ${EXPECTED_REPO_NAME}..."
 tar -czf "$ARCHIVE_PATH" \
+  --no-xattrs \
   --exclude node_modules \
   --exclude dist \
   --exclude .git \
