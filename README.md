@@ -114,6 +114,13 @@ docker compose down
 - `npm run dev:stack` starts frontend and backend together outside Docker.
 - `npm test` runs the backend unit tests.
 
+## Version management
+
+- Use Node.js 24 for local development and Docker builds. The `.nvmrc` file records the local Node major; Docker base images and `package.json`'s `engines` field record the runtime requirement.
+- GitHub Dependabot checks npm dependencies, Docker images, and GitHub Actions weekly and opens pull requests for updates. Patch and minor npm updates are grouped; major updates stay separate for review.
+- Review each update pull request, then merge it after the CI checks pass. `package-lock.json` pins the exact npm dependency tree used by `npm ci`.
+- For a manual check, run `npm outdated` for direct dependencies or `npm outdated --all` for the full dependency tree. TypeScript is not currently used by this JavaScript project.
+
 ## API
 
 - `GET /api/health` returns a basic health response.

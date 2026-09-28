@@ -8163,17 +8163,17 @@ function MovieDetailPage({
   }
 
   function handlePrimaryAction() {
+    if (isWatched) {
+      openRating()
+      return
+    }
+
     if (!isInWatchlist) {
       onToggleWatchlist(movie)
       return
     }
 
-    if (!isWatched) {
-      setIsWatchServiceDialogOpen(true)
-      return
-    }
-
-    openRating()
+    setIsWatchServiceDialogOpen(true)
   }
 
   function scrollToMovieSection(sectionId) {
@@ -8194,12 +8194,12 @@ function MovieDetailPage({
   }
 
   const isTrailerLoading = trailerState.status === 'loading'
-  const primaryActionLabel = !isInWatchlist
-    ? isWatchlistUpdating ? 'Updating...' : 'Add to Watchlist'
-    : !isWatched
-      ? isWatchedUpdating ? 'Updating...' : 'Mark as Watched'
-      : communityRating.yourScore === null ? 'Rate' : 'Update Rating'
-  const isPrimaryActionDisabled = !isInWatchlist ? isWatchlistUpdating : !isWatched ? isWatchedUpdating : false
+  const primaryActionLabel = isWatched
+    ? communityRating.yourScore === null ? 'Rate' : 'Update Rating'
+    : !isInWatchlist
+      ? isWatchlistUpdating ? 'Updating...' : 'Add to Watchlist'
+      : isWatchedUpdating ? 'Updating...' : 'Mark as Watched'
+  const isPrimaryActionDisabled = isWatched ? false : !isInWatchlist ? isWatchlistUpdating : isWatchedUpdating
 
 
   return (
@@ -8262,7 +8262,7 @@ function MovieDetailPage({
               onClick={handlePrimaryAction}
               disabled={isPrimaryActionDisabled}
             >
-              {!isInWatchlist ? <PlusIcon /> : !isWatched ? <CheckIcon /> : <StarOutlineIcon />}
+              {isWatched ? <StarOutlineIcon /> : !isInWatchlist ? <PlusIcon /> : <CheckIcon />}
               <span>{primaryActionLabel}</span>
             </button>
             <button type="button" className="secondary-button movie-detail-secondary ghost desktop-only" onClick={handleOpenTrailer} disabled={isTrailerLoading}>
@@ -8314,7 +8314,7 @@ function MovieDetailPage({
       {isStickyHeaderVisible ? <div className="movie-detail-sticky-header" role="region" aria-label={`${movie.title} quick actions`}>
         <div className={`movie-detail-sticky-poster${movie.posterUrl ? ' has-image' : ''}`} style={movie.posterUrl ? { backgroundImage: `url(${movie.posterUrl})` } : undefined} />
         <div className="movie-detail-sticky-copy"><strong>{movie.title}</strong><span>{communityRatingLabel} WatchVault</span></div>
-        <button type="button" className="primary-button movie-detail-sticky-action" onClick={handlePrimaryAction} disabled={isPrimaryActionDisabled}>{!isInWatchlist ? <PlusIcon /> : !isWatched ? <CheckIcon /> : <StarOutlineIcon />}<span>{primaryActionLabel}</span></button>
+        <button type="button" className="primary-button movie-detail-sticky-action" onClick={handlePrimaryAction} disabled={isPrimaryActionDisabled}>{isWatched ? <StarOutlineIcon /> : !isInWatchlist ? <PlusIcon /> : <CheckIcon />}<span>{primaryActionLabel}</span></button>
       </div> : null}
 
       {isRatingDialogOpen ? (
