@@ -1,3 +1,4 @@
+import { recordCliError } from './errorLogs.js'
 import { loadConfig } from './config.js'
 import { createPool, ensureIgdbCredentialsTable, getIgdbCredentials } from './database.js'
 import { decryptFilelistValue } from './filelist.js'
@@ -23,4 +24,4 @@ async function run() {
   }
 }
 
-run().catch((error) => { console.error(error.message); process.exit(1) })
+run().catch(async (error) => { console.error(error.message); await recordCliError(error, 'games-recently-released'); process.exit(1) })

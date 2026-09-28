@@ -1,11 +1,13 @@
 import { loadConfig } from './config.js'
 import { createPool, ensureAdminJobExecutionsTable, recordAdminJobExecution } from './database.js'
 import { nextThemeSchedulerRunAt, runThemeScheduler } from './themeScheduler.js'
+import { recordErrorSafely, recordCliError, ensureErrorLogsTable } from './errorLogs.js'
 
 async function start() {
   const config = loadConfig({ requireDatabase: true })
   const pool = createPool(config.databaseUrl)
   await ensureAdminJobExecutionsTable(pool)
+  await ensureErrorLogsTable(pool)
   let timeout
   let stopping = false
 
@@ -25,6 +27,7 @@ async function start() {
       console.log(`Seasonal theme scheduler ${result.changed ? 'set' : 'kept'} ${result.activeTheme} (${result.timeZone}).`)
     } catch (error) {
       console.error(`Seasonal theme scheduler failed: ${error.message}`)
+      await recordErrorSafely(pool, { source: 'job', context: 'theme-scheduler', error })
     }
     if (stopping) return
     const nextRun = nextThemeSchedulerRunAt(new Date(), config.themeSchedulerTimeZone)
@@ -35,7 +38,8 @@ async function start() {
   await runAndSchedule()
 }
 
-start().catch((error) => {
+start().catch(async (error) => {
   console.error(error.message)
+  await recordCliError(error, 'theme-scheduler')
   process.exit(1)
 })

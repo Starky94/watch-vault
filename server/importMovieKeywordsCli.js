@@ -1,3 +1,4 @@
+import { recordCliError } from './errorLogs.js'
 import { readFile } from 'node:fs/promises'
 import { loadConfig } from './config.js'
 import { createPool } from './database.js'
@@ -20,7 +21,8 @@ async function run() {
   }
 }
 
-run().catch((error) => {
+run().catch(async (error) => {
   console.error(error.message)
+  await recordCliError(error, 'movie-keywords')
   process.exit(1)
 })

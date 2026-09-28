@@ -1,6 +1,7 @@
 import { loadConfig } from './config.js'
 import { createPool } from './database.js'
 import { createApp } from './app.js'
+import { recordCliError } from './errorLogs.js'
 
 async function start() {
   const config = loadConfig({
@@ -26,7 +27,8 @@ async function start() {
   process.on('SIGTERM', shutdown)
 }
 
-start().catch((error) => {
+start().catch(async (error) => {
   console.error(error.message)
+  await recordCliError(error, 'api-startup', 'api')
   process.exit(1)
 })

@@ -1,5 +1,6 @@
 import express from 'express'
 import crypto from 'node:crypto'
+import { ensureErrorLogsTable, listErrorLogs, recordErrorSafely } from './errorLogs.js'
 import { loadConfig } from './config.js'
 import { NEWS_CATEGORIES } from '../shared/newsCategories.js'
 import {
@@ -336,6 +337,7 @@ export async function createApp(pool, options = {}) {
   await ensureSiteThemePreferencesTable(pool)
   await ensureSeasonalThemeSchedulesTable(pool)
   await ensureAdminJobExecutionsTable(pool)
+  await ensureErrorLogsTable(pool)
   await ensureRssSourcesTable(pool)
   await ensureUserSectionPreferencesTable(pool)
   await ensureUserNewsPreferencesTable(pool)
@@ -1794,6 +1796,18 @@ export async function createApp(pool, options = {}) {
     }
   })
 
+  app.get('/api/admin/error-logs', async (request, response, next) => {
+    const source = request.query.source || null
+    const search = request.query.search || ''
+    const page = Number(request.query.page || 1)
+    if ((source && !['api', 'job'].includes(source)) || typeof search !== 'string' || search.length > 200 || !Number.isSafeInteger(page) || page < 1) {
+      return response.status(400).json({ error: 'Invalid error log filters' })
+    }
+    try {
+      response.json(await listErrorLogs(pool, { source, search: search.trim(), page }))
+    } catch (error) { next(error) }
+  })
+
   app.put('/api/admin/seasonal-themes/:themeKey/schedule', async (request, response, next) => {
     try {
       const user = await getAuthenticatedUser(pool, request)
@@ -2036,6 +2050,8 @@ export async function createApp(pool, options = {}) {
       return
     }
 
+    response.locals.errorJobKey = job.key
+
     try {
       let options
       if (job.source === 'theme-scheduler') {
@@ -2063,6 +2079,11 @@ export async function createApp(pool, options = {}) {
         }
       }
       const result = await job.run(pool, options)
+      if (job.source === 'rss') {
+        for (const feedError of result.errors ?? []) {
+          await recordErrorSafely(pool, { source: 'job', context: `entertainment-news: ${safeFeedPath(feedError.feed)}`, error: feedError.message })
+        }
+      }
       const lastExecutedAt = await recordAdminJobExecution(pool, job.key)
 
       response.json({
@@ -3004,7 +3025,12 @@ export async function createApp(pool, options = {}) {
     }
   })
 
-  app.use((error, _request, response, _next) => {
+  app.use(async (error, request, response, _next) => {
+    await recordErrorSafely(pool, {
+      source: response.locals.errorJobKey ? 'job' : 'api',
+      context: response.locals.errorJobKey || `${request.method} ${request.path}`,
+      error,
+    })
     response.status(500).json({
       error: error.message || 'Unexpected server error',
     })
@@ -3545,6 +3571,15 @@ function readPaginationQuery(request, { defaultLimit = 30 } = {}) {
   return {
     limit: Number.isInteger(requestedLimit) && requestedLimit > 0 ? requestedLimit : defaultLimit,
     page: Number.isInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1,
+  }
+}
+
+function safeFeedPath(value) {
+  try {
+    const url = new URL(value)
+    return `${url.host}${url.pathname}`
+  } catch {
+    return 'feed'
   }
 }
 

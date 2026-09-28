@@ -1,3 +1,4 @@
+import { recordCliError } from './errorLogs.js'
 import { loadConfig } from './config.js'
 import { createPool, ensureAdminJobExecutionsTable, recordAdminJobExecution } from './database.js'
 
@@ -15,7 +16,8 @@ async function run() {
   }
 }
 
-run().catch((error) => {
+run().catch(async (error) => {
   console.error(error.message)
+  await recordCliError(error, 'admin-job-execution')
   process.exit(1)
 })

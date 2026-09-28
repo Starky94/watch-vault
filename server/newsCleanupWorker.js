@@ -1,12 +1,14 @@
 import { loadConfig } from './config.js'
 import { createPool, ensureAdminJobExecutionsTable, ensureNewsTables, recordAdminJobExecution } from './database.js'
 import { nextNewsCleanupRunAt, runNewsCleanup } from './newsCleanupService.js'
+import { recordErrorSafely, recordCliError, ensureErrorLogsTable } from './errorLogs.js'
 
 async function start() {
   const config = loadConfig({ requireDatabase: true })
   const pool = createPool(config.databaseUrl)
   await ensureNewsTables(pool)
   await ensureAdminJobExecutionsTable(pool)
+  await ensureErrorLogsTable(pool)
   let timeout
   let stopping = false
 
@@ -29,6 +31,7 @@ async function start() {
         console.log(`News cleanup removed ${result.deletedCount} expired unlinked, unsaved article${result.deletedCount === 1 ? '' : 's'}.`)
       } catch (error) {
         console.error(`News cleanup failed: ${error.message}`)
+        await recordErrorSafely(pool, { source: 'job', context: 'news-cleanup', error })
       }
       if (!stopping) await scheduleNextRun()
     }, nextRun.getTime() - Date.now())
@@ -37,7 +40,8 @@ async function start() {
   await scheduleNextRun()
 }
 
-start().catch((error) => {
+start().catch(async (error) => {
   console.error(error.message)
+  await recordCliError(error, 'news-cleanup')
   process.exit(1)
 })

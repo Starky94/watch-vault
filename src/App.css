@@ -4582,6 +4582,66 @@
   flex: 0 0 auto;
 }
 
+.admin-error-shortcut {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 20px;
+  padding: 18px 22px;
+  border: 1px solid rgba(255, 137, 151, 0.34);
+  border-radius: 20px;
+  background: linear-gradient(110deg, rgba(99, 39, 63, 0.46), rgba(24, 27, 46, 0.95));
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.admin-error-shortcut span { display: grid; gap: 5px; }
+.admin-error-shortcut small { color: var(--text-secondary); }
+.admin-error-shortcut svg { width: 20px; height: 20px; }
+
+.admin-errors-toolbar, .admin-errors-toolbar form, .admin-errors-toolbar label, .admin-errors-pagination {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.admin-errors-toolbar { flex-wrap: wrap; margin-bottom: 24px; }
+.admin-errors-toolbar form { flex: 1 1 320px; }
+.admin-errors-toolbar form label { flex: 1; }
+.admin-errors-toolbar input, .admin-errors-toolbar select {
+  width: 100%;
+  min-height: 42px;
+  padding: 9px 12px;
+  border: 1px solid rgba(210, 186, 255, 0.26);
+  border-radius: 12px;
+  background: rgba(8, 11, 20, 0.8);
+  color: var(--text-primary);
+}
+.admin-errors-list { display: grid; gap: 12px; }
+.admin-error-entry, .admin-errors-empty {
+  padding: 20px;
+  border: 1px solid rgba(173, 137, 255, 0.2);
+  border-radius: 18px;
+  background: rgba(20, 23, 39, 0.94);
+}
+.admin-error-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 9px 16px; color: var(--text-secondary); font-size: 0.86rem; overflow-wrap: anywhere; }
+.admin-error-source { padding: 4px 9px; border-radius: 8px; background: rgba(255, 126, 144, 0.16); color: #ffb6c2; font-weight: 700; text-transform: uppercase; }
+.admin-error-source.job { background: rgba(166, 137, 255, 0.18); color: #d3c4ff; }
+.admin-error-entry p { margin: 14px 0 0; overflow-wrap: anywhere; }
+.admin-error-entry details { margin-top: 14px; color: var(--text-secondary); }
+.admin-error-entry summary { cursor: pointer; }
+.admin-error-entry pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; border-radius: 10px; background: rgba(8, 11, 20, 0.75); font-size: 0.82rem; }
+.admin-errors-count { color: var(--text-secondary); }
+.admin-errors-pagination { justify-content: center; margin-top: 22px; }
+.admin-errors-pagination button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+@media (max-width: 640px) {
+  .admin-errors-toolbar form { flex-basis: 100%; }
+  .admin-errors-toolbar > label { flex: 1; }
+}
+
 .admin-summary-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -8017,10 +8077,10 @@ html[data-theme='halloween'] ::selection {
 .tv-detail-season-controls label { position: relative; }.tv-detail-season-controls select { min-width: 130px; height: 38px; padding: 0 35px 0 12px; border: 1px solid rgba(174, 154, 236, .28); border-radius: 9px; appearance: auto; color: var(--text-primary); background: #151c30; font: inherit; font-weight: 650; }
 .tv-detail-season-controls .tv-season-watch-button { height: 38px; min-width: 0; margin-left: auto; padding: 0 13px; font-size: .82rem; }
 .tv-detail-episode-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-.tv-detail-episode-card { display: grid; grid-template-columns: 122px minmax(0, 1fr) 34px; gap: 11px; min-height: 116px; padding: 10px; border: 1px solid rgba(148, 133, 203, .19); border-radius: 11px; background: rgba(14, 19, 35, .68); }
+.tv-detail-episode-card { display: grid; grid-template-columns: 122px minmax(0, 1fr) minmax(86px, auto); gap: 11px; min-height: 116px; padding: 10px; border: 1px solid rgba(148, 133, 203, .19); border-radius: 11px; background: rgba(14, 19, 35, .68); }
 .tv-detail-episode-still { position: relative; min-height: 94px; overflow: hidden; border-radius: 7px; background: #252d42; }.tv-detail-episode-still span { position: absolute; top: 7px; left: 7px; padding: 3px 5px; border-radius: 5px; color: #f4f1fd; background: rgba(7, 11, 22, .8); font-size: .72rem; font-weight: 800; }
 .tv-detail-episode-copy { min-width: 0; }.tv-detail-episode-copy h3 { margin: 5px 0 7px; font-size: .9rem; line-height: 1.2; }.tv-detail-episode-copy p { display: -webkit-box; margin: 0; overflow: hidden; color: var(--text-secondary); font-size: .78rem; line-height: 1.4; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
-.tv-detail-episode-actions { display: flex; flex-direction: column; align-items: flex-end; justify-content: space-between; gap: 4px; color: #b8a7ef; font-size: .76rem; }.tv-detail-episode-actions .tv-episode-rate { margin-top: auto; }.tv-detail-episode-actions .tv-episode-toggle { width: 27px; height: 27px; }.tv-detail-episode-actions .tv-episode-toggle svg { width: 14px; }
+.tv-detail-episode-actions { display: flex; flex-direction: column; align-items: flex-end; justify-content: space-between; gap: 4px; color: #b8a7ef; font-size: .76rem; }.tv-detail-episode-actions .tv-session-button { max-width: 100%; min-height: 28px; padding: 4px 5px; font-size: .64rem; line-height: 1.1; text-align: center; white-space: normal; }.tv-detail-episode-actions .tv-episode-rate { margin-top: auto; }.tv-detail-episode-actions .tv-episode-toggle { width: 27px; height: 27px; }.tv-detail-episode-actions .tv-episode-toggle svg { width: 14px; }
 .tv-detail-activity, .tv-detail-cast { padding: 16px; border: 1px solid rgba(158, 140, 218, .17); border-radius: 14px; background: linear-gradient(145deg, rgba(21, 27, 47, .92), rgba(12, 17, 31, .92)); }.tv-detail-panel .section-header { margin-bottom: 14px; }.tv-detail-panel .section-header > span { color: #c485ff; font-size: .78rem; }
 .tv-detail-activity .section-header { display: flex; align-items: baseline; gap: 8px; }.tv-detail-activity .section-header span { margin-left: auto; color: #ddd8ed; font-size: .76rem; }.tv-detail-progress { height: 10px; overflow: hidden; border-radius: 999px; background: #252d45; }.tv-detail-progress span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #8f54f7, #c47cff); }.tv-detail-activity-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 14px; padding-top: 13px; border-top: 1px solid rgba(255,255,255,.1); color: #ccc6e0; font-size: .8rem; }.tv-detail-activity-footer span { display: inline-flex; align-items: center; gap: 7px; }.tv-detail-activity-footer svg { width: 18px; color: #e6dff4; }.tv-detail-activity-footer button { border: 0; padding: 0; color: #c179ff; background: transparent; font: inherit; font-size: .78rem; cursor: pointer; }
 .tv-detail-cast-list { display: flex; gap: 11px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: none; }.tv-detail-cast-list::-webkit-scrollbar { display:none; }.tv-detail-cast-card { flex: 0 0 78px; min-width: 0; padding: 0; border: 0; color: var(--text-primary); background: transparent; font: inherit; text-align: center; cursor: pointer; }.tv-detail-cast-card:disabled { cursor: default; opacity: .7; }.tv-detail-cast-avatar { width: 68px; height: 68px; margin: 0 auto 7px; border: 1px solid rgba(255,255,255,.27); border-radius: 50%; background-color: #282e40; background-position: center; background-size: cover; }.tv-detail-cast-card strong, .tv-detail-cast-card small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.tv-detail-cast-card strong { font-size: .7rem; }.tv-detail-cast-card small { margin-top: 3px; color: var(--text-secondary); font-size: .63rem; }
@@ -8028,8 +8088,8 @@ html[data-theme='halloween'] ::selection {
 .tv-detail-facts .movie-detail-fact { min-width: 0; }
 
 @media (max-width: 920px) { .tv-detail-layout { grid-template-columns: minmax(0, 1fr) 270px; }.tv-detail-hero-content { grid-template-columns: 180px minmax(0, 1fr); }.tv-detail-episode-grid { grid-template-columns: 1fr; } }
-@media (max-width: 720px) { .tv-detail-redesign { padding: 0 0 96px; }.tv-detail-hero { min-height: 0; margin: 0 -14px; border-right: 0; border-left: 0; border-radius: 0; background-position: 58% top; }.tv-detail-hero::after { background: linear-gradient(180deg, rgba(6, 9, 18, .05) 0%, rgba(6, 9, 18, .07) 28%, rgba(6, 9, 18, .92) 55%, #080d18 100%); }.tv-detail-back { margin: 18px 32px 0; height: 48px; padding: 0 18px 0 13px; border-radius: 999px; font-size: 1rem; }.tv-detail-hero-content { grid-template-columns: 142px minmax(0, 1fr); gap: 13px; align-items: end; min-height: 474px; padding: 45px 32px 20px; }.tv-detail-poster-wrap { align-self: end; }.tv-detail-poster { border-radius: 14px; }.tv-detail-main h1 { font-size: clamp(2rem, 8vw, 2.75rem); }.tv-detail-meta { gap: 7px 9px; margin-top: 9px; font-size: .84rem; }.tv-detail-meta span:not(:last-child)::after, .tv-detail-statline > span:not(:last-child)::after { margin-left: 9px; }.tv-detail-statline { gap: 7px 10px; font-size: .83rem; }.tv-detail-statline > span:nth-child(4) { display: none; }.tv-detail-summary { display: -webkit-box; grid-column: 1 / -1; max-width: none; margin-top: 17px; overflow: hidden; font-size: .9rem; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }.tv-detail-summary.expanded { display: block; }.tv-detail-more { display: block; margin: 3px 0 0 auto; font-size: .84rem; }.tv-detail-actions { grid-column: 1 / -1; display: grid; gap: 14px; margin-top: 17px; }.tv-detail-primary { width: 100%; min-height: 56px; font-size: 1.05rem; }.tv-detail-secondary-actions { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }.tv-detail-secondary-actions .secondary-button { min-width: 0; height: 52px; }.tv-detail-tabs { margin: 18px 0 20px; }.tv-detail-tabs button { padding: 0 13px; font-size: .83rem; }.tv-detail-layout { display: flex; flex-direction: column; gap: 22px; }.tv-detail-episodes, .tv-detail-side, .tv-detail-recommendations, .tv-detail-facts, .tv-detail-reviews { width: 100%; }.tv-detail-side { gap: 15px; }.tv-detail-section-heading h2, .tv-detail-panel .section-header h2 { font-size: 1.48rem; }.tv-detail-season-controls { flex-wrap: wrap; margin-bottom: 14px; }.tv-detail-season-controls .tv-season-watch-button { margin-left: auto; }.tv-detail-episode-grid { gap: 10px; }.tv-detail-episode-card { grid-template-columns: 112px minmax(0, 1fr) 30px; min-height: 126px; padding: 9px; }.tv-detail-episode-still { min-height: 108px; }.tv-detail-episode-copy h3 { margin-top: 8px; font-size: .94rem; }.tv-detail-episode-copy p { font-size: .8rem; -webkit-line-clamp: 3; }.tv-detail-episode-actions { font-size: .77rem; }.tv-detail-activity, .tv-detail-cast { padding: 15px; }.tv-detail-progress { height: 11px; }.tv-detail-cast-list { gap: 16px; }.tv-detail-cast-card { flex-basis: 86px; }.tv-detail-cast-avatar { width: 76px; height: 76px; }.tv-detail-recommendation { flex-basis: 158px; }.tv-detail-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }.tv-detail-reviews { padding: 15px; } }
-@media (max-width: 430px) { .tv-detail-back { margin-left: 18px; }.tv-detail-hero-content { grid-template-columns: 116px minmax(0, 1fr); padding-right: 18px; padding-left: 18px; }.tv-detail-main h1 { font-size: 1.9rem; }.tv-detail-meta span:last-child { display: none; }.tv-detail-statline { gap: 6px; }.tv-detail-statline > span:nth-child(3)::after { display: none; }.tv-detail-season-controls .tv-season-watch-button { width: 100%; margin-left: 0; }.tv-detail-episode-card { grid-template-columns: 96px minmax(0, 1fr) 27px; }.tv-detail-episode-still { min-height: 96px; }.tv-detail-episode-copy p { -webkit-line-clamp: 2; } }
+@media (max-width: 720px) { .tv-detail-redesign { padding: 0 0 96px; }.tv-detail-hero { min-height: 0; margin: 0 -14px; border-right: 0; border-left: 0; border-radius: 0; background-position: 58% top; }.tv-detail-hero::after { background: linear-gradient(180deg, rgba(6, 9, 18, .05) 0%, rgba(6, 9, 18, .07) 28%, rgba(6, 9, 18, .92) 55%, #080d18 100%); }.tv-detail-back { margin: 18px 32px 0; height: 48px; padding: 0 18px 0 13px; border-radius: 999px; font-size: 1rem; }.tv-detail-hero-content { grid-template-columns: 142px minmax(0, 1fr); gap: 13px; align-items: end; min-height: 474px; padding: 45px 32px 20px; }.tv-detail-poster-wrap { align-self: end; }.tv-detail-poster { border-radius: 14px; }.tv-detail-main h1 { font-size: clamp(2rem, 8vw, 2.75rem); }.tv-detail-meta { gap: 7px 9px; margin-top: 9px; font-size: .84rem; }.tv-detail-meta span:not(:last-child)::after, .tv-detail-statline > span:not(:last-child)::after { margin-left: 9px; }.tv-detail-statline { gap: 7px 10px; font-size: .83rem; }.tv-detail-statline > span:nth-child(4) { display: none; }.tv-detail-summary { display: -webkit-box; grid-column: 1 / -1; max-width: none; margin-top: 17px; overflow: hidden; font-size: .9rem; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }.tv-detail-summary.expanded { display: block; }.tv-detail-more { display: block; margin: 3px 0 0 auto; font-size: .84rem; }.tv-detail-actions { grid-column: 1 / -1; display: grid; gap: 14px; margin-top: 17px; }.tv-detail-primary { width: 100%; min-height: 56px; font-size: 1.05rem; }.tv-detail-secondary-actions { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }.tv-detail-secondary-actions .secondary-button { min-width: 0; height: 52px; }.tv-detail-tabs { margin: 18px 0 20px; }.tv-detail-tabs button { padding: 0 13px; font-size: .83rem; }.tv-detail-layout { display: flex; flex-direction: column; gap: 22px; }.tv-detail-episodes, .tv-detail-side, .tv-detail-recommendations, .tv-detail-facts, .tv-detail-reviews { width: 100%; }.tv-detail-side { gap: 15px; }.tv-detail-section-heading h2, .tv-detail-panel .section-header h2 { font-size: 1.48rem; }.tv-detail-season-controls { flex-wrap: wrap; margin-bottom: 14px; }.tv-detail-season-controls .tv-season-watch-button { margin-left: auto; }.tv-detail-episode-grid { gap: 10px; }.tv-detail-episode-card { grid-template-columns: 112px minmax(0, 1fr) minmax(82px, auto); min-height: 126px; padding: 9px; }.tv-detail-episode-still { min-height: 108px; }.tv-detail-episode-copy h3 { margin-top: 8px; font-size: .94rem; }.tv-detail-episode-copy p { font-size: .8rem; -webkit-line-clamp: 3; }.tv-detail-episode-actions { font-size: .77rem; }.tv-detail-activity, .tv-detail-cast { padding: 15px; }.tv-detail-progress { height: 11px; }.tv-detail-cast-list { gap: 16px; }.tv-detail-cast-card { flex-basis: 86px; }.tv-detail-cast-avatar { width: 76px; height: 76px; }.tv-detail-recommendation { flex-basis: 158px; }.tv-detail-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }.tv-detail-reviews { padding: 15px; } }
+@media (max-width: 430px) { .tv-detail-back { margin-left: 18px; }.tv-detail-hero-content { grid-template-columns: 116px minmax(0, 1fr); padding-right: 18px; padding-left: 18px; }.tv-detail-main h1 { font-size: 1.9rem; }.tv-detail-meta span:last-child { display: none; }.tv-detail-statline { gap: 6px; }.tv-detail-statline > span:nth-child(3)::after { display: none; }.tv-detail-season-controls .tv-season-watch-button { width: 100%; margin-left: 0; }.tv-detail-episode-card { grid-template-columns: 96px minmax(0, 1fr) minmax(78px, auto); }.tv-detail-episode-still { min-height: 96px; }.tv-detail-episode-copy p { -webkit-line-clamp: 2; } }
 
 /* Larger cover treatment for the TV detail hero. */
 .tv-detail-hero-content { grid-template-columns: 248px minmax(0, 620px); }

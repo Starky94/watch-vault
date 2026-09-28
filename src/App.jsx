@@ -74,12 +74,14 @@ const movieScreenModes = {
 const appScreens = {
   dashboard: 'dashboard',
   admin: 'admin',
+  adminErrors: 'adminErrors',
   login: 'login',
   account: 'account',
 }
 
 const routeKinds = {
   home: 'home',
+  adminErrors: 'adminErrors',
   profile: 'profile',
   stats: 'stats',
   search: 'search',
@@ -245,7 +247,7 @@ function App() {
   const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => getLocalIsoDate())
   const [calendarState, setCalendarState] = useState({ status: 'idle', events: [], upcoming: [], error: '' })
   const [moviesScreenMode, setMoviesScreenMode] = useState(movieScreenModes.overview)
-  const [currentScreen, setCurrentScreen] = useState(() => readAppRoute().kind === routeKinds.profile ? appScreens.account : appScreens.dashboard)
+  const [currentScreen, setCurrentScreen] = useState(() => readAppRoute().kind === routeKinds.profile ? appScreens.account : readAppRoute().kind === routeKinds.adminErrors ? appScreens.adminErrors : appScreens.dashboard)
   const [searchInput, setSearchInput] = useState(() => readAppRoute().query || '')
   const [searchError, setSearchError] = useState('')
   const [searchResultsState, setSearchResultsState] = useState({
@@ -548,7 +550,7 @@ function App() {
     function handlePopState() {
       const nextRoute = readAppRoute()
       setCurrentRoute(nextRoute)
-      setCurrentScreen(nextRoute.kind === routeKinds.profile ? appScreens.account : appScreens.dashboard)
+      setCurrentScreen(nextRoute.kind === routeKinds.profile ? appScreens.account : nextRoute.kind === routeKinds.adminErrors ? appScreens.adminErrors : window.history.state?.screen === appScreens.admin ? appScreens.admin : appScreens.dashboard)
       setActiveView(
         nextRoute.kind === routeKinds.stats
           ? primaryViews.stats
@@ -676,8 +678,15 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (currentScreen === appScreens.admin && user?.role !== 'admin') setCurrentScreen(appScreens.dashboard)
-  }, [currentScreen, user])
+    if (sessionStatus !== 'ready') return
+    if ((currentScreen === appScreens.admin || currentScreen === appScreens.adminErrors) && user?.role !== 'admin') {
+      if (currentRoute.kind === routeKinds.adminErrors) {
+        window.history.replaceState({}, '', '/')
+        setCurrentRoute({ kind: routeKinds.home })
+      }
+      setCurrentScreen(appScreens.dashboard)
+    }
+  }, [currentScreen, currentRoute.kind, sessionStatus, user])
 
   useEffect(() => {
     if (!user) {
@@ -767,11 +776,19 @@ function App() {
 
   function handleOpenAdmin() {
     if (user?.role !== 'admin') return
-    if (currentRoute.kind === routeKinds.profile) {
+    if (currentRoute.kind === routeKinds.profile || currentRoute.kind === routeKinds.adminErrors) {
       window.history.pushState({}, '', '/')
       setCurrentRoute({ kind: routeKinds.home })
     }
     setCurrentScreen(appScreens.admin)
+  }
+
+  function handleOpenErrorLogs() {
+    if (user?.role !== 'admin') return
+    window.history.replaceState({ ...window.history.state, screen: appScreens.admin }, '', window.location.href)
+    window.history.pushState({}, '', '/admin/errors')
+    setCurrentRoute({ kind: routeKinds.adminErrors })
+    setCurrentScreen(appScreens.adminErrors)
   }
 
   function handleOpenAccount() {
@@ -2120,12 +2137,16 @@ function App() {
 
   async function handleSaveWatchTogetherSession(item, achievementIds, details = {}) {
     if (!user?.username) return false
-    const response = await fetch('/api/watch-together/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json', ...buildAuthHeaders(user) }, body: JSON.stringify({ mediaType: item.mediaType, mediaId: item.id, episodeId: item.episodeId || null, achievementIds, details }) })
-    const payload = await response.json().catch(() => ({}))
-    if (!response.ok) throw new Error(payload.error || 'Unable to save shared session details.')
-    receiveAchievementUnlocks(payload.newlyUnlockedAchievements)
-    await loadWatchTogetherAchievements(user)
-    return true
+    try {
+      const response = await fetch('/api/watch-together/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json', ...buildAuthHeaders(user) }, body: JSON.stringify({ mediaType: item.mediaType, mediaId: item.id, episodeId: item.episodeId || null, achievementIds, details }) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || 'Unable to save shared session details.')
+      receiveAchievementUnlocks(payload.newlyUnlockedAchievements)
+      await Promise.all([loadWatchTogetherForUser(user), loadWatchTogetherAchievements(user)])
+      return true
+    } catch (error) {
+      throw new Error(error instanceof Error ? error.message : 'Unable to save shared session details.')
+    }
   }
 
   async function handleChooseWatchTogetherPartner(username) {
@@ -2284,8 +2305,11 @@ function App() {
   }, [user, statsPeriod])
 
   useEffect(() => {
-    if (activeView === primaryViews.watchTogether) { loadWatchTogetherForUser(user); loadWatchTogetherAchievements(user) }
-  }, [activeView, user])
+    const isWatchTogetherSurface = activeView === primaryViews.watchTogether
+      || currentRoute.kind === routeKinds.movieDetail
+      || currentRoute.kind === routeKinds.tvDetail
+    if (isWatchTogetherSurface) { loadWatchTogetherForUser(user); loadWatchTogetherAchievements(user) }
+  }, [activeView, currentRoute.kind, user])
 
   useEffect(() => {
     if (activeView === primaryViews.watchTogether && watchTogetherTab === 'stats') loadWatchTogetherStats(user)
@@ -4049,12 +4073,12 @@ function App() {
   })
 
   return (
-    <div className={`app-shell${currentScreen === appScreens.account && user ? ' profile-shell' : ''}${currentScreen === appScreens.admin && user?.role === 'admin' ? ' admin-shell' : ''}`}>
+    <div className={`app-shell${currentScreen === appScreens.account && user ? ' profile-shell' : ''}${(currentScreen === appScreens.admin || currentScreen === appScreens.adminErrors) && user?.role === 'admin' ? ' admin-shell' : ''}`}>
       <aside className="sidebar">
         <Brand />
 
         <nav className="sidebar-nav" aria-label="Primary">
-          {(currentScreen === appScreens.admin ? adminNavItems : navItems).filter(({ view }) => isPrimaryViewEnabled(view, enabledSections)).map(({ label, icon: Icon, view }) => (
+          {(currentScreen === appScreens.admin || currentScreen === appScreens.adminErrors ? adminNavItems : navItems).filter(({ view }) => isPrimaryViewEnabled(view, enabledSections)).map(({ label, icon: Icon, view }) => (
             <button
               key={label}
               type="button"
@@ -4067,8 +4091,8 @@ function App() {
           ))}
         </nav>
 
-        {currentScreen === appScreens.admin && user?.role === 'admin' ? (
-          <button type="button" className="nav-item admin-nav-item active" aria-current="page" onClick={handleOpenAdmin}>
+        {(currentScreen === appScreens.admin || currentScreen === appScreens.adminErrors) && user?.role === 'admin' ? (
+          <button type="button" className={`nav-item admin-nav-item${currentScreen === appScreens.admin ? ' active' : ''}`} aria-current={currentScreen === appScreens.admin ? 'page' : undefined} onClick={handleOpenAdmin}>
             <GearIcon /><span>Admin</span>
           </button>
         ) : null}
@@ -4166,6 +4190,7 @@ function App() {
                 adminOverviewState={adminOverviewState}
                 adminRunState={adminRunState}
                 onBack={handleOpenDashboard}
+                onOpenErrorLogs={handleOpenErrorLogs}
                 onRunJob={handleRunAdminJob}
                 onSaveFilelistSettings={handleSaveFilelistSettings}
                 onClearFilelistSettings={handleClearFilelistSettings}
@@ -4176,6 +4201,8 @@ function App() {
                 onSaveThemeSchedule={handleSaveThemeSchedule}
                 themeState={themeState}
               />
+            ) : currentScreen === appScreens.adminErrors && user?.role === 'admin' ? (
+              <AdminErrorLogsScreen user={user} onBack={handleOpenAdmin} />
             ) : currentScreen === appScreens.account ? (
               <AccountScreen
                 changePasswordState={changePasswordState}
@@ -4243,6 +4270,8 @@ function App() {
               <TvDetailPage
                 tvDetailState={tvDetailState}
                 tvReviewsState={tvReviewsState}
+                watchTogetherState={watchTogetherState}
+                watchTogetherAchievementsState={watchTogetherAchievementsState}
                 user={user}
                 onBackToTv={() => handleMovieViewSelection(primaryViews.tvShows)}
                 onToggleWatchlist={handleToggleTvWatchlist}
@@ -4255,6 +4284,7 @@ function App() {
                 watchlistIds={tvWatchlistIds}
                 tvEpisodeRatingActionState={tvEpisodeRatingActionState}
                 onOpenTvShow={handleOpenTvDetail}
+                onSaveWatchTogetherSession={handleSaveWatchTogetherSession}
               />
             ) : currentRoute.kind === routeKinds.continueWatching ? (
               <ContinueWatchingPage
@@ -4499,6 +4529,8 @@ function App() {
               <MovieDetailPage
                 movieDetailState={movieDetailState}
                 similarMoviesState={similarMoviesState}
+                watchTogetherState={watchTogetherState}
+                watchTogetherAchievementsState={watchTogetherAchievementsState}
                 onBackToMovies={() => handleMovieViewSelection(primaryViews.movies)}
                 onOpenPerson={handleOpenPersonDetail}
                 onToggleWatched={handleToggleMovieWatched}
@@ -4516,6 +4548,7 @@ function App() {
                 watchedMovies={watchedState.movies}
                 watchlistActionState={watchlistActionState}
                 watchlistMovieIds={watchlistMovieIds}
+                onSaveWatchTogetherSession={handleSaveWatchTogetherSession}
               />
             ) : currentRoute.kind === routeKinds.gameDetail ? (
               <GameDetailPage
@@ -5846,7 +5879,62 @@ function formatThemeSchedulePeriod(schedule) {
   return `${formatThemeMonthDay(schedule.startsOn)}–${formatThemeMonthDay(schedule.endsOn)}`
 }
 
-function AdminScreen({ activeTheme, adminOverviewState, adminRunState, onBack, onRunJob, onSaveFilelistSettings, onClearFilelistSettings, onSaveIgdbSettings, onClearIgdbSettings, onSetActiveTheme, onSetRssSourceEnabled, onSaveThemeSchedule, themeState }) {
+function AdminErrorLogsScreen({ user, onBack }) {
+  const [source, setSource] = useState('')
+  const [searchInput, setSearchInput] = useState('')
+  const [search, setSearch] = useState('')
+  const [page, setPage] = useState(1)
+  const [refreshKey, setRefreshKey] = useState(0)
+  const [state, setState] = useState({ status: 'loading', logs: [], total: 0, pageSize: 25, error: '' })
+
+  useEffect(() => {
+    let cancelled = false
+    const params = new URLSearchParams({ page: String(page) })
+    if (source) params.set('source', source)
+    if (search) params.set('search', search)
+    setState((previous) => ({ ...previous, status: 'loading', error: '' }))
+    fetch(`/api/admin/error-logs?${params}`, { headers: buildAuthHeaders(user) })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+        if (!cancelled) setState({ status: 'success', logs: Array.isArray(payload.logs) ? payload.logs : [], total: payload.total || 0, pageSize: payload.pageSize || 25, error: '' })
+      })
+      .catch((error) => {
+        if (!cancelled) setState((previous) => ({ ...previous, status: 'error', error: error instanceof Error ? error.message : 'Unable to load error logs.' }))
+      })
+    return () => { cancelled = true }
+  }, [page, refreshKey, search, source, user])
+
+  const pageCount = Math.max(1, Math.ceil(state.total / state.pageSize))
+  return <section className="admin-page admin-errors-page">
+    <div className="admin-heading">
+      <div><p className="admin-kicker">Admin Panel</p><h1>Error logs</h1><p>API and background job failures recorded since logging was enabled.</p></div>
+      <button type="button" className="admin-back-button" onClick={onBack}><ChevronLeftIcon /><span>Back to admin</span></button>
+    </div>
+    <div className="admin-errors-toolbar">
+      <form onSubmit={(event) => { event.preventDefault(); setPage(1); setSearch(searchInput.trim()) }}>
+        <label><span className="visually-hidden">Search error logs</span><input type="search" maxLength="200" placeholder="Search messages or context" value={searchInput} onChange={(event) => setSearchInput(event.target.value)} /></label>
+        <button type="submit" className="admin-outline-button">Search</button>
+      </form>
+      <label>Source <select value={source} onChange={(event) => { setSource(event.target.value); setPage(1) }}><option value="">All sources</option><option value="api">API</option><option value="job">Jobs</option></select></label>
+      <button type="button" className="admin-outline-button" onClick={() => setRefreshKey((value) => value + 1)}>Refresh</button>
+    </div>
+    {state.status === 'loading' ? <SectionMessage message="Loading error logs..." /> : null}
+    {state.status === 'error' ? <SectionMessage message={state.error} tone="error" /> : null}
+    {state.status === 'success' && state.logs.length === 0 ? <div className="admin-errors-empty">No error logs match these filters.</div> : null}
+    {state.status === 'success' && state.logs.length > 0 ? <>
+      <p className="admin-errors-count">{state.total.toLocaleString()} error{state.total === 1 ? '' : 's'} found</p>
+      <div className="admin-errors-list">{state.logs.map((entry) => <article className="admin-error-entry" key={entry.id}>
+        <div className="admin-error-meta"><span className={`admin-error-source ${entry.source}`}>{entry.source === 'api' ? 'API' : 'Job'}</span><time dateTime={entry.createdAt}>{new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'medium' }).format(new Date(entry.createdAt))}</time><span>{entry.context}</span></div>
+        <p>{entry.message}</p>
+        {entry.stack ? <details><summary>Technical details</summary><pre>{entry.stack}</pre></details> : null}
+      </article>)}</div>
+      <div className="admin-errors-pagination"><button type="button" className="admin-outline-button" disabled={page <= 1} onClick={() => setPage(page - 1)}>Previous</button><span>Page {page} of {pageCount}</span><button type="button" className="admin-outline-button" disabled={page >= pageCount} onClick={() => setPage(page + 1)}>Next</button></div>
+    </> : null}
+  </section>
+}
+
+function AdminScreen({ activeTheme, adminOverviewState, adminRunState, onBack, onOpenErrorLogs, onRunJob, onSaveFilelistSettings, onClearFilelistSettings, onSaveIgdbSettings, onClearIgdbSettings, onSetActiveTheme, onSetRssSourceEnabled, onSaveThemeSchedule, themeState }) {
   const [filelistUsername, setFilelistUsername] = useState('')
   const [filelistPasskey, setFilelistPasskey] = useState('')
   const [filelistState, setFilelistState] = useState({ status: 'idle', error: '' })
@@ -6069,6 +6157,10 @@ function AdminScreen({ activeTheme, adminOverviewState, adminRunState, onBack, o
         </section>
       </div>
       <p className="admin-page-footer">Scroll for more settings and configuration <span aria-hidden="true">⌄</span></p>
+      <button type="button" className="admin-error-shortcut" onClick={onOpenErrorLogs}>
+        <span><strong>Error logs</strong><small>Review API and background job failures</small></span>
+        <ChevronRight />
+      </button>
     </section>
   )
 }
@@ -7359,9 +7451,10 @@ function WatchTogetherHistoryRow({ item, onLogSession, achievements = [] }) {
 }
 
 function WatchTogetherSessionDialog({ item, achievements, onCancel, onSave }) {
-  const [selected, setSelected] = useState(() => Array.isArray(item.sessionAchievementIds) ? item.sessionAchievementIds : []); const [notes, setNotes] = useState(() => item.sessionDetails?.notes || ''); const [saving, setSaving] = useState(false)
+  const [selected, setSelected] = useState(() => Array.isArray(item.sessionAchievementIds) ? item.sessionAchievementIds : []); const [notes, setNotes] = useState(() => item.sessionDetails?.notes || ''); const [saving, setSaving] = useState(false); const [error, setError] = useState('')
   const manualAchievements = achievements.filter((achievement) => achievement.tracking !== 'automatic')
-  return <div className="movie-rating-dialog-backdrop"><section className="movie-rating-dialog watch-together-session-dialog" role="dialog" aria-modal="true"><p className="movie-rating-dialog-kicker">Shared session</p><h2>What happened during {item.title}?</h2><p>Record any shared moments. The watch itself is already confirmed by both partners; progress for objective achievements updates automatically.</p><textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Optional notes, mood, snack, location, quiz or prediction details" /><div className="watch-together-session-badges">{manualAchievements.map((achievement) => <label key={achievement.id}><input type="checkbox" checked={selected.includes(achievement.id)} onChange={(event) => setSelected((ids) => event.target.checked ? [...ids, achievement.id] : ids.filter((id) => id !== achievement.id))} />{achievement.name}</label>)}</div><div className="movie-rating-dialog-actions"><button type="button" className="secondary-button" disabled={saving} onClick={onCancel}>Cancel</button><button type="button" className="primary-button" disabled={saving} onClick={async () => { setSaving(true); try { await onSave(selected, { notes }); } finally { setSaving(false) } }}>{saving ? 'Saving…' : 'Save session'}</button></div></section></div>
+  const sessionTitle = item.mediaType === 'tv' ? `${item.title} · ${formatWatchTogetherEpisode(item)}` : item.title
+  return <div className="movie-rating-dialog-backdrop"><section className="movie-rating-dialog watch-together-session-dialog" role="dialog" aria-modal="true"><p className="movie-rating-dialog-kicker">Shared session</p><h2>What happened during {sessionTitle}?</h2><p>Record any shared moments. The watch itself is already confirmed by both partners; progress for objective achievements updates automatically.</p><textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Optional notes, mood, snack, location, quiz or prediction details" /><div className="watch-together-session-badges">{manualAchievements.map((achievement) => <label key={achievement.id}><input type="checkbox" checked={selected.includes(achievement.id)} onChange={(event) => setSelected((ids) => event.target.checked ? [...ids, achievement.id] : ids.filter((id) => id !== achievement.id))} />{achievement.name}</label>)}</div>{error ? <p className="tmdb-search-error" role="alert">{error}</p> : null}<div className="movie-rating-dialog-actions"><button type="button" className="secondary-button" disabled={saving} onClick={onCancel}>Cancel</button><button type="button" className="primary-button" disabled={saving} onClick={async () => { setSaving(true); setError(''); try { await onSave(selected, { notes }) } catch (saveError) { setError(saveError instanceof Error ? saveError.message : 'Unable to save shared session details.') } finally { setSaving(false) } }}>{saving ? 'Saving…' : 'Save session'}</button></div></section></div>
 }
 
 function WatchTogetherAchievementsTab({ state, onOpenAchievement }) {
@@ -7806,20 +7899,24 @@ function TvWatchlistPanel({ items, onOpenWatchlist, onSelectShow }) {
   )
 }
 
-function TvDetailPage({ tvDetailState, tvReviewsState, user, onBackToTv, onToggleWatchlist, onUpdateEpisodes, onSubmitEpisodeRating, onOpenTv, onOpenPerson, onOpenLogin, isSignedIn, watchlistIds, tvEpisodeRatingActionState }) {
+function TvDetailPage({ tvDetailState, tvReviewsState, watchTogetherState, watchTogetherAchievementsState, user, onBackToTv, onToggleWatchlist, onUpdateEpisodes, onSubmitEpisodeRating, onOpenTv, onOpenPerson, onOpenLogin, isSignedIn, watchlistIds, tvEpisodeRatingActionState, onSaveWatchTogetherSession }) {
   const [seasonNumber, setSeasonNumber] = useState(null)
   const [trailer, setTrailer] = useState(null)
   const [catchUpEpisode, setCatchUpEpisode] = useState(null)
   const [pendingWatchRequest, setPendingWatchRequest] = useState(null)
   const [ratingEpisode, setRatingEpisode] = useState(null)
+  const [sessionItem, setSessionItem] = useState(null)
   const [selectedRating, setSelectedRating] = useState(5)
   const [isOverviewExpanded, setIsOverviewExpanded] = useState(false)
   const [isUpdatingEpisodes, setIsUpdatingEpisodes] = useState(false)
   const [filelistState, setFilelistState] = useState({ open: false, status: 'idle', results: [], error: '', minutesUntilReset: null, episode: null })
-  useEffect(() => { setSeasonNumber(null); setTrailer(null); setCatchUpEpisode(null); setPendingWatchRequest(null); setRatingEpisode(null); setIsOverviewExpanded(false); setIsUpdatingEpisodes(false); setFilelistState({ open: false, status: 'idle', results: [], error: '', minutesUntilReset: null, episode: null }) }, [tvDetailState.show?.id])
+  useEffect(() => { setSeasonNumber(null); setTrailer(null); setCatchUpEpisode(null); setPendingWatchRequest(null); setRatingEpisode(null); setSessionItem(null); setIsOverviewExpanded(false); setIsUpdatingEpisodes(false); setFilelistState({ open: false, status: 'idle', results: [], error: '', minutesUntilReset: null, episode: null }) }, [tvDetailState.show?.id])
   if (tvDetailState.status === 'loading' || tvDetailState.status === 'idle') return <section className="movie-detail-page"><SectionMessage message="Loading TV series detail..." /></section>
   if (tvDetailState.status === 'error' || !tvDetailState.show) return <section className="movie-detail-page"><SectionMessage tone="error" message={tvDetailState.error || 'TV series detail is not available.'} /></section>
   const show = tvDetailState.show
+  const sharedEpisodes = isSignedIn && watchTogetherState?.status === 'success' && watchTogetherState.partner
+    ? watchTogetherState.watchedEpisodes.filter((item) => Number(item.id) === Number(show.id))
+    : []
   const latestWatchedSeason = [...show.seasons]
     .filter((item) => item.seasonNumber > 0 && item.episodes.some((episode) => episode.watched))
     .sort((left, right) => right.seasonNumber - left.seasonNumber)[0]
@@ -7910,7 +8007,10 @@ function TvDetailPage({ tvDetailState, tvReviewsState, user, onBackToTv, onToggl
     </article>
     <nav className="tv-detail-tabs" aria-label="TV show sections"><button type="button" className="active" onClick={() => scrollToSection('tv-episodes')}>Episodes</button><button type="button" onClick={() => scrollToSection('tv-cast')}>Cast &amp; Crew</button><button type="button" onClick={() => scrollToSection('tv-recommendations')}>More Like This</button><button type="button" onClick={() => scrollToSection('tv-reviews')}>Reviews</button></nav>
     <div className="tv-detail-layout">
-      <section id="tv-episodes" className="content-section tv-detail-panel tv-detail-episodes"><div className="tv-detail-section-heading"><h2>Episodes</h2></div><div className="tv-detail-season-controls"><label><span className="sr-only">Season</span><select value={season?.seasonNumber ?? ''} onChange={(event) => setSeasonNumber(Number(event.target.value))}>{show.seasons.map((item) => <option key={item.id} value={item.seasonNumber}>{item.name}</option>)}</select></label><span>{episodes.length} Episodes</span><button type="button" className="secondary-button tv-season-watch-button" disabled={isUpdatingEpisodes || isSeasonWatched || seasonAiredEpisodes.length === 0} onClick={handleMarkSeasonWatched}><CheckIcon /><span>{isSeasonWatched ? 'Season watched' : isUpdatingEpisodes ? 'Updating...' : 'Mark season watched'}</span></button></div><div className="tv-detail-episode-grid">{episodes.map((episode) => <article className="tv-detail-episode-card" key={episode.id}><div className="tv-detail-episode-still">{episode.stillUrl ? <img src={episode.stillUrl} alt="" /> : null}<span>E{episode.episodeNumber}</span></div><div className="tv-detail-episode-copy"><h3>{episode.name}</h3><p>{episode.overview || 'Episode overview is not available.'}</p></div><div className="tv-detail-episode-actions"><span>{episode.runtimeLabel}</span>{episode.watched ? <button type="button" className="tv-episode-rate" onClick={() => handleOpenEpisodeRating(episode)} aria-label={`${episode.yourScore === null ? 'Rate' : 'Update rating for'} ${episode.name}`}><StarOutlineIcon /></button> : null}<button type="button" disabled={!episode.isAired || isUpdatingEpisodes} className={`tv-episode-toggle${episode.watched ? ' watched' : ''}`} aria-label={episode.isAired ? `${episode.watched ? 'Mark unwatched' : 'Mark watched'} ${episode.name}` : `${episode.name} has not aired yet`} onClick={() => handleEpisodeToggle(episode)}><CheckIcon /></button></div></article>)}</div></section>
+      <section id="tv-episodes" className="content-section tv-detail-panel tv-detail-episodes"><div className="tv-detail-section-heading"><h2>Episodes</h2></div><div className="tv-detail-season-controls"><label><span className="sr-only">Season</span><select value={season?.seasonNumber ?? ''} onChange={(event) => setSeasonNumber(Number(event.target.value))}>{show.seasons.map((item) => <option key={item.id} value={item.seasonNumber}>{item.name}</option>)}</select></label><span>{episodes.length} Episodes</span><button type="button" className="secondary-button tv-season-watch-button" disabled={isUpdatingEpisodes || isSeasonWatched || seasonAiredEpisodes.length === 0} onClick={handleMarkSeasonWatched}><CheckIcon /><span>{isSeasonWatched ? 'Season watched' : isUpdatingEpisodes ? 'Updating...' : 'Mark season watched'}</span></button></div><div className="tv-detail-episode-grid">{episodes.map((episode) => {
+        const sharedEpisode = sharedEpisodes.find((item) => Number(item.episodeId) === Number(episode.tmdbId))
+        return <article className="tv-detail-episode-card" key={episode.id}><div className="tv-detail-episode-still">{episode.stillUrl ? <img src={episode.stillUrl} alt="" /> : null}<span>E{episode.episodeNumber}</span></div><div className="tv-detail-episode-copy"><h3>{episode.name}</h3><p>{episode.overview || 'Episode overview is not available.'}</p></div><div className="tv-detail-episode-actions"><span>{episode.runtimeLabel}</span>{sharedEpisode ? <button type="button" className="secondary-button tv-session-button" onClick={() => setSessionItem(sharedEpisode)}>{sharedEpisode.sessionDetails ? 'Edit session' : 'Log session'}</button> : null}{episode.watched ? <button type="button" className="tv-episode-rate" onClick={() => handleOpenEpisodeRating(episode)} aria-label={`${episode.yourScore === null ? 'Rate' : 'Update rating for'} ${episode.name}`}><StarOutlineIcon /></button> : null}<button type="button" disabled={!episode.isAired || isUpdatingEpisodes} className={`tv-episode-toggle${episode.watched ? ' watched' : ''}`} aria-label={episode.isAired ? `${episode.watched ? 'Mark unwatched' : 'Mark watched'} ${episode.name}` : `${episode.name} has not aired yet`} onClick={() => handleEpisodeToggle(episode)}><CheckIcon /></button></div></article>
+      })}</div></section>
       <aside className="tv-detail-side"><section className="content-section tv-detail-panel tv-detail-activity"><div className="section-header"><h2>Your Activity</h2><span>{watchedCount} of {totalEpisodes} watched</span></div><div className="tv-detail-progress"><span style={{ width: `${watchedPercentage}%` }} /></div><div className="tv-detail-activity-footer"><span><StarOutlineIcon /> {yourEpisodeRating.ratingCount ? `${formatCommunityRating(yourEpisodeRating.average)} · Rated` : 'Not rated'}</span><button type="button" onClick={() => scrollToSection('tv-reviews')}>Rate show</button></div></section><section id="tv-cast" className="content-section tv-detail-panel tv-detail-cast"><div className="section-header"><h2>Cast &amp; Crew</h2><span>View all</span></div><div className="tv-detail-cast-list">{show.credits.map((member) => <button type="button" className="tv-detail-cast-card" key={`${member.id}-${member.role}`} aria-label={`Open ${member.name}`} onClick={() => onOpenPerson?.(member)} disabled={!Number.isInteger(Number(member.id))}><div className="tv-detail-cast-avatar" style={buildMovieCreditAvatarStyle(member.profileUrl)}>{!member.profileUrl ? getMovieCreditInitials(member.name) : null}</div><strong>{member.name}</strong><small>{member.role}</small></button>)}</div></section></aside>
       <section id="tv-recommendations" className="content-section tv-detail-panel tv-detail-recommendations"><div className="section-header"><h2>More Like This</h2><span>View all</span></div><div className="tv-detail-recommendation-list">{show.recommendations.map((item) => <button key={item.id} type="button" onClick={() => onOpenTv(item)} className="tv-detail-recommendation"><img src={item.posterUrl} alt="" /><span>{item.title}</span><small>{item.rating}</small></button>)}</div></section>
       <section className="content-section tv-detail-panel tv-detail-facts"><DetailFactRow icon={DirectorIcon} label="Created by" value={show.creatorsLabel} /><DetailFactRow icon={LanguageIcon} label="Language" value={show.languagesLabel} /><DetailFactRow icon={TvIcon} label="Status" value={show.status} /><DetailFactRow icon={CalendarIcon} label="First air date" value={show.firstAirDateLabel} /></section>
@@ -7920,6 +8020,11 @@ function TvDetailPage({ tvDetailState, tvReviewsState, user, onBackToTv, onToggl
     {catchUpEpisode ? <TvEpisodeCatchUpDialog episode={catchUpEpisode.episode} earlierCount={catchUpEpisode.earlierCount} isSaving={isUpdatingEpisodes} onCancel={() => setCatchUpEpisode(null)} onMarkCurrent={() => { setCatchUpEpisode(null); requestEpisodeWatch({ action: 'mark_episode', episodeId: catchUpEpisode.episode.id }, catchUpEpisode.episode) }} onMarkEarlier={() => { setCatchUpEpisode(null); requestEpisodeWatch({ action: 'mark_through_episode', episodeId: catchUpEpisode.episode.id }, catchUpEpisode.episode) }} /> : null}
     {pendingWatchRequest ? <WatchServiceDialog title={pendingWatchRequest.episodeToRate?.name || show.title} onCancel={() => setPendingWatchRequest(null)} onSelect={(watchService) => { const pending = pendingWatchRequest; setPendingWatchRequest(null); void updateEpisodes({ ...pending.request, watchService }, pending.episodeToRate) }} /> : null}
     {ratingEpisode ? <MovieRatingDialog movie={{ title: ratingEpisode.name }} selectedRating={selectedRating} onSelectRating={setSelectedRating} onCancel={() => setRatingEpisode(null)} onSubmit={async () => { if (await onSubmitEpisodeRating(ratingEpisode, selectedRating)) setRatingEpisode(null) }} isSaving={tvEpisodeRatingActionState.status === 'loading' && Number(tvEpisodeRatingActionState.episodeId) === Number(ratingEpisode.id)} error={tvEpisodeRatingActionState.status === 'error' && Number(tvEpisodeRatingActionState.episodeId) === Number(ratingEpisode.id) ? tvEpisodeRatingActionState.error : ''} kicker="Your Episode Rating" cancelLabel="Skip" /> : null}
+    {sessionItem ? <WatchTogetherSessionDialog item={sessionItem} achievements={watchTogetherAchievementsState?.achievements || []} onCancel={() => setSessionItem(null)} onSave={async (ids, details) => {
+      const saved = await onSaveWatchTogetherSession(sessionItem, ids, details)
+      if (saved) setSessionItem(null)
+      return saved
+    }} /> : null}
   </section>
 }
 
@@ -7992,6 +8097,8 @@ function WatchlistCard({ item, compact = false, onOpenItem, onRemove, onMarkComp
 function MovieDetailPage({
   movieDetailState,
   similarMoviesState,
+  watchTogetherState,
+  watchTogetherAchievementsState,
   onBackToMovies,
   onOpenPerson,
   onOpenMovie,
@@ -8009,8 +8116,10 @@ function MovieDetailPage({
   user,
   movieRatingActionState,
   movieReleaseReminderActionState,
+  onSaveWatchTogetherSession,
 }) {
   const [isRatingDialogOpen, setIsRatingDialogOpen] = useState(false)
+  const [sessionItem, setSessionItem] = useState(null)
   const [isWatchServiceDialogOpen, setIsWatchServiceDialogOpen] = useState(false)
   const [selectedRating, setSelectedRating] = useState(5)
   const [trailerState, setTrailerState] = useState({ status: 'idle', trailer: null, error: '' })
@@ -8031,6 +8140,7 @@ function MovieDetailPage({
     setOverflowMenuOffset(0)
     setIsCastExpanded(false)
     setIsStickyHeaderVisible(false)
+    setSessionItem(null)
   }, [movieDetailState.movie?.id])
 
   useEffect(() => {
@@ -8103,6 +8213,9 @@ function MovieDetailPage({
   }
 
   const movie = movieDetailState.movie
+  const sharedMovie = isSignedIn && watchTogetherState?.status === 'success' && watchTogetherState.partner
+    ? watchTogetherState.watchedMovies.find((item) => Number(item.id) === Number(movie.id)) ?? null
+    : null
   const creditCards = buildMovieCreditCards(movie)
   const reviews = Array.isArray(movie.reviews) ? movie.reviews : []
   const detailYear = formatMovieYear(movie.releaseDate) !== 'Release TBA' ? formatMovieYear(movie.releaseDate) : movie.year
@@ -8265,6 +8378,7 @@ function MovieDetailPage({
               {isWatched ? <StarOutlineIcon /> : !isInWatchlist ? <PlusIcon /> : <CheckIcon />}
               <span>{primaryActionLabel}</span>
             </button>
+            {sharedMovie ? <button type="button" className="secondary-button movie-detail-secondary watch-together-session-action" onClick={() => setSessionItem(sharedMovie)}><span>{sharedMovie.sessionDetails ? 'Edit session' : 'Log session'}</span></button> : null}
             <button type="button" className="secondary-button movie-detail-secondary ghost desktop-only" onClick={handleOpenTrailer} disabled={isTrailerLoading}>
               <PlayIcon />
               <span>{isTrailerLoading ? 'Loading...' : 'Trailer'}</span>
@@ -8339,6 +8453,12 @@ function MovieDetailPage({
       ) : null}
 
       {filelistState.open ? <FilelistDialog title={movie.title} state={filelistState} onClose={() => setFilelistState((state) => ({ ...state, open: false }))} /> : null}
+
+      {sessionItem ? <WatchTogetherSessionDialog item={sessionItem} achievements={watchTogetherAchievementsState?.achievements || []} onCancel={() => setSessionItem(null)} onSave={async (ids, details) => {
+        const saved = await onSaveWatchTogetherSession(sessionItem, ids, details)
+        if (saved) setSessionItem(null)
+        return saved
+      }} /> : null}
 
       <div className="movie-detail-grid">
         <section id="movie-cast" className="content-section movie-detail-panel movie-detail-cast-panel">
@@ -11241,6 +11361,7 @@ function getSeasonalThemeLabel(theme) {
 }
 
 function readAppRoute(pathname = window.location.pathname, search = window.location.search) {
+  if (/^\/admin\/errors\/?$/.test(pathname)) return { kind: routeKinds.adminErrors }
   if (/^\/profile\/?$/.test(pathname)) return { kind: routeKinds.profile }
   if (/^\/news\/?$/.test(pathname)) {
     const params = new URLSearchParams(search)

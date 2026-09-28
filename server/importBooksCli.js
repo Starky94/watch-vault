@@ -1,3 +1,4 @@
+import { recordCliError } from './errorLogs.js'
 import { loadConfig } from './config.js'
 import { createPool } from './database.js'
 import { importBooks } from './bookImportService.js'
@@ -10,4 +11,4 @@ async function run() {
     console.log(`Fetched ${result.fetchedCount} ${result.category} books from Google Books. Inserted ${result.insertedCount} and refreshed ${result.updatedCount}.`)
   } finally { await pool.end() }
 }
-run().catch((error) => { console.error(error.message); process.exit(1) })
+run().catch(async (error) => { console.error(error.message); await recordCliError(error, 'books'); process.exit(1) })

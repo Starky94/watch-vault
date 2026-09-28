@@ -1,3 +1,4 @@
+import { recordCliError } from './errorLogs.js'
 import { loadConfig } from './config.js'
 import { createPool } from './database.js'
 import { importPopularTvShows } from './tvImportService.js'
@@ -25,7 +26,8 @@ async function run() {
   }
 }
 
-run().catch((error) => {
+run().catch(async (error) => {
   console.error(error.message)
+  await recordCliError(error, 'tv-popular')
   process.exit(1)
 })

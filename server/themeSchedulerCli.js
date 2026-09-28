@@ -1,3 +1,4 @@
+import { recordCliError } from './errorLogs.js'
 import { loadConfig } from './config.js'
 import { createPool, ensureAdminJobExecutionsTable, recordAdminJobExecution } from './database.js'
 import { runThemeScheduler } from './themeScheduler.js'
@@ -15,7 +16,8 @@ async function run() {
   }
 }
 
-run().catch((error) => {
+run().catch(async (error) => {
   console.error(error.message)
+  await recordCliError(error, 'theme-scheduler')
   process.exit(1)
 })
