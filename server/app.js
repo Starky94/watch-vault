@@ -2117,13 +2117,16 @@ export async function createApp(pool, options = {}) {
     try {
       const pagination = readPaginationQuery(request, { defaultLimit: 30 })
       const genre = typeof request.query.genre === 'string' ? request.query.genre.trim() : ''
+      const sort = typeof request.query.sort === 'string' ? request.query.sort : 'featured'
       const hideWatched = request.query.hideWatched === 'true'
       const user = hideWatched ? await getAuthenticatedUser(pool, request) : null
       if (hideWatched && !user) return response.status(401).json({ error: 'Authentication required' })
       const movies = await listMovies(pool, {
         genre,
+        sort,
         excludeWatchedForUsername: user?.username,
         limit: pagination.limit + 1,
+        pageSize: pagination.limit,
         page: pagination.page,
       })
       const pagedMovies = movies.slice(0, pagination.limit)
@@ -2501,15 +2504,18 @@ export async function createApp(pool, options = {}) {
     } catch (error) { next(error) }
   })
 
-  app.get('/api/movies/recently-released', async (request, response, next) => {
+  const movieCollectionHandler = (listCollection) => async (request, response, next) => {
     try {
       const pagination = readPaginationQuery(request, { defaultLimit: 30 })
+      const sort = typeof request.query.sort === 'string' ? request.query.sort : 'featured'
       const hideWatched = request.query.hideWatched === 'true'
       const user = hideWatched ? await getAuthenticatedUser(pool, request) : null
       if (hideWatched && !user) return response.status(401).json({ error: 'Authentication required' })
-      const movies = await listRecentlyReleasedMovies(pool, {
+      const movies = await listCollection(pool, {
+        sort,
         excludeWatchedForUsername: user?.username,
         limit: pagination.limit + 1,
+        pageSize: pagination.limit,
         page: pagination.page,
       })
       const pagedMovies = movies.slice(0, pagination.limit)
@@ -2521,51 +2527,11 @@ export async function createApp(pool, options = {}) {
     } catch (error) {
       next(error)
     }
-  })
+  }
 
-  app.get('/api/movies/top-rated', async (request, response, next) => {
-    try {
-      const pagination = readPaginationQuery(request, { defaultLimit: 30 })
-      const hideWatched = request.query.hideWatched === 'true'
-      const user = hideWatched ? await getAuthenticatedUser(pool, request) : null
-      if (hideWatched && !user) return response.status(401).json({ error: 'Authentication required' })
-      const movies = await listTopRatedMovies(pool, {
-        excludeWatchedForUsername: user?.username,
-        limit: pagination.limit + 1,
-        page: pagination.page,
-      })
-      const pagedMovies = movies.slice(0, pagination.limit)
-      response.json({
-        count: pagedMovies.length,
-        movies: pagedMovies,
-        pagination: buildPaginationPayload(pagination, movies.length > pagination.limit),
-      })
-    } catch (error) {
-      next(error)
-    }
-  })
-
-  app.get('/api/movies/upcoming', async (request, response, next) => {
-    try {
-      const pagination = readPaginationQuery(request, { defaultLimit: 30 })
-      const hideWatched = request.query.hideWatched === 'true'
-      const user = hideWatched ? await getAuthenticatedUser(pool, request) : null
-      if (hideWatched && !user) return response.status(401).json({ error: 'Authentication required' })
-      const movies = await listUpcomingMovies(pool, {
-        excludeWatchedForUsername: user?.username,
-        limit: pagination.limit + 1,
-        page: pagination.page,
-      })
-      const pagedMovies = movies.slice(0, pagination.limit)
-      response.json({
-        count: pagedMovies.length,
-        movies: pagedMovies,
-        pagination: buildPaginationPayload(pagination, movies.length > pagination.limit),
-      })
-    } catch (error) {
-      next(error)
-    }
-  })
+  app.get('/api/movies/recently-released', movieCollectionHandler(listRecentlyReleasedMovies))
+  app.get('/api/movies/top-rated', movieCollectionHandler(listTopRatedMovies))
+  app.get('/api/movies/upcoming', movieCollectionHandler(listUpcomingMovies))
 
   app.get('/api/tv', async (request, response, next) => {
     try {
@@ -2974,6 +2940,23 @@ export async function createApp(pool, options = {}) {
         count: movies.length,
         movies,
       })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/people/:personId/personal-history', async (request, response, next) => {
+    const personId = Number(request.params.personId)
+    const { movieIds, tvIds } = request.body ?? {}
+    const validIds = (ids) => Array.isArray(ids) && ids.length <= 2000 && ids.every((id) => Number.isInteger(id) && id > 0)
+    if (!Number.isInteger(personId) || personId <= 0 || !validIds(movieIds) || !validIds(tvIds)) {
+      return response.status(400).json({ error: 'Invalid person or credit ids' })
+    }
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const personalHistory = await getPersonHistoryForUser(pool, { username: user.username, movieIds, tvIds })
+      response.json({ personalHistory })
     } catch (error) {
       next(error)
     }

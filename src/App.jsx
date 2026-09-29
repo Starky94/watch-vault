@@ -3,9 +3,18 @@ import './App.css'
 import { useHomePage } from './home/useHomePage.ts'
 import { HomeScreen } from './home/HomeScreen.tsx'
 import { loadCollection, requestJson } from './collectionLoader.js'
+import { mapPersonHistoryPayload, mapPersonPreview, selectPersonFilmography } from './personMappers.ts'
+import { movieScreenModes, movieCollectionConfigs, movieGridConfigs, createMovieCollectionState, useMovieCollection } from './movie/movieCollections.ts'
+import { mapMovieRowToCard, mapMovieRowToSimilarCard, mapFeaturedMoviePayload, mapMoviePreviewToDetail, mapCommunityRatingPayload } from './movie/movieMappers.ts'
+import { formatMovieYear, formatMovieRating, formatTomatoScore, formatVoteCount, formatLongDate, resolveMoviePosterUrl, resolveMovieBackdropUrl } from './movie/movieFormatting.ts'
+import { readMediaDetailRoute } from './movie/movieTypes.ts'
+import { MovieCollectionGrid } from './movie/MovieCollectionGrid.tsx'
+import { createMovieDetailState, createPersonDetailState, loadingPersonDetailState, loadMovieDetailData, loadPersonDetailData } from './movie/movieDetailRequests.ts'
 import { defaultThemeKey, seasonalThemes } from '../shared/themes.js'
 import { NEWS_CATEGORIES } from '../shared/newsCategories.js'
 import { applyActiveTheme, readCachedActiveTheme } from './theme.js'
+
+const movieGridUi = { MovieCard, SectionMessage, ChevronLeftIcon, ChevronRightIcon: ChevronRight }
 
 const homeUi = {
   SparklesIcon, ClockIcon, PlayIcon, BookmarkIcon, ClapperIcon, TvIcon, ChevronRight,
@@ -71,15 +80,6 @@ const statsTabs = [
   { label: 'Game achievements', section: 'games' },
   { label: 'Achievements' },
 ]
-const movieScreenModes = {
-  overview: 'overview',
-  popularList: 'popularList',
-  nowPlayingList: 'nowPlayingList',
-  topRatedList: 'topRatedList',
-  upcomingList: 'upcomingList',
-  genreList: 'genreList',
-}
-
 const appScreens = {
   dashboard: 'dashboard',
   admin: 'admin',
@@ -281,6 +281,7 @@ function App() {
   })
   const [popularMoviesPage, setPopularMoviesPage] = useState(1)
   const [hideWatchedMovies, setHideWatchedMovies] = useState(false)
+  const [catalogSort, setCatalogSort] = useState('featured')
   const [booksPage, setBooksPage] = useState(1)
   const [recentMoviesPage, setRecentMoviesPage] = useState(1)
   const [upcomingMoviesPage, setUpcomingMoviesPage] = useState(1)
@@ -402,11 +403,7 @@ function App() {
     error: '',
   })
   const [selectedGenre, setSelectedGenre] = useState(null)
-  const [movieDetailState, setMovieDetailState] = useState({
-    status: currentRoute.kind === routeKinds.movieDetail ? 'idle' : 'hidden',
-    movie: null,
-    error: '',
-  })
+  const [movieDetailState, setMovieDetailState] = useState(() => createMovieDetailState(currentRoute))
   const [gameDetailState, setGameDetailState] = useState({ status: currentRoute.kind === routeKinds.gameDetail ? 'idle' : 'hidden', game: null, error: '' })
   const [similarGamesState, setSimilarGamesState] = useState({ status: 'idle', games: [], source: null, error: '' })
   const [bookDetailState, setBookDetailState] = useState({ status: currentRoute.kind === routeKinds.bookDetail ? 'idle' : 'hidden', book: null, error: '' })
@@ -419,17 +416,8 @@ function App() {
     movies: [],
     error: '',
   })
-  const [personDetailState, setPersonDetailState] = useState({
-    status: currentRoute.kind === routeKinds.personDetail ? 'idle' : 'hidden',
-    person: null,
-    knownFor: [],
-    filmography: [],
-    coStars: [],
-    facts: [],
-    personalHistory: null,
-    error: '',
-  })
-  const [personDetailRefreshKey, setPersonDetailRefreshKey] = useState(0)
+  const [personDetailState, setPersonDetailState] = useState(() => createPersonDetailState(currentRoute))
+  const personHistoryRequestId = useRef(0)
   const [adminOverviewState, setAdminOverviewState] = useState({
     status: 'idle',
     crons: [],
@@ -1113,18 +1101,39 @@ function App() {
     })
   }
 
-  function updatePersonFilmographyPersonalState(mediaType, id, changes) {
+  function updatePersonFilmographyPersonalState(mediaType, id, changes, { refreshHistory = Object.hasOwn(changes, 'watched') } = {}) {
     setPersonDetailState((state) => ({
       ...state,
       filmography: state.filmography.map((item) => item.mediaType === mediaType && Number(item.id) === Number(id)
         ? { ...item, personal: { ...item.personal, ...changes } }
         : item),
     }))
-    refreshPersonDetailHistory()
+    if (refreshHistory) void refreshPersonDetailHistory()
   }
 
-  function refreshPersonDetailHistory() {
-    if (currentRoute.kind === routeKinds.personDetail) setPersonDetailRefreshKey((key) => key + 1)
+  async function refreshPersonDetailHistory() {
+    if (currentRoute.kind !== routeKinds.personDetail || !user || !personDetailState.filmography.length) return
+    const personId = currentRoute.personId
+    const requestId = ++personHistoryRequestId.current
+    const movieIds = personDetailState.filmography.filter((item) => item.mediaType === 'movie').map((item) => Number(item.id))
+    const tvIds = personDetailState.filmography.filter((item) => item.mediaType === 'tv').map((item) => Number(item.id))
+    try {
+      const response = await fetch(`/api/people/${personId}/personal-history`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...buildAuthHeaders(user) },
+        body: JSON.stringify({ movieIds, tvIds }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`)
+      if (personHistoryRequestId.current !== requestId) return
+      setPersonDetailState((state) => {
+        if (state.person?.id !== personId) return state
+        const history = mapPersonHistoryPayload(payload.personalHistory)
+        return { ...state, personalHistory: history ? { ...history, nextRecommendation: findNextPersonRecommendation(state.filmography) } : null }
+      })
+    } catch {
+      // The local filmography action succeeded; keep the last history summary if this refresh fails.
+    }
   }
 
   async function handleLogin(credentials) {
@@ -1371,6 +1380,15 @@ function App() {
     if (moviesScreenMode === movieScreenModes.upcomingList) setUpcomingMoviesPage(1)
   }
 
+  function handleCatalogSortChange(nextSort) {
+    setCatalogSort(nextSort)
+    if (moviesScreenMode === movieScreenModes.genreList) setGenreMoviesPage(1)
+    if (moviesScreenMode === movieScreenModes.popularList) setPopularMoviesPage(1)
+    if (moviesScreenMode === movieScreenModes.nowPlayingList) setRecentMoviesPage(1)
+    if (moviesScreenMode === movieScreenModes.topRatedList) setTopRatedMoviesPage(1)
+    if (moviesScreenMode === movieScreenModes.upcomingList) setUpcomingMoviesPage(1)
+  }
+
   function handleOpenPopularMovies() {
     setActiveView(primaryViews.movies)
     setActiveMovieTab('Popular')
@@ -1454,7 +1472,7 @@ function App() {
       updatePersonFilmographyPersonalState('tv', showId, {
         watchlisted: (payload.watchlistIds ?? []).map(Number).includes(showId),
         watched: (payload.watchedIds ?? []).map(Number).includes(showId),
-      })
+      }, { refreshHistory: kind !== 'watchlist' })
       receiveAchievementUnlocks(payload.newlyUnlockedAchievements)
     } catch (error) {
       setTvStatsState((state) => ({ ...state, status: 'error', error: error instanceof Error ? error.message : 'Unable to update TV library.' }))
@@ -3024,53 +3042,11 @@ function App() {
 
     let cancelled = false
 
-    async function loadMovieDetail() {
-      setMovieDetailState({
-        status: 'loading',
-        movie: null,
-        error: '',
-      })
-
-      try {
-        const response = await fetch(`/api/movies/${currentRoute.movieId}`, { headers: buildAuthHeaders(user) })
-        const payload = await response.json().catch(() => ({}))
-
-        if (!response.ok) {
-          if (response.status === 404) {
-            const previewMovie = readMoviePreviewFromHistory(currentRoute.movieId)
-
-            if (previewMovie && !cancelled) {
-              setMovieDetailState({
-                status: 'success',
-                movie: mapMoviePreviewToDetail(previewMovie),
-                error: '',
-              })
-              return
-            }
-          }
-
-          throw new Error(payload.error || `Request failed with status ${response.status}`)
-        }
-
-        if (!cancelled) {
-          setMovieDetailState({
-            status: 'success',
-            movie: mapMovieDetailPayload(payload.movie),
-            error: '',
-          })
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setMovieDetailState({
-            status: 'error',
-            movie: null,
-            error: error instanceof Error ? error.message : 'Unable to load the movie detail right now.',
-          })
-        }
-      }
-    }
-
-    loadMovieDetail()
+    setMovieDetailState({ status: 'loading', movie: null, error: '' })
+    const previewMovie = readMoviePreviewFromHistory(currentRoute.movieId)
+    void loadMovieDetailData(currentRoute.movieId, previewMovie).then((state) => {
+      if (!cancelled) setMovieDetailState(state)
+    })
 
     return () => {
       cancelled = true
@@ -3208,6 +3184,7 @@ function App() {
   }, [currentRoute])
 
   useEffect(() => {
+    personHistoryRequestId.current += 1
     if (currentRoute.kind !== routeKinds.personDetail) {
       setPersonDetailState({
         status: 'hidden',
@@ -3224,71 +3201,16 @@ function App() {
 
     let cancelled = false
 
-    async function loadPersonDetail() {
-      setPersonDetailState((previousState) => ({
-        ...previousState,
-        status: 'loading',
-        error: '',
-      }))
-
-      try {
-        const response = await fetch(`/api/people/${currentRoute.personId}`, { headers: buildAuthHeaders(user) })
-        const payload = await response.json().catch(() => ({}))
-
-        if (!response.ok) {
-          const previewPerson = readPersonPreviewFromHistory(currentRoute.personId)
-
-          if (previewPerson && !cancelled) {
-            setPersonDetailState({
-              status: 'success',
-              person: mapPersonPreview(previewPerson),
-              knownFor: [],
-              filmography: [],
-              coStars: [],
-              facts: [],
-              personalHistory: null,
-              error: '',
-            })
-            return
-          }
-
-          throw new Error(payload.error || `Request failed with status ${response.status}`)
-        }
-
-        if (!cancelled) {
-          setPersonDetailState({
-            status: 'success',
-            person: mapPersonDetailPayload(payload.person),
-            knownFor: Array.isArray(payload.knownFor) ? payload.knownFor.map(mapPersonMovieCredit) : [],
-            filmography: Array.isArray(payload.filmography) ? payload.filmography.map(mapPersonFilmographyRow) : [],
-            coStars: Array.isArray(payload.coStars) ? payload.coStars.map(mapPersonCoStar) : [],
-            facts: Array.isArray(payload.facts) ? payload.facts : [],
-            personalHistory: mapPersonHistoryPayload(payload.personalHistory),
-            error: '',
-          })
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setPersonDetailState({
-            status: 'error',
-            person: null,
-            knownFor: [],
-            filmography: [],
-            coStars: [],
-            facts: [],
-            personalHistory: null,
-            error: error instanceof Error ? error.message : 'Unable to load the person detail right now.',
-          })
-        }
-      }
-    }
-
-    loadPersonDetail()
+    setPersonDetailState(loadingPersonDetailState)
+    const previewPerson = readPersonPreviewFromHistory(currentRoute.personId)
+    void loadPersonDetailData(currentRoute.personId, previewPerson).then((state) => {
+      if (!cancelled) setPersonDetailState(state)
+    })
 
     return () => {
       cancelled = true
     }
-  }, [currentRoute, user, personDetailRefreshKey])
+  }, [currentRoute, user])
 
   useEffect(() => {
     if (currentRoute.kind !== routeKinds.tvDetail) {
@@ -3405,20 +3327,12 @@ function App() {
     }
   }, [])
 
-  useEffect(() => {
-    if (activeView !== primaryViews.movies) return
-    const hideWatched = Boolean(user) && hideWatchedMovies && moviesScreenMode === movieScreenModes.popularList
-    return loadCollection({
-      url: buildMoviesApiPath('/api/movies', popularMoviesPage, moviesPageSize, { hideWatched: hideWatched ? 'true' : undefined }),
-      options: { headers: buildAuthHeaders(user) },
-      setState: setPopularMoviesState,
-      loadingState: createMovieCollectionLoadingState({ page: popularMoviesPage, includeFeaturedMovie: true }),
-      itemsKey: 'movies', mapItem: mapMovieRowToCard,
-      featuredKey: 'featuredMovie', mapFeatured: mapFeaturedMoviePayload,
-      mapPagination: (value) => mapPaginationPayload(value, popularMoviesPage),
-      errorMessage: 'Unable to load movies right now.',
-    })
-  }, [activeView, hideWatchedMovies, moviesScreenMode, popularMoviesPage, user, watchedState.movies])
+  const movieCollectionOptions = { activeView, screenMode: moviesScreenMode, hideWatchedMovies, user, watchedMovies: watchedState.movies, catalogSort }
+  useMovieCollection(movieCollectionConfigs.popular, { ...movieCollectionOptions, page: popularMoviesPage, setState: setPopularMoviesState })
+  useMovieCollection(movieCollectionConfigs.upcoming, { ...movieCollectionOptions, page: upcomingMoviesPage, setState: setUpcomingMoviesState })
+  useMovieCollection(movieCollectionConfigs.recent, { ...movieCollectionOptions, page: recentMoviesPage, setState: setRecentMoviesState })
+  useMovieCollection(movieCollectionConfigs.topRated, { ...movieCollectionOptions, page: topRatedMoviesPage, setState: setTopRatedMoviesState })
+  useMovieCollection(movieCollectionConfigs.genre, { ...movieCollectionOptions, page: genreMoviesPage, setState: setGenreMoviesState, genreName: selectedGenre?.name })
 
   useEffect(() => {
     if (activeView !== primaryViews.books) return
@@ -3505,45 +3419,6 @@ function App() {
   }, [currentRoute, user])
 
   useEffect(() => {
-    if (activeView !== primaryViews.movies) return
-    const hideWatched = Boolean(user) && hideWatchedMovies && moviesScreenMode === movieScreenModes.upcomingList
-    return loadCollection({
-      url: buildMoviesApiPath('/api/movies/upcoming', upcomingMoviesPage, moviesPageSize, { hideWatched: hideWatched ? 'true' : undefined }),
-      options: { headers: buildAuthHeaders(user) },
-      setState: setUpcomingMoviesState, loadingState: createMovieCollectionLoadingState({ page: upcomingMoviesPage }),
-      itemsKey: 'movies', mapItem: mapMovieRowToCard,
-      mapPagination: (value) => mapPaginationPayload(value, upcomingMoviesPage),
-      errorMessage: 'Unable to load upcoming movies right now.',
-    })
-  }, [activeView, hideWatchedMovies, moviesScreenMode, upcomingMoviesPage, user, watchedState.movies])
-
-  useEffect(() => {
-    if (activeView !== primaryViews.movies) return
-    const hideWatched = Boolean(user) && hideWatchedMovies && moviesScreenMode === movieScreenModes.nowPlayingList
-    return loadCollection({
-      url: buildMoviesApiPath('/api/movies/recently-released', recentMoviesPage, moviesPageSize, { hideWatched: hideWatched ? 'true' : undefined }),
-      options: { headers: buildAuthHeaders(user) },
-      setState: setRecentMoviesState, loadingState: createMovieCollectionLoadingState({ page: recentMoviesPage }),
-      itemsKey: 'movies', mapItem: mapMovieRowToCard,
-      mapPagination: (value) => mapPaginationPayload(value, recentMoviesPage),
-      errorMessage: 'Unable to load recently released movies right now.',
-    })
-  }, [activeView, hideWatchedMovies, moviesScreenMode, recentMoviesPage, user, watchedState.movies])
-
-  useEffect(() => {
-    if (activeView !== primaryViews.movies) return
-    const hideWatched = Boolean(user) && hideWatchedMovies && moviesScreenMode === movieScreenModes.topRatedList
-    return loadCollection({
-      url: buildMoviesApiPath('/api/movies/top-rated', topRatedMoviesPage, moviesPageSize, { hideWatched: hideWatched ? 'true' : undefined }),
-      options: { headers: buildAuthHeaders(user) },
-      setState: setTopRatedMoviesState, loadingState: createMovieCollectionLoadingState({ page: topRatedMoviesPage }),
-      itemsKey: 'movies', mapItem: mapMovieRowToCard,
-      mapPagination: (value) => mapPaginationPayload(value, topRatedMoviesPage),
-      errorMessage: 'Unable to load top rated movies right now.',
-    })
-  }, [activeView, hideWatchedMovies, moviesScreenMode, topRatedMoviesPage, user, watchedState.movies])
-
-  useEffect(() => {
     if (activeView !== primaryViews.tvShows) return
     return loadCollection({
       url: buildTvApiPath('/api/tv', popularTvPage),
@@ -3603,21 +3478,6 @@ function App() {
       errorMessage: 'Unable to load your TV progress right now.',
     })
   }, [continueWatchingPage, currentRoute.kind, user])
-
-  useEffect(() => {
-    if (activeView !== primaryViews.movies || moviesScreenMode !== movieScreenModes.genreList || !selectedGenre?.name) return
-    const hideWatched = Boolean(user) && hideWatchedMovies
-    return loadCollection({
-      url: buildMoviesApiPath('/api/movies', genreMoviesPage, moviesPageSize, {
-        genre: selectedGenre.name, hideWatched: hideWatched ? 'true' : undefined,
-      }),
-      options: { headers: buildAuthHeaders(user) },
-      setState: setGenreMoviesState, loadingState: createMovieCollectionLoadingState({ page: genreMoviesPage }),
-      itemsKey: 'movies', mapItem: mapMovieRowToCard,
-      mapPagination: (value) => mapPaginationPayload(value, genreMoviesPage),
-      errorMessage: 'Unable to load genre movies right now.',
-    })
-  }, [activeView, genreMoviesPage, hideWatchedMovies, moviesScreenMode, selectedGenre, user, watchedState.movies])
 
   useEffect(() => {
     if (currentRoute.kind !== routeKinds.authorDetail) {
@@ -4182,6 +4042,8 @@ function App() {
                 isSignedIn={Boolean(user)}
                 hideWatched={hideWatchedMovies}
                 onHideWatchedChange={handleHideWatchedMoviesChange}
+                catalogSort={catalogSort}
+                onCatalogSortChange={handleCatalogSortChange}
                 movieStats={moviesPageStats}
                 statsPeriod={statsPeriod}
                 onStatsPeriodChange={setStatsPeriod}
@@ -5766,6 +5628,8 @@ function MoviesScreen({
   isSignedIn,
   hideWatched,
   onHideWatchedChange,
+  catalogSort,
+  onCatalogSortChange,
   movieStats,
   statsPeriod,
   onStatsPeriodChange,
@@ -5782,13 +5646,21 @@ function MoviesScreen({
   onOpenWatchlist,
   onOpenMovie,
 }) {
-  const [catalogSort, setCatalogSort] = useState('featured')
-  const isGenreListMode = screenMode === movieScreenModes.genreList && Boolean(selectedGenre?.name)
-  const isPopularListMode = screenMode === movieScreenModes.popularList && activeTab === 'Popular'
-  const isNowPlayingListMode = screenMode === movieScreenModes.nowPlayingList && activeTab === 'Now Playing'
-  const isTopRatedListMode = screenMode === movieScreenModes.topRatedList && activeTab === 'Top Rated'
-  const isUpcomingListMode = screenMode === movieScreenModes.upcomingList && activeTab === 'Upcoming'
-  const isCatalogListMode = isGenreListMode || isPopularListMode || isNowPlayingListMode || isTopRatedListMode || isUpcomingListMode
+  const collections = {
+    genre: { config: movieGridConfigs.genre, state: genreMoviesState, onPageChange: onChangeGenrePage },
+    popular: { config: movieGridConfigs.popular, state: popularMoviesState, onPageChange: onChangePopularPage, onOpenAll: onOpenPopularMovies },
+    recent: { config: movieGridConfigs.recent, state: recentMoviesState, onPageChange: onChangeRecentPage, onOpenAll: onOpenRecentlyReleasedMovies },
+    upcoming: { config: movieGridConfigs.upcoming, state: upcomingMoviesState, onPageChange: onChangeUpcomingPage, onOpenAll: onOpenUpcomingMovies },
+    topRated: { config: movieGridConfigs.topRated, state: topRatedMoviesState, onPageChange: onChangeTopRatedPage, onOpenAll: onOpenTopRatedMovies },
+  }
+  const catalogCollection = screenMode === movieScreenModes.genreList && selectedGenre?.name
+    ? collections.genre
+    : Object.values(collections).find(({ config }) => config.tab === activeTab && config.screenMode === screenMode)
+  const isCatalogListMode = Boolean(catalogCollection)
+  const catalogTitle = catalogCollection === collections.genre ? `${selectedGenre.name} Movies` : catalogCollection?.config.title
+  const catalogDescription = catalogCollection === collections.genre
+    ? `Browse all ${selectedGenre.name} movies in your local database, 30 titles at a time.`
+    : catalogCollection?.config.description
   const watchlistMovieIds = useMemo(() => new Set(watchlistMovies.map((movie) => Number(movie.id))), [watchlistMovies])
 
   return (
@@ -5797,17 +5669,7 @@ function MoviesScreen({
         <div className="movies-heading">
           <h1>{isCatalogListMode ? 'Browse movies' : 'Discover movies'}</h1>
         <p>
-          {isGenreListMode
-            ? `Browse all ${selectedGenre.name} movies in your local database, 30 titles at a time.`
-            : isPopularListMode
-            ? 'Browse popular movies imported from your local database, 30 titles at a time.'
-            : isNowPlayingListMode
-              ? 'Browse recently released movies from your local database, 30 titles at a time.'
-              : isTopRatedListMode
-                ? 'Browse top rated movies ordered by score, 30 titles at a time.'
-              : isUpcomingListMode
-                ? 'Browse upcoming releases from the next 30 days, 30 titles at a time.'
-            : 'Discover, track, and organize your favorite films.'}
+          {catalogDescription || 'Discover, track, and organize your favorite films.'}
         </p>
         </div>
 
@@ -5833,7 +5695,7 @@ function MoviesScreen({
         ))}
           </div>
           {isCatalogListMode ? <label className="movies-sort-control">Sort
-            <select value={catalogSort} onChange={(event) => setCatalogSort(event.target.value)}>
+            <select value={catalogSort} onChange={(event) => onCatalogSortChange(event.target.value)}>
               <option value="featured">Featured</option>
               <option value="rating">Rating</option>
               <option value="release">Release date</option>
@@ -5848,74 +5710,20 @@ function MoviesScreen({
         </section>
       </div>
 
-      {isGenreListMode ? (
-        <ContentSection title={`${selectedGenre.name} Movies`}>
-          <GenreMoviesGrid
-            genreMoviesState={genreMoviesState}
-            onOpenMovie={onOpenMovie}
-            watchedMovieIds={watchedMovieIds}
-            watchlistMovieIds={watchlistMovieIds}
-            onToggleWatchlist={onToggleWatchlist}
-            onToggleWatched={onToggleWatched}
-            sort={catalogSort}
-          />
-          <PaginationControls pagination={genreMoviesState.pagination} onPageChange={onChangeGenrePage} />
-        </ContentSection>
-      ) : isPopularListMode ? (
-        <ContentSection title="Popular Right Now">
-          <PopularMoviesGrid
-            popularMoviesState={popularMoviesState}
+      {catalogCollection ? (
+        <ContentSection title={catalogTitle}>
+          <MovieCollectionGrid
+            ui={movieGridUi}
+            config={catalogCollection.config}
+            state={catalogCollection.state}
             layout="catalog"
             onOpenMovie={onOpenMovie}
             watchedMovieIds={watchedMovieIds}
             watchlistMovieIds={watchlistMovieIds}
             onToggleWatchlist={onToggleWatchlist}
             onToggleWatched={onToggleWatched}
-            sort={catalogSort}
           />
-          <PaginationControls pagination={popularMoviesState.pagination} onPageChange={onChangePopularPage} />
-        </ContentSection>
-      ) : isNowPlayingListMode ? (
-        <ContentSection title="Now Playing">
-          <RecentlyReleasedSlider
-            recentMoviesState={recentMoviesState}
-            layout="catalog"
-            onOpenMovie={onOpenMovie}
-            watchedMovieIds={watchedMovieIds}
-            watchlistMovieIds={watchlistMovieIds}
-            onToggleWatchlist={onToggleWatchlist}
-            onToggleWatched={onToggleWatched}
-            sort={catalogSort}
-          />
-          <PaginationControls pagination={recentMoviesState.pagination} onPageChange={onChangeRecentPage} />
-        </ContentSection>
-      ) : isTopRatedListMode ? (
-        <ContentSection title="Top Rated">
-          <TopRatedMoviesGrid
-            topRatedMoviesState={topRatedMoviesState}
-            layout="catalog"
-            onOpenMovie={onOpenMovie}
-            watchedMovieIds={watchedMovieIds}
-            watchlistMovieIds={watchlistMovieIds}
-            onToggleWatchlist={onToggleWatchlist}
-            onToggleWatched={onToggleWatched}
-            sort={catalogSort}
-          />
-          <PaginationControls pagination={topRatedMoviesState.pagination} onPageChange={onChangeTopRatedPage} />
-        </ContentSection>
-      ) : isUpcomingListMode ? (
-        <ContentSection title="Upcoming Soon">
-          <UpcomingMoviesGrid
-            upcomingMoviesState={upcomingMoviesState}
-            layout="catalog"
-            onOpenMovie={onOpenMovie}
-            watchedMovieIds={watchedMovieIds}
-            watchlistMovieIds={watchlistMovieIds}
-            onToggleWatchlist={onToggleWatchlist}
-            onToggleWatched={onToggleWatched}
-            sort={catalogSort}
-          />
-          <PaginationControls pagination={upcomingMoviesState.pagination} onPageChange={onChangeUpcomingPage} />
+          <PaginationControls pagination={catalogCollection.state.pagination} onPageChange={catalogCollection.onPageChange} />
         </ContentSection>
       ) : (
         <>
@@ -5932,49 +5740,21 @@ function MoviesScreen({
                 watchlistMovieIds={watchlistMovieIds}
               />
 
-              <ContentSection title="Popular Right Now" action="View all" onAction={onOpenPopularMovies}>
-                <PopularMoviesGrid
-                  popularMoviesState={popularMoviesState}
-                  onOpenMovie={onOpenMovie}
-                  watchedMovieIds={watchedMovieIds}
-                  watchlistMovieIds={watchlistMovieIds}
-                  onToggleWatchlist={onToggleWatchlist}
-                  onToggleWatched={onToggleWatched}
-                />
-              </ContentSection>
-
-              <ContentSection title="Recently Released" action="View all" onAction={onOpenRecentlyReleasedMovies}>
-                <RecentlyReleasedSlider
-                  recentMoviesState={recentMoviesState}
-                  onOpenMovie={onOpenMovie}
-                  watchedMovieIds={watchedMovieIds}
-                  watchlistMovieIds={watchlistMovieIds}
-                  onToggleWatchlist={onToggleWatchlist}
-                  onToggleWatched={onToggleWatched}
-                />
-              </ContentSection>
-
-              <ContentSection title="Upcoming Soon" action="View all" onAction={onOpenUpcomingMovies}>
-                <UpcomingMoviesGrid
-                  upcomingMoviesState={upcomingMoviesState}
-                  onOpenMovie={onOpenMovie}
-                  watchedMovieIds={watchedMovieIds}
-                  watchlistMovieIds={watchlistMovieIds}
-                  onToggleWatchlist={onToggleWatchlist}
-                  onToggleWatched={onToggleWatched}
-                />
-              </ContentSection>
-
-              <ContentSection title="Top Rated" action="View all" onAction={onOpenTopRatedMovies}>
-                <TopRatedMoviesGrid
-                  topRatedMoviesState={topRatedMoviesState}
-                  onOpenMovie={onOpenMovie}
-                  watchedMovieIds={watchedMovieIds}
-                  watchlistMovieIds={watchlistMovieIds}
-                  onToggleWatchlist={onToggleWatchlist}
-                  onToggleWatched={onToggleWatched}
-                />
-              </ContentSection>
+              {['popular', 'recent', 'upcoming', 'topRated'].map((key) => {
+                const collection = collections[key]
+                return <ContentSection key={key} title={collection.config.overviewTitle || collection.config.title} action="View all" onAction={collection.onOpenAll}>
+                  <MovieCollectionGrid
+                    ui={movieGridUi}
+                    config={collection.config}
+                    state={collection.state}
+                    onOpenMovie={onOpenMovie}
+                    watchedMovieIds={watchedMovieIds}
+                    watchlistMovieIds={watchlistMovieIds}
+                    onToggleWatchlist={onToggleWatchlist}
+                    onToggleWatched={onToggleWatched}
+                  />
+                </ContentSection>
+              })}
             </div>
 
             <aside className="movies-rail">
@@ -7423,6 +7203,172 @@ function WatchlistCard({ item, compact = false, onOpenItem, onRemove, onMarkComp
   )
 }
 
+function useMovieDetailMedia(movieId, user) {
+  const [trailerState, setTrailerState] = useState({ status: 'idle', trailer: null, error: '' })
+  const [filelistState, setFilelistState] = useState({ open: false, status: 'idle', results: [], error: '', minutesUntilReset: null })
+  const trailerRequestId = useRef(0)
+  const filelistRequestId = useRef(0)
+
+  useEffect(() => {
+    trailerRequestId.current += 1
+    filelistRequestId.current += 1
+    setTrailerState({ status: 'idle', trailer: null, error: '' })
+    setFilelistState({ open: false, status: 'idle', results: [], error: '', minutesUntilReset: null })
+  }, [movieId])
+
+  async function openTrailer() {
+    const requestId = ++trailerRequestId.current
+    setTrailerState({ status: 'loading', trailer: null, error: '' })
+    try {
+      const response = await fetch(`/api/movies/${movieId}/trailer`)
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || 'Unable to load a trailer right now.')
+      if (trailerRequestId.current === requestId) setTrailerState({ status: 'success', trailer: payload.trailer, error: '' })
+    } catch (error) {
+      if (trailerRequestId.current === requestId) setTrailerState({ status: 'error', trailer: null, error: error instanceof Error ? error.message : 'Unable to load a trailer right now.' })
+    }
+  }
+
+  function closeTrailer() {
+    trailerRequestId.current += 1
+    setTrailerState({ status: 'idle', trailer: null, error: '' })
+  }
+
+  async function openFilelist() {
+    const requestId = ++filelistRequestId.current
+    setFilelistState({ open: true, status: 'loading', results: [], error: '', minutesUntilReset: null })
+    try {
+      const response = await fetch(`/api/movies/${movieId}/filelist`, { headers: buildAuthHeaders(user) })
+      const payload = await response.json().catch(() => ({}))
+      if (filelistRequestId.current !== requestId) return
+      if (!response.ok) {
+        setFilelistState({ open: true, status: response.status === 429 ? 'rate-limit' : 'error', results: [], error: payload.error || `Request failed with status ${response.status}`, minutesUntilReset: payload.minutesUntilReset ?? null })
+        return
+      }
+      setFilelistState({ open: true, status: 'success', results: Array.isArray(payload.results) ? payload.results : [], error: '', minutesUntilReset: null })
+    } catch (error) {
+      if (filelistRequestId.current === requestId) setFilelistState({ open: true, status: 'error', results: [], error: error instanceof Error ? error.message : 'Unable to search Filelist right now.', minutesUntilReset: null })
+    }
+  }
+
+  function closeFilelist() {
+    filelistRequestId.current += 1
+    setFilelistState((state) => ({ ...state, open: false }))
+  }
+
+  return { trailerState, filelistState, openTrailer, closeTrailer, openFilelist, closeFilelist }
+}
+
+function useMovieDetailChrome(movieId) {
+  const [isOverflowOpen, setIsOverflowOpen] = useState(false)
+  const [overflowMenuOffset, setOverflowMenuOffset] = useState(0)
+  const [isStickyHeaderVisible, setIsStickyHeaderVisible] = useState(false)
+  const heroRef = useRef(null)
+  const overflowRef = useRef(null)
+  const overflowMenuRef = useRef(null)
+
+  useEffect(() => {
+    setIsOverflowOpen(false)
+    setOverflowMenuOffset(0)
+    setIsStickyHeaderVisible(false)
+  }, [movieId])
+
+  useEffect(() => {
+    const heroElement = heroRef.current
+    if (!movieId || !heroElement || typeof IntersectionObserver === 'undefined') return undefined
+    const observer = new IntersectionObserver(([entry]) => setIsStickyHeaderVisible(!entry.isIntersecting), { threshold: 0.08 })
+    observer.observe(heroElement)
+    return () => observer.disconnect()
+  }, [movieId])
+
+  useEffect(() => {
+    if (!isOverflowOpen) return undefined
+    function handleDismiss(event) {
+      if (event.type === 'keydown' && event.key === 'Escape') setIsOverflowOpen(false)
+      if (event.type === 'mousedown' && !overflowRef.current?.contains(event.target)) setIsOverflowOpen(false)
+    }
+    document.addEventListener('keydown', handleDismiss)
+    document.addEventListener('mousedown', handleDismiss)
+    return () => {
+      document.removeEventListener('keydown', handleDismiss)
+      document.removeEventListener('mousedown', handleDismiss)
+    }
+  }, [isOverflowOpen])
+
+  useLayoutEffect(() => {
+    if (!isOverflowOpen || !overflowMenuRef.current) {
+      setOverflowMenuOffset(0)
+      return undefined
+    }
+    const keepMenuInViewport = () => {
+      const menuBounds = overflowMenuRef.current?.getBoundingClientRect()
+      if (!menuBounds) return
+      const safeInset = 12
+      const shift = menuBounds.left < safeInset
+        ? safeInset - menuBounds.left
+        : menuBounds.right > window.innerWidth - safeInset
+          ? window.innerWidth - safeInset - menuBounds.right
+          : 0
+      if (shift) setOverflowMenuOffset((offset) => offset + shift)
+    }
+    keepMenuInViewport()
+    window.addEventListener('resize', keepMenuInViewport)
+    return () => window.removeEventListener('resize', keepMenuInViewport)
+  }, [isOverflowOpen])
+
+  function toggleOverflow() {
+    setOverflowMenuOffset(0)
+    setIsOverflowOpen((open) => !open)
+  }
+
+  return { isOverflowOpen, setIsOverflowOpen, overflowMenuOffset, isStickyHeaderVisible, heroRef, overflowRef, overflowMenuRef, toggleOverflow }
+}
+
+function useMovieWatchActions({ movie, isSignedIn, onOpenLogin, onToggleWatchlist, onToggleWatched, onSubmitMovieRating, onSaveWatchTogetherSession, isWatched, isInWatchlist }) {
+  const [isRatingDialogOpen, setIsRatingDialogOpen] = useState(false)
+  const [selectedRating, setSelectedRating] = useState(5)
+  const [isWatchServiceDialogOpen, setIsWatchServiceDialogOpen] = useState(false)
+  const [sessionItem, setSessionItem] = useState(null)
+
+  useEffect(() => {
+    setIsWatchServiceDialogOpen(false)
+    setSessionItem(null)
+  }, [movie?.id])
+
+  function openRating() {
+    if (!isSignedIn) return onOpenLogin()
+    setSelectedRating(movie.communityRating?.yourScore ?? 5)
+    setIsRatingDialogOpen(true)
+  }
+
+  function handlePrimaryAction() {
+    if (isWatched) return openRating()
+    if (!isInWatchlist) return onToggleWatchlist(movie)
+    setIsWatchServiceDialogOpen(true)
+  }
+
+  async function submitRating() {
+    if (await onSubmitMovieRating(movie, selectedRating)) setIsRatingDialogOpen(false)
+  }
+
+  async function markWatched(watchService) {
+    const saved = await onToggleWatched(movie, watchService)
+    setIsWatchServiceDialogOpen(false)
+    if (saved) {
+      setSelectedRating(movie.communityRating?.yourScore ?? 5)
+      setIsRatingDialogOpen(true)
+    }
+  }
+
+  async function saveSession(ids, details) {
+    const saved = await onSaveWatchTogetherSession(sessionItem, ids, details)
+    if (saved) setSessionItem(null)
+    return saved
+  }
+
+  return { isRatingDialogOpen, setIsRatingDialogOpen, selectedRating, setSelectedRating, isWatchServiceDialogOpen, setIsWatchServiceDialogOpen, sessionItem, setSessionItem, handlePrimaryAction, submitRating, markWatched, saveSession }
+}
+
 function MovieDetailPage({
   movieDetailState,
   similarMoviesState,
@@ -7447,88 +7393,19 @@ function MovieDetailPage({
   movieReleaseReminderActionState,
   onSaveWatchTogetherSession,
 }) {
-  const [isRatingDialogOpen, setIsRatingDialogOpen] = useState(false)
-  const [sessionItem, setSessionItem] = useState(null)
-  const [isWatchServiceDialogOpen, setIsWatchServiceDialogOpen] = useState(false)
-  const [selectedRating, setSelectedRating] = useState(5)
-  const [trailerState, setTrailerState] = useState({ status: 'idle', trailer: null, error: '' })
-  const [filelistState, setFilelistState] = useState({ open: false, status: 'idle', results: [], error: '', minutesUntilReset: null })
-  const [isOverflowOpen, setIsOverflowOpen] = useState(false)
-  const [overflowMenuOffset, setOverflowMenuOffset] = useState(0)
-  const [isCastExpanded, setIsCastExpanded] = useState(false)
-  const [isStickyHeaderVisible, setIsStickyHeaderVisible] = useState(false)
-  const heroRef = useRef(null)
-  const overflowRef = useRef(null)
-  const overflowMenuRef = useRef(null)
-
-  useEffect(() => {
-    setTrailerState({ status: 'idle', trailer: null, error: '' })
-    setIsWatchServiceDialogOpen(false)
-    setFilelistState({ open: false, status: 'idle', results: [], error: '', minutesUntilReset: null })
-    setIsOverflowOpen(false)
-    setOverflowMenuOffset(0)
-    setIsCastExpanded(false)
-    setIsStickyHeaderVisible(false)
-    setSessionItem(null)
-  }, [movieDetailState.movie?.id])
-
-  useEffect(() => {
-    const heroElement = heroRef.current
-    if (!movieDetailState.movie?.id || !heroElement || typeof IntersectionObserver === 'undefined') return undefined
-    const observer = new IntersectionObserver(([entry]) => setIsStickyHeaderVisible(!entry.isIntersecting), { threshold: 0.08 })
-    observer.observe(heroElement)
-    return () => observer.disconnect()
-  }, [movieDetailState.movie?.id])
-
-  useEffect(() => {
-    if (!isOverflowOpen) return undefined
-    function handleDismiss(event) {
-      if (event.type === 'keydown' && event.key === 'Escape') setIsOverflowOpen(false)
-      if (event.type === 'mousedown' && !overflowRef.current?.contains(event.target)) setIsOverflowOpen(false)
-    }
-    document.addEventListener('keydown', handleDismiss)
-    document.addEventListener('mousedown', handleDismiss)
-    return () => {
-      document.removeEventListener('keydown', handleDismiss)
-      document.removeEventListener('mousedown', handleDismiss)
-    }
-  }, [isOverflowOpen])
-
-  useLayoutEffect(() => {
-    if (!isOverflowOpen || !overflowMenuRef.current) {
-      setOverflowMenuOffset(0)
-      return undefined
-    }
-
-    const keepMenuInViewport = () => {
-      const menuBounds = overflowMenuRef.current?.getBoundingClientRect()
-      if (!menuBounds) return
-      const safeInset = 12
-      const shift = menuBounds.left < safeInset
-        ? safeInset - menuBounds.left
-        : menuBounds.right > window.innerWidth - safeInset
-          ? window.innerWidth - safeInset - menuBounds.right
-          : 0
-      if (shift) setOverflowMenuOffset((offset) => offset + shift)
-    }
-
-    keepMenuInViewport()
-    window.addEventListener('resize', keepMenuInViewport)
-    return () => window.removeEventListener('resize', keepMenuInViewport)
-  }, [isOverflowOpen])
+  const movieId = movieDetailState.movie?.id
+  const { trailerState, filelistState, openTrailer, closeTrailer, openFilelist, closeFilelist } = useMovieDetailMedia(movieId, user)
+  const { isOverflowOpen, setIsOverflowOpen, overflowMenuOffset, isStickyHeaderVisible, heroRef, overflowRef, overflowMenuRef, toggleOverflow } = useMovieDetailChrome(movieId)
+  const isInWatchlist = watchlistMovieIds.has(Number(movieId))
+  const isWatched = watchedMovieIds.has(Number(movieId))
+  const { isRatingDialogOpen, setIsRatingDialogOpen, selectedRating, setSelectedRating, isWatchServiceDialogOpen, setIsWatchServiceDialogOpen, sessionItem, setSessionItem, handlePrimaryAction, submitRating, markWatched, saveSession } = useMovieWatchActions({
+    movie: movieDetailState.movie, isSignedIn, onOpenLogin, onToggleWatchlist, onToggleWatched, onSubmitMovieRating, onSaveWatchTogetherSession, isWatched, isInWatchlist,
+  })
 
   if (movieDetailState.status === 'loading' || movieDetailState.status === 'idle') {
     return (
       <section className="movie-detail-page">
         <SectionMessage message="Loading movie detail from your local database..." />
-      </section>
-    )
-  }
-
-  if (movieDetailState.status === 'hidden' || !movieDetailState.movie) {
-    return (
-      <section className="movie-detail-page">
-        <SectionMessage message="Movie detail is not available yet." />
       </section>
     )
   }
@@ -7541,16 +7418,20 @@ function MovieDetailPage({
     )
   }
 
+  if (movieDetailState.status === 'hidden' || !movieDetailState.movie) {
+    return (
+      <section className="movie-detail-page">
+        <SectionMessage message="Movie detail is not available yet." />
+      </section>
+    )
+  }
+
   const movie = movieDetailState.movie
   const sharedMovie = isSignedIn && watchTogetherState?.status === 'success' && watchTogetherState.partner
     ? watchTogetherState.watchedMovies.find((item) => Number(item.id) === Number(movie.id)) ?? null
     : null
-  const creditCards = buildMovieCreditCards(movie)
-  const reviews = Array.isArray(movie.reviews) ? movie.reviews : []
   const detailYear = formatMovieYear(movie.releaseDate) !== 'Release TBA' ? formatMovieYear(movie.releaseDate) : movie.year
-  const isInWatchlist = watchlistMovieIds.has(Number(movie.id))
   const watchedMovie = watchedMovies.find((item) => Number(item.id) === Number(movie.id)) ?? null
-  const isWatched = watchedMovieIds.has(Number(movie.id))
   const isWatchlistUpdating = watchlistActionState.status === 'loading' && Number(watchlistActionState.movieId) === Number(movie.id)
   const isWatchedUpdating = watchedActionState.status === 'loading' && Number(watchedActionState.movieId) === Number(movie.id)
   const watchedLabel = watchedMovie?.watchedAt ? formatLongDate(watchedMovie.watchedAt) : 'Not yet'
@@ -7562,77 +7443,14 @@ function MovieDetailPage({
   const isReleaseReminderUpdating = movieReleaseReminderActionState.status === 'loading' && Number(movieReleaseReminderActionState.movieId) === Number(movie.id)
   const releaseReminderTiming = isUpcoming ? `${movie.releaseDateLabel} · ${formatMovieCountdown(movie.releaseDate)}` : ''
   const releaseContext = isUpcoming ? `Releases ${releaseReminderTiming}` : movie.releaseDate ? `Released ${movie.releaseDateLabel}` : 'Release date TBA'
-  const visibleCreditCards = isCastExpanded ? creditCards : creditCards.slice(0, 5)
   const backdropStyle = movie.backdropUrl
     ? {
         backgroundImage: `linear-gradient(90deg, rgba(7, 10, 18, 0.96) 0%, rgba(7, 10, 18, 0.74) 30%, rgba(7, 10, 18, 0.34) 62%, rgba(7, 10, 18, 0.68) 100%), url(${movie.backdropUrl})`,
       }
     : undefined
 
-  async function handleOpenTrailer() {
-    setTrailerState({ status: 'loading', trailer: null, error: '' })
-
-    try {
-      const response = await fetch(`/api/movies/${movie.id}/trailer`)
-      const payload = await response.json().catch(() => ({}))
-
-      if (!response.ok) {
-        throw new Error(payload.error || 'Unable to load a trailer right now.')
-      }
-
-      setTrailerState({ status: 'success', trailer: payload.trailer, error: '' })
-    } catch (error) {
-      setTrailerState({
-        status: 'error',
-        trailer: null,
-        error: error instanceof Error ? error.message : 'Unable to load a trailer right now.',
-      })
-    }
-  }
-
-  function closeTrailer() {
-    setTrailerState({ status: 'idle', trailer: null, error: '' })
-  }
-
-  function openRating() {
-    if (!isSignedIn) {
-      onOpenLogin()
-      return
-    }
-
-    setSelectedRating(communityRating.yourScore ?? 5)
-    setIsRatingDialogOpen(true)
-  }
-
-  function handlePrimaryAction() {
-    if (isWatched) {
-      openRating()
-      return
-    }
-
-    if (!isInWatchlist) {
-      onToggleWatchlist(movie)
-      return
-    }
-
-    setIsWatchServiceDialogOpen(true)
-  }
-
   function scrollToMovieSection(sectionId) {
     document.getElementById(sectionId)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-  }
-
-  async function handleOpenFilelist() {
-    setFilelistState({ open: true, status: 'loading', results: [], error: '', minutesUntilReset: null })
-    try {
-      const response = await fetch(`/api/movies/${movie.id}/filelist`, { headers: buildAuthHeaders(user) })
-      const payload = await response.json().catch(() => ({}))
-      if (!response.ok) {
-        setFilelistState({ open: true, status: response.status === 429 ? 'rate-limit' : 'error', results: [], error: payload.error || `Request failed with status ${response.status}`, minutesUntilReset: payload.minutesUntilReset ?? null })
-        return
-      }
-      setFilelistState({ open: true, status: 'success', results: Array.isArray(payload.results) ? payload.results : [], error: '', minutesUntilReset: null })
-    } catch (error) { setFilelistState({ open: true, status: 'error', results: [], error: error instanceof Error ? error.message : 'Unable to search Filelist right now.', minutesUntilReset: null }) }
   }
 
   const isTrailerLoading = trailerState.status === 'loading'
@@ -7660,7 +7478,7 @@ function MovieDetailPage({
 
         <div className="movie-detail-poster-wrap">
           <MoviePosterFrame movie={movie} />
-          <button type="button" className="movie-detail-trailer-badge" aria-label={isTrailerLoading ? 'Loading trailer...' : `Play trailer for ${movie.title}`} onClick={handleOpenTrailer} disabled={isTrailerLoading}>
+          <button type="button" className="movie-detail-trailer-badge" aria-label={isTrailerLoading ? 'Loading trailer...' : `Play trailer for ${movie.title}`} onClick={openTrailer} disabled={isTrailerLoading}>
             <PlayIcon />
           </button>
         </div>
@@ -7708,50 +7526,25 @@ function MovieDetailPage({
               <span>{primaryActionLabel}</span>
             </button>
             {sharedMovie ? <button type="button" className="secondary-button movie-detail-secondary watch-together-session-action" onClick={() => setSessionItem(sharedMovie)}><span>{sharedMovie.sessionDetails ? 'Edit session' : 'Log session'}</span></button> : null}
-            <button type="button" className="secondary-button movie-detail-secondary ghost desktop-only" onClick={handleOpenTrailer} disabled={isTrailerLoading}>
+            <button type="button" className="secondary-button movie-detail-secondary ghost desktop-only" onClick={openTrailer} disabled={isTrailerLoading}>
               <PlayIcon />
               <span>{isTrailerLoading ? 'Loading...' : 'Trailer'}</span>
             </button>
             <div ref={overflowRef} className="movie-action-overflow">
-              <button type="button" className="secondary-button movie-detail-secondary ghost movie-action-overflow-trigger" aria-expanded={isOverflowOpen} aria-haspopup="menu" onClick={() => { setOverflowMenuOffset(0); setIsOverflowOpen((open) => !open) }}><MoreIcon /><span>More</span></button>
+              <button type="button" className="secondary-button movie-detail-secondary ghost movie-action-overflow-trigger" aria-expanded={isOverflowOpen} aria-haspopup="menu" onClick={toggleOverflow}><MoreIcon /><span>More</span></button>
               {isOverflowOpen ? <div ref={overflowMenuRef} className="movie-action-overflow-menu" role="menu" style={overflowMenuOffset ? { transform: `translateX(${overflowMenuOffset}px)` } : undefined}>
-                <button type="button" role="menuitem" className="mobile-only" onClick={() => { setIsOverflowOpen(false); void handleOpenTrailer() }} disabled={isTrailerLoading}><PlayIcon /><span>{isTrailerLoading ? 'Loading trailer...' : 'Trailer'}</span></button>
+                <button type="button" role="menuitem" className="mobile-only" onClick={() => { setIsOverflowOpen(false); void openTrailer() }} disabled={isTrailerLoading}><PlayIcon /><span>{isTrailerLoading ? 'Loading trailer...' : 'Trailer'}</span></button>
                 {isInWatchlist && !isWatched ? <button type="button" role="menuitem" onClick={() => { setIsOverflowOpen(false); onToggleWatchlist(movie) }}><BookmarkIcon /><span>Remove from Watchlist</span></button> : null}
                 {isWatched ? <button type="button" role="menuitem" onClick={() => { setIsOverflowOpen(false); onToggleWatched(movie) }}><ReplayIcon /><span>Mark as Unwatched</span></button> : null}
                 {isUpcoming ? <button type="button" role="menuitem" onClick={() => { setIsOverflowOpen(false); onToggleReleaseReminder(movie) }} disabled={isReleaseReminderUpdating}><BellIcon /><span>{isReleaseReminderUpdating ? 'Updating...' : `${movie.hasReleaseReminder ? 'Cancel reminder' : 'Remind me'} · ${releaseReminderTiming}`}</span></button> : null}
-                <button type="button" role="menuitem" className="movie-filelist-menu-action" onClick={() => { setIsOverflowOpen(false); void handleOpenFilelist() }}><span>Filelist</span></button>
+                <button type="button" role="menuitem" className="movie-filelist-menu-action" onClick={() => { setIsOverflowOpen(false); void openFilelist() }}><span>Filelist</span></button>
               </div> : null}
             </div>
           </div>
           {trailerState.status === 'error' ? <p className="movie-trailer-error" role="alert">{trailerState.error}</p> : null}
         </div>
 
-        <aside className="movie-detail-status desktop-only">
-          <h2>Your timeline</h2>
-          <div className="movie-detail-timeline">
-            <div className="movie-detail-timeline-item movie-detail-status-item-watchlist">
-              <span className="movie-detail-status-icon" aria-hidden="true"><BookmarkStatusIcon /></span>
-              <div>
-                <span>Watchlist</span>
-                <strong>{isInWatchlist ? 'Saved' : 'Not yet'}</strong>
-              </div>
-            </div>
-            <div className="movie-detail-timeline-item movie-detail-status-item-watched">
-              <span className="movie-detail-status-icon" aria-hidden="true"><WatchedStatusIcon /></span>
-              <div>
-                <span>Watched</span>
-                <strong>{watchedLabel}</strong>
-              </div>
-            </div>
-            <div className="movie-detail-timeline-item movie-detail-status-item-rating">
-              <span className="movie-detail-status-icon" aria-hidden="true"><StarOutlineIcon /></span>
-              <div>
-                <span>Your Rating</span>
-                <strong>{yourRatingLabel}</strong>
-              </div>
-            </div>
-          </div>
-        </aside>
+        <MovieDetailTimeline isInWatchlist={isInWatchlist} watchedLabel={watchedLabel} yourRatingLabel={yourRatingLabel} />
       </article>
 
       {isStickyHeaderVisible ? <div className="movie-detail-sticky-header" role="region" aria-label={`${movie.title} quick actions`}>
@@ -7766,101 +7559,26 @@ function MovieDetailPage({
           selectedRating={selectedRating}
           onSelectRating={setSelectedRating}
           onCancel={() => setIsRatingDialogOpen(false)}
-          onSubmit={async () => {
-            const saved = await onSubmitMovieRating(movie, selectedRating)
-            if (saved) setIsRatingDialogOpen(false)
-          }}
+          onSubmit={submitRating}
           isSaving={isRatingSaving}
           error={movieRatingActionState.status === 'error' && Number(movieRatingActionState.movieId) === Number(movie.id) ? movieRatingActionState.error : ''}
         />
       ) : null}
 
-      {isWatchServiceDialogOpen ? <WatchServiceDialog title={movie.title} onCancel={() => setIsWatchServiceDialogOpen(false)} onSelect={async (watchService) => { const saved = await onToggleWatched(movie, watchService); setIsWatchServiceDialogOpen(false); if (saved) { setSelectedRating(communityRating.yourScore ?? 5); setIsRatingDialogOpen(true) } }} /> : null}
+      {isWatchServiceDialogOpen ? <WatchServiceDialog title={movie.title} onCancel={() => setIsWatchServiceDialogOpen(false)} onSelect={markWatched} /> : null}
 
       {trailerState.status === 'success' && trailerState.trailer ? (
         <MovieTrailerDialog movie={movie} trailer={trailerState.trailer} onClose={closeTrailer} />
       ) : null}
 
-      {filelistState.open ? <FilelistDialog title={movie.title} state={filelistState} onClose={() => setFilelistState((state) => ({ ...state, open: false }))} /> : null}
+      {filelistState.open ? <FilelistDialog title={movie.title} state={filelistState} onClose={closeFilelist} /> : null}
 
-      {sessionItem ? <WatchTogetherSessionDialog item={sessionItem} achievements={watchTogetherAchievementsState?.achievements || []} onCancel={() => setSessionItem(null)} onSave={async (ids, details) => {
-        const saved = await onSaveWatchTogetherSession(sessionItem, ids, details)
-        if (saved) setSessionItem(null)
-        return saved
-      }} /> : null}
+      {sessionItem ? <WatchTogetherSessionDialog item={sessionItem} achievements={watchTogetherAchievementsState?.achievements || []} onCancel={() => setSessionItem(null)} onSave={saveSession} /> : null}
 
       <div className="movie-detail-grid">
-        <section id="movie-cast" className="content-section movie-detail-panel movie-detail-cast-panel">
-          <div className="section-header">
-            <h2>Cast &amp; Crew</h2>
-            {creditCards.length > 5 ? <button type="button" className="section-link" onClick={() => setIsCastExpanded((expanded) => !expanded)}>{isCastExpanded ? 'Show less' : `View full cast (${creditCards.length})`}</button> : null}
-          </div>
-          <div className="movie-detail-cast">
-            {creditCards.length > 0 ? (
-              visibleCreditCards.map((member) => (
-                <button
-                  key={`${member.name}-${member.role}`}
-                  type="button"
-                  className="movie-detail-cast-card movie-detail-cast-card-button"
-                  aria-label={`Open ${member.name}`}
-                  onClick={() => onOpenPerson?.(member)}
-                  disabled={!Number.isInteger(Number(member.id))}
-                >
-                  <div
-                    className="movie-detail-cast-avatar"
-                    style={buildMovieCreditAvatarStyle(member.profileUrl)}
-                    aria-label={member.name}
-                  >
-                    {!member.profileUrl ? getMovieCreditInitials(member.name) : null}
-                  </div>
-                  <h3>{member.name}</h3>
-                  <p>{member.role}</p>
-                </button>
-              ))
-            ) : (
-              <p className="movie-detail-cast-empty">Cast details are not available for this movie yet.</p>
-            )}
-          </div>
-        </section>
+        <MovieCastPanel key={movie.id} movie={movie} onOpenPerson={onOpenPerson} />
 
-        <section id="movie-activity" className="content-section movie-detail-panel movie-detail-activity">
-          <div className="section-header">
-            <h2>Your Activity</h2>
-          </div>
-          {isWatched ? <div className="movie-detail-activity-grid">
-            <div className="movie-detail-activity-item">
-              <CalendarIcon />
-              <div>
-                <span>Watched on</span>
-                <strong>{watchedLabel}</strong>
-              </div>
-            </div>
-            <div className="movie-detail-activity-item">
-              <ProgressIcon />
-              <div>
-                <span>Progress</span>
-                <div className="movie-detail-progress">
-                  <span style={{ width: isWatched ? '100%' : '0%' }} />
-                </div>
-              </div>
-              <strong>{isWatched ? '100%' : '0%'}</strong>
-            </div>
-            <div className="movie-detail-activity-item">
-              <ReplayIcon />
-              <div>
-                <span>Rewatch Count</span>
-                <strong>{isWatched ? '1 time' : '0 times'}</strong>
-              </div>
-            </div>
-            <div className="movie-detail-activity-item">
-              <NotesIcon />
-              <div>
-                <span>Notes</span>
-                <strong>Completed and saved to your watch history.</strong>
-              </div>
-            </div>
-          </div> : <div className="movie-detail-activity-empty"><ProgressIcon /><div><strong>Ready when you are</strong><span>Mark watched to start your history and keep your rating close at hand.</span></div><button type="button" className="secondary-button" onClick={() => setIsWatchServiceDialogOpen(true)}>Mark as Watched</button></div>}
-        </section>
+        <MovieActivityPanel isWatched={isWatched} watchedLabel={watchedLabel} onMarkWatched={() => setIsWatchServiceDialogOpen(true)} />
 
         <section id="movie-similar" className="content-section movie-detail-panel movie-detail-more-like-this">
           <div className="section-header">
@@ -7869,36 +7587,156 @@ function MovieDetailPage({
           <SimilarMoviesGrid similarMoviesState={similarMoviesState} onOpenMovie={onOpenMovie} />
         </section>
 
-        <section id="movie-reviews" className="content-section movie-detail-panel movie-detail-reviews">
-          <div className="section-header">
-            <h2>Community Reviews</h2>
-          </div>
-          {reviews.length > 0 ? (
-            <div className="movie-detail-review-grid">
-              {reviews.map((review) => (
-                <article key={review.id || `${review.author}-${review.date}`} className="movie-detail-review-card">
-                  <div className="movie-detail-review-header">
-                    <div className="movie-detail-review-author">
-                      <div className="avatar small">{review.author.charAt(0)}</div>
-                      <span>{review.author}</span>
-                    </div>
-                    <div className="movie-detail-review-rating">
-                      <span className="movie-detail-stars">{review.rating ? '★★★★★' : 'No score'}</span>
-                      {review.rating ? <strong>{review.rating}</strong> : null}
-                    </div>
-                  </div>
-                  <p>{review.copy}</p>
-                  <div className="movie-detail-review-meta">
-                    <span>{review.date}</span>
-                  </div>
-                </article>
-              ))}
-            </div>
-          ) : (
-            <p className="movie-detail-cast-empty">No community reviews available right now.</p>
-          )}
-        </section>
+        <MovieReviewsPanel reviews={Array.isArray(movie.reviews) ? movie.reviews : []} />
       </div>
+    </section>
+  )
+}
+
+function MovieDetailTimeline({ isInWatchlist, watchedLabel, yourRatingLabel }) {
+  return (
+    <aside className="movie-detail-status desktop-only">
+      <h2>Your timeline</h2>
+      <div className="movie-detail-timeline">
+        <div className="movie-detail-timeline-item movie-detail-status-item-watchlist">
+          <span className="movie-detail-status-icon" aria-hidden="true"><BookmarkStatusIcon /></span>
+          <div>
+            <span>Watchlist</span>
+            <strong>{isInWatchlist ? 'Saved' : 'Not yet'}</strong>
+          </div>
+        </div>
+        <div className="movie-detail-timeline-item movie-detail-status-item-watched">
+          <span className="movie-detail-status-icon" aria-hidden="true"><WatchedStatusIcon /></span>
+          <div>
+            <span>Watched</span>
+            <strong>{watchedLabel}</strong>
+          </div>
+        </div>
+        <div className="movie-detail-timeline-item movie-detail-status-item-rating">
+          <span className="movie-detail-status-icon" aria-hidden="true"><StarOutlineIcon /></span>
+          <div>
+            <span>Your Rating</span>
+            <strong>{yourRatingLabel}</strong>
+          </div>
+        </div>
+      </div>
+    </aside>
+  )
+}
+
+function MovieCastPanel({ movie, onOpenPerson }) {
+  const [isCastExpanded, setIsCastExpanded] = useState(false)
+  const creditCards = buildMovieCreditCards(movie)
+  const visibleCreditCards = isCastExpanded ? creditCards : creditCards.slice(0, 5)
+  return (
+    <section id="movie-cast" className="content-section movie-detail-panel movie-detail-cast-panel">
+      <div className="section-header">
+        <h2>Cast &amp; Crew</h2>
+        {creditCards.length > 5 ? <button type="button" className="section-link" onClick={() => setIsCastExpanded((expanded) => !expanded)}>{isCastExpanded ? 'Show less' : `View full cast (${creditCards.length})`}</button> : null}
+      </div>
+      <div className="movie-detail-cast">
+        {creditCards.length > 0 ? (
+          visibleCreditCards.map((member) => (
+            <button
+              key={`${member.name}-${member.role}`}
+              type="button"
+              className="movie-detail-cast-card movie-detail-cast-card-button"
+              aria-label={`Open ${member.name}`}
+              onClick={() => onOpenPerson?.(member)}
+              disabled={!Number.isInteger(Number(member.id))}
+            >
+              <div
+                className="movie-detail-cast-avatar"
+                style={buildMovieCreditAvatarStyle(member.profileUrl)}
+                aria-label={member.name}
+              >
+                {!member.profileUrl ? getMovieCreditInitials(member.name) : null}
+              </div>
+              <h3>{member.name}</h3>
+              <p>{member.role}</p>
+            </button>
+          ))
+        ) : (
+          <p className="movie-detail-cast-empty">Cast details are not available for this movie yet.</p>
+        )}
+      </div>
+    </section>
+  )
+}
+
+function MovieActivityPanel({ isWatched, watchedLabel, onMarkWatched }) {
+  return (
+    <section id="movie-activity" className="content-section movie-detail-panel movie-detail-activity">
+      <div className="section-header">
+        <h2>Your Activity</h2>
+      </div>
+      {isWatched ? <div className="movie-detail-activity-grid">
+        <div className="movie-detail-activity-item">
+          <CalendarIcon />
+          <div>
+            <span>Watched on</span>
+            <strong>{watchedLabel}</strong>
+          </div>
+        </div>
+        <div className="movie-detail-activity-item">
+          <ProgressIcon />
+          <div>
+            <span>Progress</span>
+            <div className="movie-detail-progress">
+              <span style={{ width: isWatched ? '100%' : '0%' }} />
+            </div>
+          </div>
+          <strong>{isWatched ? '100%' : '0%'}</strong>
+        </div>
+        <div className="movie-detail-activity-item">
+          <ReplayIcon />
+          <div>
+            <span>Rewatch Count</span>
+            <strong>{isWatched ? '1 time' : '0 times'}</strong>
+          </div>
+        </div>
+        <div className="movie-detail-activity-item">
+          <NotesIcon />
+          <div>
+            <span>Notes</span>
+            <strong>Completed and saved to your watch history.</strong>
+          </div>
+        </div>
+      </div> : <div className="movie-detail-activity-empty"><ProgressIcon /><div><strong>Ready when you are</strong><span>Mark watched to start your history and keep your rating close at hand.</span></div><button type="button" className="secondary-button" onClick={onMarkWatched}>Mark as Watched</button></div>}
+    </section>
+  )
+}
+
+function MovieReviewsPanel({ reviews }) {
+  return (
+    <section id="movie-reviews" className="content-section movie-detail-panel movie-detail-reviews">
+      <div className="section-header">
+        <h2>Community Reviews</h2>
+      </div>
+      {reviews.length > 0 ? (
+        <div className="movie-detail-review-grid">
+          {reviews.map((review) => (
+            <article key={review.id || `${review.author}-${review.date}`} className="movie-detail-review-card">
+              <div className="movie-detail-review-header">
+                <div className="movie-detail-review-author">
+                  <div className="avatar small">{review.author.charAt(0)}</div>
+                  <span>{review.author}</span>
+                </div>
+                <div className="movie-detail-review-rating">
+                  <span className="movie-detail-stars">{review.rating ? '★★★★★' : 'No score'}</span>
+                  {review.rating ? <strong>{review.rating}</strong> : null}
+                </div>
+              </div>
+              <p>{review.copy}</p>
+              <div className="movie-detail-review-meta">
+                <span>{review.date}</span>
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <p className="movie-detail-cast-empty">No community reviews available right now.</p>
+      )}
     </section>
   )
 }
@@ -8096,70 +7934,10 @@ function MoviePosterFrame({ movie }) {
   )
 }
 
-function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOpenTv, onOpenPerson, isSignedIn, onOpenLogin, onToggleMovieWatchlist, onToggleMovieWatched, onToggleTvWatchlist, favoriteActorIds, onToggleFavorite }) {
-  const filmographyPageSize = 5
-  const [filmographyRole, setFilmographyRole] = useState('all')
-  const [filmographyMedia, setFilmographyMedia] = useState('all')
-  const [filmographyDecade, setFilmographyDecade] = useState('all')
-  const [filmographySort, setFilmographySort] = useState('popular')
-  const [visibleFilmographyCount, setVisibleFilmographyCount] = useState(filmographyPageSize)
+function usePersonShare(person) {
   const [isLinkCopied, setIsLinkCopied] = useState(false)
   const shareFeedbackTimer = useRef(null)
-  const personId = personDetailState.person?.id
-  const filmography = personDetailState.filmography ?? []
-
-  useEffect(() => {
-    setFilmographyRole('all')
-    setFilmographyMedia('all')
-    setFilmographyDecade('all')
-    setFilmographySort('popular')
-  }, [personId])
-
-  useEffect(() => {
-    setVisibleFilmographyCount(filmographyPageSize)
-  }, [personId, filmographyRole, filmographyMedia, filmographyDecade, filmographySort])
-
   useEffect(() => () => window.clearTimeout(shareFeedbackTimer.current), [])
-
-  if (personDetailState.status === 'loading' || personDetailState.status === 'idle') {
-    return (
-      <section className="person-detail-page">
-        <SectionMessage message="Loading actor and director detail from TMDB..." />
-      </section>
-    )
-  }
-
-  if (personDetailState.status === 'hidden' || !personDetailState.person) {
-    return (
-      <section className="person-detail-page">
-        <SectionMessage message="Person detail is not available yet." />
-      </section>
-    )
-  }
-
-  if (personDetailState.status === 'error') {
-    return (
-      <section className="person-detail-page">
-        <SectionMessage message={`Could not load the person detail. ${personDetailState.error}`} tone="error" />
-      </section>
-    )
-  }
-
-  const { person, knownFor, coStars, facts, personalHistory } = personDetailState
-  const isFavorite = favoriteActorIds.has(Number(person.id))
-  const decades = [...new Set(filmography.map((item) => item.decade).filter(Boolean))].sort((left, right) => Number(right.slice(0, 4)) - Number(left.slice(0, 4)))
-  const filteredFilmography = filmography
-    .filter((item) => filmographyRole === 'all' || item.creditCategories.includes(filmographyRole))
-    .filter((item) => filmographyMedia === 'all' || item.mediaType === filmographyMedia)
-    .filter((item) => filmographyDecade === 'all' || item.decade === filmographyDecade)
-    .sort((left, right) => comparePersonFilmography(left, right, filmographySort, isSignedIn))
-  const visibleFilmography = filteredFilmography.slice(0, visibleFilmographyCount)
-  const hasMoreFilmography = filteredFilmography.length > visibleFilmography.length
-  const heroStyle = person.heroBackdropUrl
-    ? {
-        backgroundImage: `linear-gradient(90deg, rgba(7, 10, 18, 0.98) 0%, rgba(7, 10, 18, 0.78) 28%, rgba(7, 10, 18, 0.4) 62%, rgba(7, 10, 18, 0.84) 100%), url(${person.heroBackdropUrl})`,
-      }
-    : undefined
 
   async function handleShare() {
     const shareData = {
@@ -8173,7 +7951,6 @@ function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOp
         await navigator.share(shareData)
         return
       }
-
       if (!navigator.clipboard?.writeText) throw new Error('Clipboard is unavailable')
       await navigator.clipboard.writeText(shareData.url)
       setIsLinkCopied(true)
@@ -8183,6 +7960,45 @@ function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOp
       // Dismissing the native share dialog should not affect the detail page.
     }
   }
+
+  return { isLinkCopied, handleShare }
+}
+
+function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOpenTv, onOpenPerson, isSignedIn, onOpenLogin, onToggleMovieWatchlist, onToggleMovieWatched, onToggleTvWatchlist, favoriteActorIds, onToggleFavorite }) {
+  const filmography = personDetailState.filmography ?? []
+  const { isLinkCopied, handleShare } = usePersonShare(personDetailState.person)
+
+  if (personDetailState.status === 'loading' || personDetailState.status === 'idle') {
+    return (
+      <section className="person-detail-page">
+        <SectionMessage message="Loading actor and director detail from TMDB..." />
+      </section>
+    )
+  }
+
+  if (personDetailState.status === 'error') {
+    return (
+      <section className="person-detail-page">
+        <SectionMessage message={`Could not load the person detail. ${personDetailState.error}`} tone="error" />
+      </section>
+    )
+  }
+
+  if (personDetailState.status === 'hidden' || !personDetailState.person) {
+    return (
+      <section className="person-detail-page">
+        <SectionMessage message="Person detail is not available yet." />
+      </section>
+    )
+  }
+
+  const { person, knownFor, coStars, facts, personalHistory } = personDetailState
+  const isFavorite = favoriteActorIds.has(Number(person.id))
+  const heroStyle = person.heroBackdropUrl
+    ? {
+        backgroundImage: `linear-gradient(90deg, rgba(7, 10, 18, 0.98) 0%, rgba(7, 10, 18, 0.78) 28%, rgba(7, 10, 18, 0.4) 62%, rgba(7, 10, 18, 0.84) 100%), url(${person.heroBackdropUrl})`,
+      }
+    : undefined
 
   return (
     <section className="person-detail-page">
@@ -8251,156 +8067,185 @@ function PersonDetailPage({ personDetailState, onBackToMovies, onOpenMovie, onOp
         </aside>
       </article>
 
-      <section className="content-section movie-detail-panel person-history-panel">
-        <div className="section-header">
-          <h2>Your history with {person.name}</h2>
-        </div>
-        {!isSignedIn ? (
-          <div className="person-history-empty"><p>Sign in to see the titles, ratings, and watch time you share with {person.name}.</p><button type="button" className="secondary-button" onClick={onOpenLogin}>Sign in</button></div>
-        ) : personalHistory ? (
-          <div className="person-history-layout">
-            <div className="person-history-metrics">
-              <div><span>Titles watched</span><strong>{personalHistory.titlesWatched}</strong></div>
-              <div><span>Average rating</span><strong>{personalHistory.averageRating === null ? 'Not rated' : `${personalHistory.averageRating.toFixed(1)} / 5`}</strong></div>
-              <div><span>Hours watched</span><strong>{personalHistory.hoursWatched.toFixed(1)} h</strong></div>
-            </div>
-            {personalHistory.nextRecommendation ? (
-              <button type="button" className="person-history-recommendation" onClick={() => personalHistory.nextRecommendation.mediaType === 'tv' ? onOpenTv?.(personalHistory.nextRecommendation) : onOpenMovie?.(personalHistory.nextRecommendation)}>
-                <div className={`person-history-recommendation-poster${personalHistory.nextRecommendation.posterUrl ? ' has-image' : ''}`}>{personalHistory.nextRecommendation.posterUrl ? <img src={personalHistory.nextRecommendation.posterUrl} alt="" /> : null}</div>
-                <span><small>Next unwatched pick</small><strong>{personalHistory.nextRecommendation.title}</strong><em>{personalHistory.nextRecommendation.year} · {personalHistory.nextRecommendation.mediaType === 'tv' ? 'TV' : 'Movie'}</em></span>
-                <ChevronRight />
-              </button>
-            ) : <div className="person-history-empty"><p>You have watched every released title currently available for this person.</p></div>}
-          </div>
-        ) : <SectionMessage message="Your history is not available yet." />}
-      </section>
+      <PersonHistoryPanel personName={person.name} personalHistory={personalHistory} isSignedIn={isSignedIn} onOpenLogin={onOpenLogin} onOpenMovie={onOpenMovie} onOpenTv={onOpenTv} />
 
       <div className="person-detail-grid">
-        <section className="content-section movie-detail-panel">
-          <div className="section-header">
-            <h2>Known For</h2>
-          </div>
-          <div className="person-detail-known-for">
-            {knownFor.length > 0 ? (
-              knownFor.map((item) => (
-                <MovieCard key={`known-${item.mediaType}-${item.id}`} movie={{ ...item, meta: `${item.mediaType === 'tv' ? 'TV' : 'Movie'} · ${item.knownForReason}`, genreLabel: item.meta }} onOpenMovie={item.mediaType === 'tv' ? onOpenTv : onOpenMovie} />
-              ))
-            ) : (
-              <div className="person-discovery-empty"><p>{filmography[0] ? `Explore other actors from ${filmography[0].title}.` : 'Explore movies to discover more actors.'}</p><button type="button" className="secondary-button" onClick={() => filmography[0] ? (filmography[0].mediaType === 'tv' ? onOpenTv?.(filmography[0]) : onOpenMovie?.(filmography[0])) : onBackToMovies()}>{filmography[0] ? `Explore ${filmography[0].title}` : 'Browse movies'}</button></div>
-            )}
-          </div>
-        </section>
+        <PersonKnownForPanel knownFor={knownFor} filmography={filmography} onOpenMovie={onOpenMovie} onOpenTv={onOpenTv} onBackToMovies={onBackToMovies} />
 
         <div className="person-detail-split">
-          <section className="content-section movie-detail-panel person-detail-filmography-panel">
-            <div className="section-header">
-              <h2>Filmography <span className="person-detail-filmography-count">{visibleFilmography.length} of {filteredFilmography.length}</span></h2>
-            </div>
-            {filmography.length > 0 ? (
-              <>
-                <div className="person-detail-filmography-filters" aria-label="Filmography filters">
-                  <div className="person-detail-filter-tabs" role="group" aria-label="Credit type">
-                    {[['all', 'All'], ['acting', 'Acting'], ['directing', 'Directing'], ['producing', 'Producing']].map(([value, label]) => <button key={value} type="button" className={filmographyRole === value ? 'active' : ''} onClick={() => setFilmographyRole(value)}>{label}</button>)}
-                  </div>
-                  <div className="person-detail-filter-tabs" role="group" aria-label="Media type">
-                    {[['all', 'All'], ['movie', 'Movies'], ['tv', 'TV']].map(([value, label]) => <button key={value} type="button" className={filmographyMedia === value ? 'active' : ''} onClick={() => setFilmographyMedia(value)}>{label}</button>)}
-                  </div>
-                  <label className="person-detail-filter-select"><span>Decade</span><select value={filmographyDecade} onChange={(event) => setFilmographyDecade(event.target.value)}><option value="all">All decades</option>{decades.map((decade) => <option key={decade} value={decade}>{decade}</option>)}</select></label>
-                  <label className="person-detail-filter-select"><span>Sort</span><select value={filmographySort} onChange={(event) => setFilmographySort(event.target.value)}><option value="popular">Most popular</option><option value="newest">Newest</option><option value="rated">Highest rated</option><option value="oldest">Oldest</option><option value="unwatched">Unwatched by me</option></select></label>
-                </div>
-                <div className="person-detail-filmography">
-                  {visibleFilmography.map((item) => (
-                    <article
-                      key={`film-${item.mediaType}-${item.id}`}
-                      className="person-detail-filmography-row"
-                    >
-                      <div className="person-filmography-timeline-marker"><span>{item.year}</span><i /></div>
-                      <button type="button" className="person-detail-filmography-title" onClick={() => item.mediaType === 'tv' ? onOpenTv?.(item) : onOpenMovie?.(item)}>
-                        <div className={`person-detail-filmography-poster${item.posterUrl ? ' has-image' : ` ${item.theme}`}`}>
-                          {item.posterUrl ? (
-                            <img
-                              src={item.posterUrl}
-                              alt={`${item.title} poster`}
-                              className="movie-card-poster-image"
-                              loading="lazy"
-                            />
-                          ) : null}
-                        </div>
-                        <div className="person-detail-filmography-copy">
-                          <strong>{item.title}</strong>
-                          <span className="person-filmography-media-badge">{item.mediaType === 'tv' ? <TvIcon /> : <ClapperIcon />}{item.mediaType === 'tv' ? 'TV' : 'Movie'}</span>
-                        </div>
-                      </button>
-                      <span className="person-detail-filmography-role">{item.role}</span>
-                      <span className="star-rating person-detail-filmography-rating">
-                        <StarIcon />
-                        {item.rating}
-                      </span>
-                      <div className="person-detail-filmography-personal" aria-label={`Your status for ${item.title}`}>
-                        {item.personal.watchlisted ? <span className="person-filmography-state saved">Saved</span> : null}
-                        {item.personal.watched ? <span className="person-filmography-state watched">Watched</span> : null}
-                        {item.personal.yourScore !== null ? <span className="person-filmography-state rated">{item.mediaType === 'tv' ? `${item.personal.yourScore.toFixed(1)} · ${item.personal.ratingCount} eps` : `${item.personal.yourScore.toFixed(1)} rated`}</span> : null}
-                      </div>
-                      <div className="person-detail-filmography-quick-actions">
-                        <button type="button" className={`quick-media-action${item.personal.watchlisted ? ' is-active' : ''}`} onClick={() => { if (!isSignedIn) return onOpenLogin(); return item.mediaType === 'tv' ? onToggleTvWatchlist(item) : onToggleMovieWatchlist(item) }} aria-label={`${item.personal.watchlisted ? 'Remove' : 'Save'} ${item.title}`} title={item.personal.watchlisted ? 'Remove from watchlist' : 'Save to watchlist'}><BookmarkIcon /></button>
-                        {item.mediaType !== 'tv' ? <button type="button" className={`quick-media-action${item.personal.watched ? ' is-active watched' : ''}`} onClick={() => { if (!isSignedIn) return onOpenLogin(); return onToggleMovieWatched(item) }} aria-label={`${item.personal.watched ? 'Mark' : 'Mark'} ${item.title} as ${item.personal.watched ? 'unwatched' : 'watched'}`} title={item.personal.watched ? 'Mark as unwatched' : 'Mark as watched'}><CheckIcon /></button> : null}
-                      </div>
-                    </article>
-                  ))}
-                </div>
-                {visibleFilmography.length === 0 ? <SectionMessage message="No credits match these filters." /> : null}
-                {hasMoreFilmography ? <div className="person-detail-filmography-actions"><button type="button" className="secondary-button" onClick={() => setVisibleFilmographyCount((count) => count + filmographyPageSize)}>Load 5 more</button></div> : null}
-              </>
-            ) : (
-              <div className="person-discovery-empty"><p>{knownFor[0] ? `Explore other actors from ${knownFor[0].title}.` : 'Explore movies to discover more actors.'}</p><button type="button" className="secondary-button" onClick={() => knownFor[0] ? (knownFor[0].mediaType === 'tv' ? onOpenTv?.(knownFor[0]) : onOpenMovie?.(knownFor[0])) : onBackToMovies()}>{knownFor[0] ? `Explore ${knownFor[0].title}` : 'Browse movies'}</button></div>
-            )}
-          </section>
+          <PersonFilmographyPanel key={person.id} filmography={filmography} knownFor={knownFor} isSignedIn={isSignedIn} onOpenLogin={onOpenLogin} onOpenMovie={onOpenMovie} onOpenTv={onOpenTv} onBackToMovies={onBackToMovies} onToggleMovieWatchlist={onToggleMovieWatchlist} onToggleMovieWatched={onToggleMovieWatched} onToggleTvWatchlist={onToggleTvWatchlist} />
 
-          <section className="content-section movie-detail-panel person-detail-costars-panel">
-            <div className="section-header">
-              <h2>Co-stars</h2>
-            </div>
-            <div className="person-detail-costars person-detail-costars-rail">
-              {coStars.length > 0 ? (
-                coStars.map((member) => (
-                  <button
-                    key={`co-${member.id}`}
-                    type="button"
-                    className="movie-detail-cast-card movie-detail-cast-card-button"
-                    aria-label={`Open ${member.name}`}
-                    onClick={() => onOpenPerson?.(member)}
-                    disabled={!Number.isInteger(Number(member.id))}
-                  >
-                    <div
-                      className="movie-detail-cast-avatar"
-                      style={buildMovieCreditAvatarStyle(member.profileUrl)}
-                      aria-label={member.name}
-                    >
-                      {!member.profileUrl ? getMovieCreditInitials(member.name) : null}
-                    </div>
-                    <h3>{member.name}</h3>
-                    <p>{member.sharedCredits} shared {member.sharedCredits === 1 ? 'film' : 'films'}{member.sharedTitles.length ? ` · ${member.sharedTitles.join(', ')}` : ''}</p>
-                  </button>
-                ))
-              ) : (
-                <div className="person-discovery-empty"><p>{knownFor[0] ? `Explore other actors from ${knownFor[0].title}.` : 'Explore more actors from the movie catalog.'}</p><button type="button" className="secondary-button" onClick={() => knownFor[0] ? (knownFor[0].mediaType === 'tv' ? onOpenTv?.(knownFor[0]) : onOpenMovie?.(knownFor[0])) : onBackToMovies()}>{knownFor[0] ? `Explore ${knownFor[0].title}` : 'Browse movies'}</button></div>
-              )}
-            </div>
-          </section>
+          <PersonCoStarsPanel coStars={coStars} knownFor={knownFor} onOpenPerson={onOpenPerson} onOpenMovie={onOpenMovie} onOpenTv={onOpenTv} onBackToMovies={onBackToMovies} />
         </div>
       </div>
     </section>
   )
 }
 
-function comparePersonFilmography(left, right, sort, isSignedIn) {
-  const date = (item) => Date.parse(item.releaseDate || '') || 0
-  const numeric = (value) => Number.isFinite(Number(value)) ? Number(value) : -1
-  if (sort === 'newest') return date(right) - date(left) || numeric(right.popularity) - numeric(left.popularity)
-  if (sort === 'oldest') return date(left) - date(right) || numeric(right.popularity) - numeric(left.popularity)
-  if (sort === 'rated') return numeric(right.voteAverage) - numeric(left.voteAverage) || date(right) - date(left)
-  if (sort === 'unwatched' && isSignedIn) return Number(left.personal.watched) - Number(right.personal.watched) || date(right) - date(left)
-  return numeric(right.popularity) - numeric(left.popularity) || date(right) - date(left)
+function PersonHistoryPanel({ personName, personalHistory, isSignedIn, onOpenLogin, onOpenMovie, onOpenTv }) {
+  return (
+    <section className="content-section movie-detail-panel person-history-panel">
+      <div className="section-header">
+        <h2>Your history with {personName}</h2>
+      </div>
+      {!isSignedIn ? (
+        <div className="person-history-empty"><p>Sign in to see the titles, ratings, and watch time you share with {personName}.</p><button type="button" className="secondary-button" onClick={onOpenLogin}>Sign in</button></div>
+      ) : personalHistory ? (
+        <div className="person-history-layout">
+          <div className="person-history-metrics">
+            <div><span>Titles watched</span><strong>{personalHistory.titlesWatched}</strong></div>
+            <div><span>Average rating</span><strong>{personalHistory.averageRating === null ? 'Not rated' : `${personalHistory.averageRating.toFixed(1)} / 5`}</strong></div>
+            <div><span>Hours watched</span><strong>{personalHistory.hoursWatched.toFixed(1)} h</strong></div>
+          </div>
+          {personalHistory.nextRecommendation ? (
+            <button type="button" className="person-history-recommendation" onClick={() => personalHistory.nextRecommendation.mediaType === 'tv' ? onOpenTv?.(personalHistory.nextRecommendation) : onOpenMovie?.(personalHistory.nextRecommendation)}>
+              <div className={`person-history-recommendation-poster${personalHistory.nextRecommendation.posterUrl ? ' has-image' : ''}`}>{personalHistory.nextRecommendation.posterUrl ? <img src={personalHistory.nextRecommendation.posterUrl} alt="" /> : null}</div>
+              <span><small>Next unwatched pick</small><strong>{personalHistory.nextRecommendation.title}</strong><em>{personalHistory.nextRecommendation.year} · {personalHistory.nextRecommendation.mediaType === 'tv' ? 'TV' : 'Movie'}</em></span>
+              <ChevronRight />
+            </button>
+          ) : <div className="person-history-empty"><p>You have watched every released title currently available for this person.</p></div>}
+        </div>
+      ) : <SectionMessage message="Your history is not available yet." />}
+    </section>
+  )
+}
+
+function PersonKnownForPanel({ knownFor, filmography, onOpenMovie, onOpenTv, onBackToMovies }) {
+  return (
+    <section className="content-section movie-detail-panel">
+      <div className="section-header">
+        <h2>Known For</h2>
+      </div>
+      <div className="person-detail-known-for">
+        {knownFor.length > 0 ? (
+          knownFor.map((item) => (
+            <MovieCard key={`known-${item.mediaType}-${item.id}`} movie={{ ...item, meta: `${item.mediaType === 'tv' ? 'TV' : 'Movie'} · ${item.knownForReason}`, genreLabel: item.meta }} onOpenMovie={item.mediaType === 'tv' ? onOpenTv : onOpenMovie} />
+          ))
+        ) : (
+          <div className="person-discovery-empty"><p>{filmography[0] ? `Explore other actors from ${filmography[0].title}.` : 'Explore movies to discover more actors.'}</p><button type="button" className="secondary-button" onClick={() => filmography[0] ? (filmography[0].mediaType === 'tv' ? onOpenTv?.(filmography[0]) : onOpenMovie?.(filmography[0])) : onBackToMovies()}>{filmography[0] ? `Explore ${filmography[0].title}` : 'Browse movies'}</button></div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+function PersonFilmographyPanel({ filmography, knownFor, isSignedIn, onOpenLogin, onOpenMovie, onOpenTv, onBackToMovies, onToggleMovieWatchlist, onToggleMovieWatched, onToggleTvWatchlist }) {
+  const filmographyPageSize = 5
+  const [filmographyRole, setFilmographyRole] = useState('all')
+  const [filmographyMedia, setFilmographyMedia] = useState('all')
+  const [filmographyDecade, setFilmographyDecade] = useState('all')
+  const [filmographySort, setFilmographySort] = useState('popular')
+  const [visibleFilmographyCount, setVisibleFilmographyCount] = useState(filmographyPageSize)
+  useEffect(() => {
+    setVisibleFilmographyCount(filmographyPageSize)
+  }, [filmographyRole, filmographyMedia, filmographyDecade, filmographySort])
+  const decades = useMemo(() => [...new Set(filmography.map((item) => item.decade).filter(Boolean))].sort((left, right) => Number(right.slice(0, 4)) - Number(left.slice(0, 4))), [filmography])
+  const filteredFilmography = useMemo(() => selectPersonFilmography(filmography, {
+    role: filmographyRole, media: filmographyMedia, decade: filmographyDecade, sort: filmographySort, isSignedIn,
+  }), [filmography, filmographyRole, filmographyMedia, filmographyDecade, filmographySort, isSignedIn])
+  const visibleFilmography = filteredFilmography.slice(0, visibleFilmographyCount)
+  const hasMoreFilmography = filteredFilmography.length > visibleFilmography.length
+  return (
+    <section className="content-section movie-detail-panel person-detail-filmography-panel">
+      <div className="section-header">
+        <h2>Filmography <span className="person-detail-filmography-count">{visibleFilmography.length} of {filteredFilmography.length}</span></h2>
+      </div>
+      {filmography.length > 0 ? (
+        <>
+          <div className="person-detail-filmography-filters" aria-label="Filmography filters">
+            <div className="person-detail-filter-tabs" role="group" aria-label="Credit type">
+              {[['all', 'All'], ['acting', 'Acting'], ['directing', 'Directing'], ['producing', 'Producing']].map(([value, label]) => <button key={value} type="button" className={filmographyRole === value ? 'active' : ''} onClick={() => setFilmographyRole(value)}>{label}</button>)}
+            </div>
+            <div className="person-detail-filter-tabs" role="group" aria-label="Media type">
+              {[['all', 'All'], ['movie', 'Movies'], ['tv', 'TV']].map(([value, label]) => <button key={value} type="button" className={filmographyMedia === value ? 'active' : ''} onClick={() => setFilmographyMedia(value)}>{label}</button>)}
+            </div>
+            <label className="person-detail-filter-select"><span>Decade</span><select value={filmographyDecade} onChange={(event) => setFilmographyDecade(event.target.value)}><option value="all">All decades</option>{decades.map((decade) => <option key={decade} value={decade}>{decade}</option>)}</select></label>
+            <label className="person-detail-filter-select"><span>Sort</span><select value={filmographySort} onChange={(event) => setFilmographySort(event.target.value)}><option value="popular">Most popular</option><option value="newest">Newest</option><option value="rated">Highest rated</option><option value="oldest">Oldest</option><option value="unwatched">Unwatched by me</option></select></label>
+          </div>
+          <div className="person-detail-filmography">
+            {visibleFilmography.map((item) => (
+              <article
+                key={`film-${item.mediaType}-${item.id}`}
+                className="person-detail-filmography-row"
+              >
+                <div className="person-filmography-timeline-marker"><span>{item.year}</span><i /></div>
+                <button type="button" className="person-detail-filmography-title" onClick={() => item.mediaType === 'tv' ? onOpenTv?.(item) : onOpenMovie?.(item)}>
+                  <div className={`person-detail-filmography-poster${item.posterUrl ? ' has-image' : ` ${item.theme}`}`}>
+                    {item.posterUrl ? (
+                      <img
+                        src={item.posterUrl}
+                        alt={`${item.title} poster`}
+                        className="movie-card-poster-image"
+                        loading="lazy"
+                      />
+                    ) : null}
+                  </div>
+                  <div className="person-detail-filmography-copy">
+                    <strong>{item.title}</strong>
+                    <span className="person-filmography-media-badge">{item.mediaType === 'tv' ? <TvIcon /> : <ClapperIcon />}{item.mediaType === 'tv' ? 'TV' : 'Movie'}</span>
+                  </div>
+                </button>
+                <span className="person-detail-filmography-role">{item.role}</span>
+                <span className="star-rating person-detail-filmography-rating">
+                  <StarIcon />
+                  {item.rating}
+                </span>
+                <div className="person-detail-filmography-personal" aria-label={`Your status for ${item.title}`}>
+                  {item.personal.watchlisted ? <span className="person-filmography-state saved">Saved</span> : null}
+                  {item.personal.watched ? <span className="person-filmography-state watched">Watched</span> : null}
+                  {item.personal.yourScore !== null ? <span className="person-filmography-state rated">{item.mediaType === 'tv' ? `${item.personal.yourScore.toFixed(1)} · ${item.personal.ratingCount} eps` : `${item.personal.yourScore.toFixed(1)} rated`}</span> : null}
+                </div>
+                <div className="person-detail-filmography-quick-actions">
+                  <button type="button" className={`quick-media-action${item.personal.watchlisted ? ' is-active' : ''}`} onClick={() => { if (!isSignedIn) return onOpenLogin(); return item.mediaType === 'tv' ? onToggleTvWatchlist(item) : onToggleMovieWatchlist(item) }} aria-label={`${item.personal.watchlisted ? 'Remove' : 'Save'} ${item.title}`} title={item.personal.watchlisted ? 'Remove from watchlist' : 'Save to watchlist'}><BookmarkIcon /></button>
+                  {item.mediaType !== 'tv' ? <button type="button" className={`quick-media-action${item.personal.watched ? ' is-active watched' : ''}`} onClick={() => { if (!isSignedIn) return onOpenLogin(); return onToggleMovieWatched(item) }} aria-label={`${item.personal.watched ? 'Mark' : 'Mark'} ${item.title} as ${item.personal.watched ? 'unwatched' : 'watched'}`} title={item.personal.watched ? 'Mark as unwatched' : 'Mark as watched'}><CheckIcon /></button> : null}
+                </div>
+              </article>
+            ))}
+          </div>
+          {visibleFilmography.length === 0 ? <SectionMessage message="No credits match these filters." /> : null}
+          {hasMoreFilmography ? <div className="person-detail-filmography-actions"><button type="button" className="secondary-button" onClick={() => setVisibleFilmographyCount((count) => count + filmographyPageSize)}>Load 5 more</button></div> : null}
+        </>
+      ) : (
+        <div className="person-discovery-empty"><p>{knownFor[0] ? `Explore other actors from ${knownFor[0].title}.` : 'Explore movies to discover more actors.'}</p><button type="button" className="secondary-button" onClick={() => knownFor[0] ? (knownFor[0].mediaType === 'tv' ? onOpenTv?.(knownFor[0]) : onOpenMovie?.(knownFor[0])) : onBackToMovies()}>{knownFor[0] ? `Explore ${knownFor[0].title}` : 'Browse movies'}</button></div>
+      )}
+    </section>
+  )
+}
+
+function PersonCoStarsPanel({ coStars, knownFor, onOpenPerson, onOpenMovie, onOpenTv, onBackToMovies }) {
+  return (
+    <section className="content-section movie-detail-panel person-detail-costars-panel">
+      <div className="section-header">
+        <h2>Co-stars</h2>
+      </div>
+      <div className="person-detail-costars person-detail-costars-rail">
+        {coStars.length > 0 ? (
+          coStars.map((member) => (
+            <button
+              key={`co-${member.id}`}
+              type="button"
+              className="movie-detail-cast-card movie-detail-cast-card-button"
+              aria-label={`Open ${member.name}`}
+              onClick={() => onOpenPerson?.(member)}
+              disabled={!Number.isInteger(Number(member.id))}
+            >
+              <div
+                className="movie-detail-cast-avatar"
+                style={buildMovieCreditAvatarStyle(member.profileUrl)}
+                aria-label={member.name}
+              >
+                {!member.profileUrl ? getMovieCreditInitials(member.name) : null}
+              </div>
+              <h3>{member.name}</h3>
+              <p>{member.sharedCredits} shared {member.sharedCredits === 1 ? 'film' : 'films'}{member.sharedTitles.length ? ` · ${member.sharedTitles.join(', ')}` : ''}</p>
+            </button>
+          ))
+        ) : (
+          <div className="person-discovery-empty"><p>{knownFor[0] ? `Explore other actors from ${knownFor[0].title}.` : 'Explore more actors from the movie catalog.'}</p><button type="button" className="secondary-button" onClick={() => knownFor[0] ? (knownFor[0].mediaType === 'tv' ? onOpenTv?.(knownFor[0]) : onOpenMovie?.(knownFor[0])) : onBackToMovies()}>{knownFor[0] ? `Explore ${knownFor[0].title}` : 'Browse movies'}</button></div>
+        )}
+      </div>
+    </section>
+  )
 }
 
 function MetricBadge({ icon: Icon, value, label, tone }) {
@@ -9219,14 +9064,27 @@ function FeaturedMovieCard({
   const isWatchedUpdating = watchedActionState.status === 'loading' && Number(watchedActionState.movieId) === Number(movie.id)
 
   return (
-    <button type="button" className="featured-movie-card featured-movie-card-button" onClick={() => onOpenMovie(movie)} aria-label={`Open ${movie.title}`}>
+    <div
+      className="featured-movie-card featured-movie-card-button"
+      role="group"
+      tabIndex={0}
+      aria-label={`Featured movie: ${movie.title}. Press Enter or Space to open details.`}
+      onClick={() => onOpenMovie(movie)}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          onOpenMovie(movie)
+        }
+      }}
+    >
       <div className="featured-movie-copy">
         <span className="feature-label">Featured</span>
         <h2>{movie.title}</h2>
         <div className="featured-movie-meta">
           <span>{movie.year}</span>
           <span>{movie.genreLabel}</span>
-          <span>{movie.rating}</span>
+          <span>{movie.certification}</span>
           <span>{movie.runtime}</span>
         </div>
         <div className="featured-movie-scores">
@@ -9275,175 +9133,6 @@ function FeaturedMovieCard({
         aria-hidden="true"
       >
       </div>
-    </button>
-  )
-}
-
-function MoviePosterSkeletons({ count = 5 }) {
-  return <div className="movie-card-grid popular-movies-slider movie-skeleton-grid" aria-label="Loading movies">{Array.from({ length: count }, (_, index) => <div className="movie-card movie-skeleton-card" key={index}><div className="movie-card-poster" /><div className="movie-card-copy"><i /><i /></div></div>)}</div>
-}
-
-function sortMovieCards(movies, sort) {
-  if (sort === 'rating') return [...movies].sort((left, right) => Number(right.rating) - Number(left.rating))
-  if (sort === 'release') return [...movies].sort((left, right) => new Date(right.releaseDate || 0) - new Date(left.releaseDate || 0))
-  return movies
-}
-
-function HorizontalMovieRail({ movies, ariaLabel, kind, onOpenMovie, watchedMovieIds, watchlistMovieIds, onToggleWatchlist, onToggleWatched }) {
-  const railRef = useRef(null)
-  const scrollRail = (direction) => railRef.current?.scrollBy({ left: direction * Math.max(railRef.current.clientWidth * 0.8, 260), behavior: 'smooth' })
-  return <div className="movie-rail-wrap"><div className="movie-rail-navigation" aria-label={`${ariaLabel} navigation`}><button type="button" onClick={() => scrollRail(-1)} aria-label={`Previous ${ariaLabel}`}><ChevronLeftIcon /></button><button type="button" onClick={() => scrollRail(1)} aria-label={`Next ${ariaLabel}`}><ChevronRight /></button></div><div ref={railRef} className="movie-card-grid popular-movies-slider" aria-label={ariaLabel}>{movies.map((movie, index) => <MovieCard key={movie.id} movie={movie} railKind={kind} railIndex={index} onOpenMovie={onOpenMovie} isWatched={watchedMovieIds.has(Number(movie.id))} isInWatchlist={watchlistMovieIds.has(Number(movie.id))} onToggleWatchlist={onToggleWatchlist} onToggleWatched={onToggleWatched} />)}</div></div>
-}
-
-function PopularMoviesGrid({ popularMoviesState, layout = 'slider', onOpenMovie, watchedMovieIds = new Set(), watchlistMovieIds = new Set(), onToggleWatchlist, onToggleWatched, sort = 'featured' }) {
-  if (popularMoviesState.status === 'loading' || popularMoviesState.status === 'idle') {
-    return <MoviePosterSkeletons />
-  }
-
-  if (popularMoviesState.status === 'error') {
-    return <SectionMessage message={`Could not load popular movies. ${popularMoviesState.error}`} tone="error" />
-  }
-
-  if (popularMoviesState.movies.length === 0) {
-    return <SectionMessage message="No movies are available in the local database yet." />
-  }
-
-  const movies = sortMovieCards(layout === 'catalog' ? popularMoviesState.movies : popularMoviesState.movies.slice(0, 10), sort)
-
-  if (layout !== 'catalog') return <HorizontalMovieRail movies={movies} ariaLabel="Popular movies" kind="popular" onOpenMovie={onOpenMovie} watchedMovieIds={watchedMovieIds} watchlistMovieIds={watchlistMovieIds} onToggleWatchlist={onToggleWatchlist} onToggleWatched={onToggleWatched} />
-
-  return (
-    <div
-      className={`movie-card-grid${layout === 'catalog' ? ' popular-movies-catalog' : ' popular-movies-slider'}`}
-      aria-label={layout === 'catalog' ? 'Popular movies list' : 'Popular movies slider'}
-    >
-      {movies.map((movie, index) => (
-        <MovieCard
-          key={movie.id}
-          movie={movie}
-          onOpenMovie={onOpenMovie}
-          isWatched={watchedMovieIds.has(Number(movie.id))}
-          isInWatchlist={watchlistMovieIds.has(Number(movie.id))}
-          onToggleWatchlist={onToggleWatchlist}
-          onToggleWatched={onToggleWatched}
-          railKind="popular"
-          railIndex={index}
-        />
-      ))}
-    </div>
-  )
-}
-
-function RecentlyReleasedSlider({ recentMoviesState, layout = 'slider', onOpenMovie, watchedMovieIds = new Set(), watchlistMovieIds = new Set(), onToggleWatchlist, onToggleWatched, sort = 'featured' }) {
-  if (recentMoviesState.status === 'loading' || recentMoviesState.status === 'idle') {
-    return <MoviePosterSkeletons />
-  }
-
-  if (recentMoviesState.status === 'error') {
-    return <SectionMessage message={`Could not load recently released movies. ${recentMoviesState.error}`} tone="error" />
-  }
-
-  if (recentMoviesState.movies.length === 0) {
-    return <SectionMessage message="No recently released movies are available in the local database yet." />
-  }
-
-  const movies = sortMovieCards(layout === 'catalog' ? recentMoviesState.movies : recentMoviesState.movies.slice(0, 10), sort)
-  if (layout !== 'catalog') return <HorizontalMovieRail movies={movies} ariaLabel="Recently released movies" kind="recent" onOpenMovie={onOpenMovie} watchedMovieIds={watchedMovieIds} watchlistMovieIds={watchlistMovieIds} onToggleWatchlist={onToggleWatchlist} onToggleWatched={onToggleWatched} />
-
-  return (
-    <div
-      className={`movie-card-grid${layout === 'catalog' ? ' popular-movies-catalog' : ' popular-movies-slider'}`}
-      aria-label={layout === 'catalog' ? 'Now playing movies list' : 'Recently released movies slider'}
-    >
-      {movies.map((movie, index) => (
-        <MovieCard
-          key={movie.id}
-          movie={movie}
-          onOpenMovie={onOpenMovie}
-          isWatched={watchedMovieIds.has(Number(movie.id))}
-          isInWatchlist={watchlistMovieIds.has(Number(movie.id))}
-          onToggleWatchlist={onToggleWatchlist}
-          onToggleWatched={onToggleWatched}
-          railKind="recent"
-          railIndex={index}
-        />
-      ))}
-    </div>
-  )
-}
-
-function UpcomingMoviesGrid({ upcomingMoviesState, layout = 'slider', onOpenMovie, watchedMovieIds = new Set(), watchlistMovieIds = new Set(), onToggleWatchlist, onToggleWatched, sort = 'featured' }) {
-  if (upcomingMoviesState.status === 'loading' || upcomingMoviesState.status === 'idle') {
-    return <MoviePosterSkeletons />
-  }
-
-  if (upcomingMoviesState.status === 'error') {
-    return <SectionMessage message={`Could not load upcoming movies. ${upcomingMoviesState.error}`} tone="error" />
-  }
-
-  if (upcomingMoviesState.movies.length === 0) {
-    return <SectionMessage message="No upcoming movies are available in the local database yet." />
-  }
-
-  const movies = sortMovieCards(layout === 'catalog' ? upcomingMoviesState.movies : upcomingMoviesState.movies.slice(0, 10), sort)
-  if (layout !== 'catalog') return <HorizontalMovieRail movies={movies} ariaLabel="Upcoming movies" kind="upcoming" onOpenMovie={onOpenMovie} watchedMovieIds={watchedMovieIds} watchlistMovieIds={watchlistMovieIds} onToggleWatchlist={onToggleWatchlist} onToggleWatched={onToggleWatched} />
-
-  return (
-    <div
-      className={`movie-card-grid${layout === 'catalog' ? ' popular-movies-catalog' : ' popular-movies-slider'}`}
-      aria-label={layout === 'catalog' ? 'Upcoming movies list' : 'Upcoming movies slider'}
-    >
-      {movies.map((movie, index) => (
-        <MovieCard
-          key={movie.id}
-          movie={movie}
-          onOpenMovie={onOpenMovie}
-          isWatched={watchedMovieIds.has(Number(movie.id))}
-          isInWatchlist={watchlistMovieIds.has(Number(movie.id))}
-          onToggleWatchlist={onToggleWatchlist}
-          onToggleWatched={onToggleWatched}
-          railKind="upcoming"
-          railIndex={index}
-        />
-      ))}
-    </div>
-  )
-}
-
-function TopRatedMoviesGrid({ topRatedMoviesState, layout = 'slider', onOpenMovie, watchedMovieIds = new Set(), watchlistMovieIds = new Set(), onToggleWatchlist, onToggleWatched, sort = 'featured' }) {
-  if (topRatedMoviesState.status === 'loading' || topRatedMoviesState.status === 'idle') {
-    return <MoviePosterSkeletons />
-  }
-
-  if (topRatedMoviesState.status === 'error') {
-    return <SectionMessage message={`Could not load top rated movies. ${topRatedMoviesState.error}`} tone="error" />
-  }
-
-  if (topRatedMoviesState.movies.length === 0) {
-    return <SectionMessage message="No top rated movies are available in the local database yet." />
-  }
-
-  const movies = sortMovieCards(layout === 'catalog' ? topRatedMoviesState.movies : topRatedMoviesState.movies.slice(0, 10), sort)
-  if (layout !== 'catalog') return <HorizontalMovieRail movies={movies} ariaLabel="Top rated movies" kind="top-rated" onOpenMovie={onOpenMovie} watchedMovieIds={watchedMovieIds} watchlistMovieIds={watchlistMovieIds} onToggleWatchlist={onToggleWatchlist} onToggleWatched={onToggleWatched} />
-
-  return (
-    <div
-      className={`movie-card-grid${layout === 'catalog' ? ' popular-movies-catalog' : ' popular-movies-slider'}`}
-      aria-label={layout === 'catalog' ? 'Top rated movies list' : 'Top rated movies slider'}
-    >
-      {movies.map((movie, index) => (
-        <MovieCard
-          key={movie.id}
-          movie={movie}
-          onOpenMovie={onOpenMovie}
-          isWatched={watchedMovieIds.has(Number(movie.id))}
-          isInWatchlist={watchlistMovieIds.has(Number(movie.id))}
-          onToggleWatchlist={onToggleWatchlist}
-          onToggleWatched={onToggleWatched}
-          railKind="top-rated"
-          railIndex={index}
-        />
-      ))}
     </div>
   )
 }
@@ -9518,36 +9207,6 @@ function PaginationControls({ pagination, onPageChange }) {
       >
         <span>Next</span>
       </button>
-    </div>
-  )
-}
-
-function GenreMoviesGrid({ genreMoviesState, onOpenMovie, watchedMovieIds = new Set(), watchlistMovieIds = new Set(), onToggleWatchlist, onToggleWatched }) {
-  if (genreMoviesState.status === 'loading' || genreMoviesState.status === 'idle') {
-    return <MoviePosterSkeletons />
-  }
-
-  if (genreMoviesState.status === 'error') {
-    return <SectionMessage message={`Could not load genre movies. ${genreMoviesState.error}`} tone="error" />
-  }
-
-  if (genreMoviesState.movies.length === 0) {
-    return <SectionMessage message="No movies in this genre are available in the local database yet." />
-  }
-
-  return (
-    <div className="movie-card-grid popular-movies-catalog">
-      {genreMoviesState.movies.map((movie) => (
-        <MovieCard
-          key={movie.id}
-          movie={movie}
-          onOpenMovie={onOpenMovie}
-          isWatched={watchedMovieIds.has(Number(movie.id))}
-          isInWatchlist={watchlistMovieIds.has(Number(movie.id))}
-          onToggleWatchlist={onToggleWatchlist}
-          onToggleWatched={onToggleWatched}
-        />
-      ))}
     </div>
   )
 }
@@ -10001,19 +9660,6 @@ function mapWatchedMoviePayload(movie) {
   }
 }
 
-function mapMovieRowToCard(movie) {
-  return {
-    id: movie.tmdb_id,
-    title: movie.title,
-    year: formatMovieYear(movie.release_date),
-    rating: formatMovieRating(movie.vote_average),
-    meta: formatMovieMeta(movie),
-    releaseDate: movie.release_date || null,
-    posterUrl: resolveMoviePosterUrl(movie.poster_path),
-    theme: 'theme-catalog',
-  }
-}
-
 function mapGamePayload(game) {
   const rating = Number.isFinite(game.rating) ? game.rating : Number.isFinite(game.aggregated_rating) ? game.aggregated_rating : null
   return {
@@ -10223,16 +9869,6 @@ function mapFeaturedTvPayload(show) {
   }
 }
 
-function mapMovieRowToSimilarCard(movie) {
-  return {
-    id: movie.tmdb_id,
-    title: movie.title,
-    year: formatMovieYear(movie.release_date),
-    rating: formatMovieRating(movie.vote_average),
-    posterUrl: resolveMoviePosterUrl(movie.poster_path),
-  }
-}
-
 async function loadFallbackSimilarMovies(movieId) {
   const detailResponse = await fetch(`/api/movies/${movieId}`)
   const detailPayload = await detailResponse.json().catch(() => ({}))
@@ -10316,16 +9952,6 @@ async function fetchMovieCollection(path) {
   return Array.isArray(payload.movies) ? payload.movies : []
 }
 
-function createMovieCollectionState({ includeFeaturedMovie = false } = {}) {
-  return {
-    status: 'idle',
-    movies: [],
-    pagination: createPaginationState(),
-    ...(includeFeaturedMovie ? { featuredMovie: null } : {}),
-    error: '',
-  }
-}
-
 function createGameCollectionState() {
   return { status: 'idle', games: [], pagination: createPaginationState(), error: '' }
 }
@@ -10371,16 +9997,6 @@ function createTvCollectionState({ includeFeaturedShow = false } = {}) {
     shows: [],
     pagination: createPaginationState(),
     ...(includeFeaturedShow ? { featuredShow: null } : {}),
-    error: '',
-  }
-}
-
-function createMovieCollectionLoadingState({ page = 1, includeFeaturedMovie = false } = {}) {
-  return {
-    status: 'loading',
-    movies: [],
-    pagination: createPaginationState(page),
-    ...(includeFeaturedMovie ? { featuredMovie: null } : {}),
     error: '',
   }
 }
@@ -10469,177 +10085,11 @@ function getCurrentIsoDate() {
   return new Date().toISOString().slice(0, 10)
 }
 
-function mapFeaturedMoviePayload(movie) {
-  return {
-    id: movie.id,
-    title: movie.title,
-    year: movie.year || 'Release TBA',
-    genreLabel: Array.isArray(movie.genres) && movie.genres.length > 0 ? movie.genres.join(', ') : 'Genre TBA',
-    rating: movie.rating || 'NR',
-    runtime: movie.runtime || 'Runtime TBA',
-    score: movie.score || 'N/A',
-    audience: movie.audience || 'No votes',
-    summary: movie.summary || 'Overview not available yet.',
-    posterUrl: resolveMoviePosterUrl(movie.posterPath),
-    backdropUrl: resolveMovieBackdropUrl(movie.backdropPath),
-  }
-}
-
-function mapMovieDetailPayload(movie) {
-  return {
-    id: movie.id,
-    title: movie.title,
-    year: movie.year || 'Release TBA',
-    overview: movie.overview || 'Overview not available yet.',
-    genres: Array.isArray(movie.genres) ? movie.genres : [],
-    genresLabel: Array.isArray(movie.genres) && movie.genres.length > 0 ? movie.genres.join(', ') : 'Genre TBA',
-    certification: movie.certification || 'NR',
-    runtime: movie.runtime || 'Runtime TBA',
-    score: movie.score || 'N/A',
-    tomatoScore: formatTomatoScore(movie.score),
-    audience: movie.audience || 'No votes',
-    originalLanguage: movie.originalLanguage || 'Unknown',
-    releaseDate: movie.releaseDate || null,
-    releaseDateLabel: formatLongDate(movie.releaseDate),
-    availability: movie.availability || 'Availability TBA',
-    hasReleaseReminder: Boolean(movie.hasReleaseReminder),
-    posterUrl: movie.posterUrl || null,
-    backdropUrl: movie.backdropUrl || null,
-    director: movie.director || null,
-    cast: Array.isArray(movie.cast) ? movie.cast : [],
-    reviews: Array.isArray(movie.reviews) ? movie.reviews : [],
-    communityRating: mapCommunityRatingPayload(movie.communityRating),
-  }
-}
-
-function mapPersonDetailPayload(person) {
-  return {
-    id: person.id,
-    name: person.name,
-    biography: person.biography || 'Biography not available yet.',
-    profileUrl: person.profileUrl || null,
-    knownForDepartment: person.knownForDepartment || 'Performer',
-    birthday: person.birthday || null,
-    birthdayLabel: formatLongDate(person.birthday),
-    deathday: person.deathday || null,
-    ageLabel: person.ageLabel || 'Unknown',
-    placeOfBirth: person.placeOfBirth || 'Unknown',
-    popularity: person.popularity || 'N/A',
-    roles: Array.isArray(person.roles) ? person.roles : [],
-    heroBackdropUrl: person.heroBackdropUrl || null,
-  }
-}
-
-function mapPersonPreview(person) {
-  return {
-    id: person.id,
-    name: person.name,
-    biography: person.role ? `${person.role} in your WatchVault credits.` : 'Biography not available yet.',
-    profileUrl: person.profileUrl || null,
-    knownForDepartment: person.role || 'Performer',
-    birthday: null,
-    birthdayLabel: 'Unknown',
-    deathday: null,
-    ageLabel: 'Unknown',
-    placeOfBirth: 'Unknown',
-    popularity: 'N/A',
-    roles: person.role ? [person.role] : [],
-    heroBackdropUrl: null,
-  }
-}
-
-function mapPersonMovieCredit(movie) {
-  return {
-    id: movie.id,
-    mediaType: movie.mediaType === 'tv' ? 'tv' : 'movie',
-    title: movie.title,
-    year: movie.year || 'Release TBA',
-    rating: movie.rating || 'N/A',
-    meta: movie.meta || 'Credit',
-    knownForReason: movie.knownForReason || 'Popular credit',
-    posterUrl: movie.posterUrl || null,
-    backdropUrl: movie.backdropUrl || null,
-    theme: 'theme-catalog',
-  }
-}
-
-function mapPersonFilmographyRow(movie) {
-  return {
-    id: movie.id,
-    title: movie.title,
-    year: movie.year || 'Release TBA',
-    mediaType: movie.mediaType === 'tv' ? 'tv' : 'movie',
-    releaseDate: movie.releaseDate || null,
-    decade: movie.decade || null,
-    roles: Array.isArray(movie.roles) ? movie.roles : [movie.role || 'Credit'],
-    role: movie.role || 'Credit',
-    creditCategories: Array.isArray(movie.creditCategories) ? movie.creditCategories : [],
-    popularity: Number.isFinite(Number(movie.popularity)) ? Number(movie.popularity) : null,
-    voteAverage: Number.isFinite(Number(movie.voteAverage)) ? Number(movie.voteAverage) : null,
-    rating: movie.rating || 'N/A',
-    posterUrl: movie.posterUrl || null,
-    personal: {
-      watchlisted: Boolean(movie.personal?.watchlisted),
-      watched: Boolean(movie.personal?.watched),
-      yourScore: Number.isFinite(Number(movie.personal?.yourScore)) ? Number(movie.personal.yourScore) : null,
-      ratingCount: Number(movie.personal?.ratingCount) || 0,
-    },
-    theme: 'theme-catalog',
-  }
-}
-
-function mapPersonHistoryPayload(history) {
-  if (!history || typeof history !== 'object') return null
-  const next = history.nextRecommendation
-  return {
-    titlesWatched: Number(history.titlesWatched) || 0,
-    averageRating: Number.isFinite(Number(history.averageRating)) ? Number(history.averageRating) : null,
-    hoursWatched: Number(history.hoursWatched) || 0,
-    nextRecommendation: next && Number.isInteger(Number(next.id)) ? mapPersonFilmographyRow(next) : null,
-  }
-}
-
-function mapPersonCoStar(person) {
-  return {
-    id: person.id,
-    name: person.name,
-    profileUrl: person.profileUrl || null,
-    sharedCredits: person.sharedCredits || 0,
-    sharedTitles: Array.isArray(person.sharedTitles) ? person.sharedTitles : [],
-  }
-}
-
-function mapMoviePreviewToDetail(movie) {
-  return {
-    id: movie.id,
-    title: movie.title,
-    year: movie.year || 'Release TBA',
-    overview: movie.summary || movie.overview || 'Overview not available yet.',
-    genres: movie.genreLabel ? movie.genreLabel.split(',').map((genre) => genre.trim()).filter(Boolean) : [],
-    genresLabel: movie.genreLabel || movie.meta || 'Genre TBA',
-    certification: movie.rating || movie.certification || 'NR',
-    runtime: movie.runtime || 'Runtime TBA',
-    score: movie.score || `${movie.rating || 'N/A'}/10`,
-    tomatoScore: formatTomatoScore(movie.score || `${movie.rating || 'N/A'}/10`),
-    audience: movie.audience || 'No votes',
-    originalLanguage: movie.originalLanguage || 'Unknown',
-    releaseDate: movie.releaseDate || null,
-    releaseDateLabel: formatLongDate(movie.releaseDate),
-    posterUrl: movie.posterUrl || null,
-    backdropUrl: movie.backdropUrl || null,
-    director: null,
-    cast: [],
-    reviews: [],
-    communityRating: emptyCommunityRating,
-  }
-}
-
-function mapCommunityRatingPayload(communityRating) {
-  return {
-    average: typeof communityRating?.average === 'number' ? communityRating.average : null,
-    voteCount: Number.isInteger(communityRating?.voteCount) ? communityRating.voteCount : 0,
-    yourScore: typeof communityRating?.yourScore === 'number' ? communityRating.yourScore : null,
-  }
+function findNextPersonRecommendation(filmography) {
+  const today = getCurrentIsoDate()
+  return [...filmography]
+    .filter((item) => !item.personal.watched && item.releaseDate && item.releaseDate <= today)
+    .sort((left, right) => (right.popularity ?? -1) - (left.popularity ?? -1) || (right.voteAverage ?? -1) - (left.voteAverage ?? -1))[0] ?? null
 }
 
 function formatCommunityRating(score) {
@@ -10750,12 +10200,13 @@ function readAppRoute(pathname = window.location.pathname, search = window.locat
     return { kind: routeKinds.continueWatching }
   }
 
+  const mediaDetailRoute = readMediaDetailRoute(pathname)
+  if (mediaDetailRoute) return mediaDetailRoute
+
   const tvDetailMatch = pathname.match(/^\/tv\/(\d+)\/?$/)
   const bookDetailMatch = pathname.match(/^\/books\/([^/]+)\/?$/)
   const authorDetailMatch = pathname.match(/^\/authors\/(\d+)\/?$/)
-  const personDetailMatch = pathname.match(/^\/people\/(\d+)\/?$/)
   const gameDetailMatch = pathname.match(/^\/games\/(\d+)\/?$/)
-  const detailMatch = pathname.match(/^\/movies\/(\d+)\/?$/)
 
   if (tvDetailMatch) {
     return { kind: routeKinds.tvDetail, showId: Number.parseInt(tvDetailMatch[1], 10) }
@@ -10769,22 +10220,8 @@ function readAppRoute(pathname = window.location.pathname, search = window.locat
     return { kind: routeKinds.authorDetail, authorId: Number.parseInt(authorDetailMatch[1], 10) }
   }
 
-  if (personDetailMatch) {
-    return {
-      kind: routeKinds.personDetail,
-      personId: Number.parseInt(personDetailMatch[1], 10),
-    }
-  }
-
   if (gameDetailMatch) {
     return { kind: routeKinds.gameDetail, gameId: Number.parseInt(gameDetailMatch[1], 10) }
-  }
-
-  if (detailMatch) {
-    return {
-      kind: routeKinds.movieDetail,
-      movieId: Number.parseInt(detailMatch[1], 10),
-    }
   }
 
   return { kind: routeKinds.home }
@@ -10869,14 +10306,6 @@ function readPersonPreviewFromHistory(personId) {
   return preview
 }
 
-function formatMovieYear(releaseDate) {
-  if (!releaseDate) {
-    return 'Release TBA'
-  }
-
-  return String(releaseDate).slice(0, 4)
-}
-
 function formatShortMovieDate(releaseDate) {
   if (!releaseDate) return 'New release'
   const date = new Date(releaseDate)
@@ -10891,28 +10320,6 @@ function formatMovieCountdown(releaseDate) {
   const days = Math.ceil((date.getTime() - Date.now()) / 86400000)
   if (days <= 0) return 'Out now'
   return days === 1 ? '1 day' : `${days} days`
-}
-
-function formatMovieRating(voteAverage) {
-  if (typeof voteAverage !== 'number') {
-    return 'N/A'
-  }
-
-  return voteAverage.toFixed(1)
-}
-
-function formatMovieMeta(movie) {
-  const details = []
-
-  if (typeof movie.vote_count === 'number') {
-    details.push(formatVoteCount(movie.vote_count))
-  }
-
-  if (details.length === 0) {
-    return 'From local DB'
-  }
-
-  return details.join(' • ')
 }
 
 function formatTvMeta(show) {
@@ -10990,44 +10397,6 @@ function formatTvAudience(voteAverage) {
   return formatTomatoScore(`${score}/10`)
 }
 
-function formatVoteCount(voteCount) {
-  if (voteCount >= 1000) {
-    return `${(voteCount / 1000).toFixed(1)}k votes`
-  }
-
-  return `${voteCount} votes`
-}
-
-function formatTomatoScore(score) {
-  const match = typeof score === 'string' ? score.match(/^(\d+(?:\.\d+)?)\/10$/) : null
-
-  if (!match) {
-    return '92%'
-  }
-
-  return `${Math.round(Number.parseFloat(match[1]) * 10)}%`
-}
-
-function formatLongDate(releaseDate) {
-  if (!releaseDate) {
-    return 'Release TBA'
-  }
-
-  const value = typeof releaseDate === 'string' && releaseDate.includes('T') ? releaseDate : `${releaseDate}T00:00:00.000Z`
-  const parsedDate = new Date(value)
-
-  if (Number.isNaN(parsedDate.getTime())) {
-    return 'Release TBA'
-  }
-
-  return new Intl.DateTimeFormat('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    timeZone: 'UTC',
-  }).format(parsedDate)
-}
-
 function formatNewsDate(value) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return 'Date unavailable'
@@ -11102,22 +10471,6 @@ function formatCalendarDate(isoDate) {
 
 function formatCalendarShortDate(isoDate) {
   return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(new Date(`${isoDate}T00:00:00.000Z`))
-}
-
-function resolveMoviePosterUrl(posterPath) {
-  if (!posterPath) {
-    return null
-  }
-
-  return `https://image.tmdb.org/t/p/w500${posterPath}`
-}
-
-function resolveMovieBackdropUrl(backdropPath) {
-  if (!backdropPath) {
-    return null
-  }
-
-  return `https://image.tmdb.org/t/p/w780${backdropPath}`
 }
 
 function formatMinutesAsHoursAndMinutes(minutes) {

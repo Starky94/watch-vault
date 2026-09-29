@@ -96,27 +96,8 @@ export interface LatestEpisodeApi {
   backdropUrl?: string | null
   latestEpisode?: { seasonNumber?: number; episodeNumber?: number; airDate?: string | null; title?: string | null } | null
 }
-export interface MovieRowApi {
-  tmdb_id: number
-  title: string
-  release_date?: string | null
-  vote_average?: number | null
-  poster_path?: string | null
-  [key: string]: unknown
-}
-export interface FeaturedMovieApi {
-  id: number
-  title: string
-  year?: string | null
-  genres?: string[] | null
-  rating?: string | null
-  runtime?: string | null
-  score?: string | null
-  audience?: string | null
-  summary?: string | null
-  posterPath?: string | null
-  backdropPath?: string | null
-}
+export type MovieRowApi = import('../movie/movieTypes.ts').MovieRowApi
+export type FeaturedMovieApi = import('../movie/movieTypes.ts').FeaturedMovieApi
 export interface PopularMoviesApi {
   movies?: MovieRowApi[]
   featuredMovie?: FeaturedMovieApi | null

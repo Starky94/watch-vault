@@ -2184,34 +2184,13 @@ function buildWatchedMovieExclusion(username, params) {
   return `NOT EXISTS (SELECT 1 FROM watched_movies JOIN users ON users.id = watched_movies.user_id WHERE watched_movies.movie_id = movies.id AND users.username = $${params.length})`
 }
 
-export async function listMovies(pool, options = {}) {
-  const { limit = 30, page = 1, genre = '', excludeWatchedForUsername = '' } = options
-  const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 30
-  const normalizedPage = Number.isInteger(page) ? Math.max(1, page) : 1
-  const normalizedGenre = typeof genre === 'string' ? genre.trim() : ''
-  const normalizedExcludedUsername = typeof excludeWatchedForUsername === 'string' ? excludeWatchedForUsername.trim() : ''
-  const offset = (normalizedPage - 1) * normalizedLimit
+function movieCatalogOrder(sort, featuredOrder) {
+  if (sort === 'rating') return 'movies.vote_average DESC NULLS LAST, movies.tmdb_id ASC'
+  if (sort === 'release') return 'movies.release_date DESC NULLS LAST, movies.tmdb_id ASC'
+  return featuredOrder
+}
 
-  const params = [normalizedLimit, offset]
-  const filters = []
-
-  if (normalizedGenre) {
-    params.push(normalizedGenre)
-    filters.push(`EXISTS (
-      SELECT 1
-      FROM UNNEST(movies.genre_ids) AS selected_genre(tmdb_genre_id)
-      JOIN genres AS selected_genres ON selected_genres.tmdb_genre_id = selected_genre.tmdb_genre_id
-      WHERE LOWER(selected_genres.name) = LOWER($${params.length})
-    )`)
-  }
-
-  if (normalizedExcludedUsername) {
-    filters.push(buildWatchedMovieExclusion(normalizedExcludedUsername, params))
-  }
-
-  const filterSql = filters.length > 0 ? `WHERE ${filters.join('\n      AND ')}` : ''
-
-  const result = await pool.query(`
+const movieCatalogSelectSql = `
     SELECT
       movies.tmdb_id,
       movies.title,
@@ -2239,10 +2218,50 @@ export async function listMovies(pool, options = {}) {
       movies.imported_at
     FROM movies
     LEFT JOIN LATERAL UNNEST(movies.genre_ids) WITH ORDINALITY AS genre_ids(tmdb_genre_id, ordinality) ON TRUE
-    LEFT JOIN genres ON genres.tmdb_genre_id = genre_ids.tmdb_genre_id
+    LEFT JOIN genres ON genres.tmdb_genre_id = genre_ids.tmdb_genre_id`
+
+function movieCollectionPageOptions({ limit = 30, page = 1, pageSize = limit, excludeWatchedForUsername = '' }) {
+  const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 30
+  const normalizedPageSize = Number.isInteger(pageSize) ? Math.max(1, pageSize) : normalizedLimit
+  const normalizedPage = Number.isInteger(page) ? Math.max(1, page) : 1
+  const normalizedUsername = typeof excludeWatchedForUsername === 'string' ? excludeWatchedForUsername.trim() : ''
+  const params = [normalizedLimit, (normalizedPage - 1) * normalizedPageSize]
+  return { params, watchedFilterSql: buildWatchedMovieExclusion(normalizedUsername, params) }
+}
+
+export async function listMovies(pool, options = {}) {
+  const { limit = 30, page = 1, pageSize = limit, genre = '', sort = 'featured', excludeWatchedForUsername = '' } = options
+  const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 30
+  const normalizedPageSize = Number.isInteger(pageSize) ? Math.max(1, pageSize) : normalizedLimit
+  const normalizedPage = Number.isInteger(page) ? Math.max(1, page) : 1
+  const normalizedGenre = typeof genre === 'string' ? genre.trim() : ''
+  const normalizedExcludedUsername = typeof excludeWatchedForUsername === 'string' ? excludeWatchedForUsername.trim() : ''
+  const offset = (normalizedPage - 1) * normalizedPageSize
+
+  const params = [normalizedLimit, offset]
+  const filters = []
+
+  if (normalizedGenre) {
+    params.push(normalizedGenre)
+    filters.push(`EXISTS (
+      SELECT 1
+      FROM UNNEST(movies.genre_ids) AS selected_genre(tmdb_genre_id)
+      JOIN genres AS selected_genres ON selected_genres.tmdb_genre_id = selected_genre.tmdb_genre_id
+      WHERE LOWER(selected_genres.name) = LOWER($${params.length})
+    )`)
+  }
+
+  if (normalizedExcludedUsername) {
+    filters.push(buildWatchedMovieExclusion(normalizedExcludedUsername, params))
+  }
+
+  const filterSql = filters.length > 0 ? `WHERE ${filters.join('\n      AND ')}` : ''
+
+  const result = await pool.query(`
+    ${movieCatalogSelectSql}
     ${filterSql}
     GROUP BY movies.id
-    ORDER BY popularity DESC NULLS LAST, tmdb_id ASC
+    ORDER BY ${movieCatalogOrder(sort, 'popularity DESC NULLS LAST, tmdb_id ASC')}
     LIMIT $1
     OFFSET $2
   `, params)
@@ -4756,49 +4775,17 @@ export async function listMoviesForCreditsBackfill(pool) {
 }
 
 export async function listRecentlyReleasedMovies(pool, options = {}) {
-  const { limit = 30, page = 1, excludeWatchedForUsername = '' } = options
-  const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 30
-  const normalizedPage = Number.isInteger(page) ? Math.max(1, page) : 1
-  const normalizedExcludedUsername = typeof excludeWatchedForUsername === 'string' ? excludeWatchedForUsername.trim() : ''
-  const offset = (normalizedPage - 1) * normalizedLimit
-  const params = [normalizedLimit, offset]
-  const watchedFilterSql = buildWatchedMovieExclusion(normalizedExcludedUsername, params)
+  const { params, watchedFilterSql } = movieCollectionPageOptions(options)
+  const { sort = 'featured' } = options
 
   const result = await pool.query(
     `
-    SELECT
-      movies.tmdb_id,
-      movies.title,
-      movies.original_title,
-      movies.overview,
-      movies.release_date,
-      movies.original_language,
-      movies.poster_path,
-      movies.backdrop_path,
-      movies.popularity,
-      movies.vote_average,
-      movies.vote_count,
-      movies.adult,
-      movies.video,
-      movies.genre_ids,
-      COALESCE(
-        ARRAY_REMOVE(ARRAY_AGG(genres.name ORDER BY genre_ids.ordinality), NULL),
-        '{}'
-      ) AS genre_names,
-      movies.runtime_minutes,
-      movies.certification,
-      movies.detail_payload,
-      movies.raw_payload,
-      movies.import_rank,
-      movies.imported_at
-    FROM movies
-    LEFT JOIN LATERAL UNNEST(movies.genre_ids) WITH ORDINALITY AS genre_ids(tmdb_genre_id, ordinality) ON TRUE
-    LEFT JOIN genres ON genres.tmdb_genre_id = genre_ids.tmdb_genre_id
+    ${movieCatalogSelectSql}
     WHERE movies.release_date IS NOT NULL
       AND movies.release_date <= CURRENT_DATE
       ${watchedFilterSql ? `AND ${watchedFilterSql}` : ''}
     GROUP BY movies.id
-    ORDER BY movies.release_date DESC, movies.tmdb_id ASC
+    ORDER BY ${movieCatalogOrder(sort, 'movies.release_date DESC, movies.tmdb_id ASC')}
     LIMIT $1
     OFFSET $2
   `,
@@ -4809,13 +4796,8 @@ export async function listRecentlyReleasedMovies(pool, options = {}) {
 }
 
 export async function listTopRatedMovies(pool, options = {}) {
-  const { limit = 30, page = 1, excludeWatchedForUsername = '' } = options
-  const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 30
-  const normalizedPage = Number.isInteger(page) ? Math.max(1, page) : 1
-  const normalizedExcludedUsername = typeof excludeWatchedForUsername === 'string' ? excludeWatchedForUsername.trim() : ''
-  const offset = (normalizedPage - 1) * normalizedLimit
-  const params = [normalizedLimit, offset]
-  const watchedFilterSql = buildWatchedMovieExclusion(normalizedExcludedUsername, params)
+  const { params, watchedFilterSql } = movieCollectionPageOptions(options)
+  const { sort = 'featured' } = options
 
   const result = await pool.query(
     `
@@ -4828,43 +4810,16 @@ export async function listTopRatedMovies(pool, options = {}) {
         AND vote_count IS NOT NULL
         AND vote_count >= 0
     )
-    SELECT
-      movies.tmdb_id,
-      movies.title,
-      movies.original_title,
-      movies.overview,
-      movies.release_date,
-      movies.original_language,
-      movies.poster_path,
-      movies.backdrop_path,
-      movies.popularity,
-      movies.vote_average,
-      movies.vote_count,
-      movies.adult,
-      movies.video,
-      movies.genre_ids,
-      COALESCE(
-        ARRAY_REMOVE(ARRAY_AGG(genres.name ORDER BY genre_ids.ordinality), NULL),
-        '{}'
-      ) AS genre_names,
-      movies.runtime_minutes,
-      movies.certification,
-      movies.detail_payload,
-      movies.raw_payload,
-      movies.import_rank,
-      movies.imported_at
-    FROM movies
-    LEFT JOIN LATERAL UNNEST(movies.genre_ids) WITH ORDINALITY AS genre_ids(tmdb_genre_id, ordinality) ON TRUE
-    LEFT JOIN genres ON genres.tmdb_genre_id = genre_ids.tmdb_genre_id
+    ${movieCatalogSelectSql}
     CROSS JOIN top_rated_catalog
     WHERE movies.release_date IS NOT NULL
       AND movies.release_date <= CURRENT_DATE
       ${watchedFilterSql ? `AND ${watchedFilterSql}` : ''}
     GROUP BY movies.id, top_rated_catalog.average_vote
-    ORDER BY (
+    ORDER BY ${sort === 'rating' || sort === 'release' ? movieCatalogOrder(sort, '') : `(
       (COALESCE(movies.vote_count, 0)::DOUBLE PRECISION / (COALESCE(movies.vote_count, 0) + 5000)) * movies.vote_average
       + (5000.0 / (COALESCE(movies.vote_count, 0) + 5000)) * top_rated_catalog.average_vote
-    ) DESC NULLS LAST, movies.vote_count DESC NULLS LAST, movies.tmdb_id ASC
+    ) DESC NULLS LAST, movies.vote_count DESC NULLS LAST, movies.tmdb_id ASC`}
     LIMIT $1
     OFFSET $2
   `,
@@ -4875,50 +4830,18 @@ export async function listTopRatedMovies(pool, options = {}) {
 }
 
 export async function listUpcomingMovies(pool, options = {}) {
-  const { limit = 30, page = 1, excludeWatchedForUsername = '' } = options
-  const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 30
-  const normalizedPage = Number.isInteger(page) ? Math.max(1, page) : 1
-  const normalizedExcludedUsername = typeof excludeWatchedForUsername === 'string' ? excludeWatchedForUsername.trim() : ''
-  const offset = (normalizedPage - 1) * normalizedLimit
-  const params = [normalizedLimit, offset]
-  const watchedFilterSql = buildWatchedMovieExclusion(normalizedExcludedUsername, params)
+  const { params, watchedFilterSql } = movieCollectionPageOptions(options)
+  const { sort = 'featured' } = options
 
   const result = await pool.query(
     `
-    SELECT
-      movies.tmdb_id,
-      movies.title,
-      movies.original_title,
-      movies.overview,
-      movies.release_date,
-      movies.original_language,
-      movies.poster_path,
-      movies.backdrop_path,
-      movies.popularity,
-      movies.vote_average,
-      movies.vote_count,
-      movies.adult,
-      movies.video,
-      movies.genre_ids,
-      COALESCE(
-        ARRAY_REMOVE(ARRAY_AGG(genres.name ORDER BY genre_ids.ordinality), NULL),
-        '{}'
-      ) AS genre_names,
-      movies.runtime_minutes,
-      movies.certification,
-      movies.detail_payload,
-      movies.raw_payload,
-      movies.import_rank,
-      movies.imported_at
-    FROM movies
-    LEFT JOIN LATERAL UNNEST(movies.genre_ids) WITH ORDINALITY AS genre_ids(tmdb_genre_id, ordinality) ON TRUE
-    LEFT JOIN genres ON genres.tmdb_genre_id = genre_ids.tmdb_genre_id
+    ${movieCatalogSelectSql}
     WHERE movies.release_date IS NOT NULL
       AND movies.release_date > CURRENT_DATE
       AND movies.release_date <= CURRENT_DATE + INTERVAL '30 days'
       ${watchedFilterSql ? `AND ${watchedFilterSql}` : ''}
     GROUP BY movies.id
-    ORDER BY movies.release_date ASC, movies.tmdb_id ASC
+    ORDER BY ${movieCatalogOrder(sort, 'movies.release_date ASC, movies.tmdb_id ASC')}
     LIMIT $1
     OFFSET $2
   `,

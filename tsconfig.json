@@ -13,5 +13,5 @@
     "skipLibCheck": true,
     "types": ["vite/client"]
   },
-  "include": ["src/home/**/*.ts", "src/home/**/*.tsx"]
+  "include": ["src/home/**/*.ts", "src/home/**/*.tsx", "src/movie/**/*.ts", "src/movie/**/*.tsx", "src/personMappers.ts"]
 }

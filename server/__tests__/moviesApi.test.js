@@ -43,6 +43,9 @@ function isSchemaSetupQuery(sql) {
     sql.includes('ALTER TABLE cast_members') ||
     sql.includes('CREATE TABLE IF NOT EXISTS users') ||
     sql.includes('ALTER TABLE news_articles') ||
+    sql.includes('DROP TABLE IF EXISTS news_article_actors, news_article_movies') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS error_logs') ||
+    sql.includes('CREATE INDEX IF NOT EXISTS error_logs') ||
     sql.includes('CREATE TABLE IF NOT EXISTS news_article') ||
     sql.includes('CREATE INDEX IF NOT EXISTS news_article') ||
     sql.includes('INSERT INTO users') ||
@@ -185,6 +188,19 @@ test('listMovies applies a case-insensitive genre filter when provided', async (
   assert.match(executedSql, /WHERE EXISTS/i)
   assert.match(executedSql, /LOWER\(selected_genres\.name\) = LOWER\(\$3\)/i)
   assert.deepEqual(executedParams, [30, 0, 'action'])
+})
+
+test('movie catalog sorts the full filtered result before pagination', async () => {
+  const catalogQueries = [listMovies, listRecentlyReleasedMovies, listTopRatedMovies, listUpcomingMovies]
+  for (const listCatalog of catalogQueries) {
+    const queries = []
+    const pool = { async query(sql, params) { queries.push({ sql, params }); return { rows: [] } } }
+    await listCatalog(pool, { sort: 'rating', limit: 31, pageSize: 30, page: 2 })
+    await listCatalog(pool, { sort: 'release', limit: 31, pageSize: 30, page: 2 })
+    assert.match(queries[0].sql, /ORDER BY movies\.vote_average DESC NULLS LAST, movies\.tmdb_id ASC\s+LIMIT \$1\s+OFFSET \$2/i)
+    assert.match(queries[1].sql, /ORDER BY movies\.release_date DESC NULLS LAST, movies\.tmdb_id ASC\s+LIMIT \$1\s+OFFSET \$2/i)
+    assert.deepEqual(queries.map(({ params }) => params.slice(0, 2)), [[31, 30], [31, 30]])
+  }
 })
 
 test('movie catalog queries exclude the signed-in user’s watched movies before pagination', async () => {
@@ -4441,7 +4457,7 @@ test('GET /api/movies/recently-released forwards a requested limit', async () =>
     const payload = await response.json()
 
     assert.equal(response.status, 200)
-    assert.deepEqual(capturedParams, [[31, 31]])
+    assert.deepEqual(capturedParams, [[31, 30]])
     assert.equal(payload.count, 0)
     assert.deepEqual(payload.movies, [])
     assert.deepEqual(payload.pagination, {
@@ -4628,7 +4644,7 @@ test('GET /api/movies/top-rated forwards a requested limit', async () => {
     const payload = await response.json()
 
     assert.equal(response.status, 200)
-    assert.deepEqual(capturedParams, [[31, 31]])
+    assert.deepEqual(capturedParams, [[31, 30]])
     assert.equal(payload.count, 0)
     assert.deepEqual(payload.movies, [])
     assert.deepEqual(payload.pagination, {
@@ -4677,7 +4693,7 @@ test('GET /api/movies/upcoming forwards a requested limit', async () => {
     const payload = await response.json()
 
     assert.equal(response.status, 200)
-    assert.deepEqual(capturedParams, [[31, 31]])
+    assert.deepEqual(capturedParams, [[31, 30]])
     assert.equal(payload.count, 0)
     assert.deepEqual(payload.movies, [])
     assert.deepEqual(payload.pagination, {
