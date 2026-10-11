@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import './App.css'
 import { useHomePage } from './home/useHomePage.ts'
 import { HomeScreen } from './home/HomeScreen.tsx'
@@ -5955,7 +5956,7 @@ function GameDetailPage({ state, similarGamesState, favoriteGameIds, onBack, onT
       </div>
       <aside className="movie-detail-status desktop-only"><h2>Your Status</h2><div className="movie-detail-status-list"><div className="movie-detail-status-item"><span className="movie-detail-status-icon"><HeartIcon /></span><div><span>Favorite</span><strong>{isFavorite ? 'Saved' : 'Not yet'}</strong></div></div><div className="movie-detail-status-item movie-detail-status-item-watched"><span className="movie-detail-status-icon"><CheckIcon /></span><div><span>Played</span><strong>{game.played ? 'Played' : 'Not yet'}</strong></div></div><div className="movie-detail-status-item movie-detail-status-item-rating"><span className="movie-detail-status-icon"><StarOutlineIcon /></span><div><span>Your rating</span><strong>{formatCommunityRating(communityRating.yourScore)}</strong></div></div><div className="movie-detail-status-item"><span className="movie-detail-status-icon"><GamepadIcon /></span><div><span>Platforms</span><strong>{game.platforms.length ? game.platforms.join(', ') : 'TBA'}</strong></div></div></div></aside>
     </article>
-    <div className="movie-detail-grid game-detail-grid"><section className="content-section movie-detail-panel game-detail-facts"><div className="game-detail-fact"><CalendarIcon /><span>Release date</span><strong>{game.releaseDate ? formatLongDate(game.releaseDate) : 'TBA'}</strong></div><div className="game-detail-fact"><GamepadIcon /><span>Platforms</span><strong>{game.platforms.length ? game.platforms.join(', ') : 'TBA'}</strong></div><div className="game-detail-fact"><StarIcon /><span>Steam activity</span><strong>{game.steamPeakPlayers === null ? 'Unavailable' : formatGamePlayerCount(game.steamPeakPlayers)}</strong></div></section><section className="content-section movie-detail-panel game-detail-genres"><div className="section-header"><h2>Genres</h2></div><div className="movie-detail-tags">{game.genres.length ? game.genres.map((genre) => <span key={genre} className="movie-detail-tag">{genre}</span>) : <span className="movie-detail-tag">Genre TBA</span>}</div></section><GameTimeToBeatPanel timeToBeat={game.timeToBeat} /><section className="content-section movie-detail-panel game-detail-similar"><div className="section-header"><div><h2>Similar Games</h2><span>{similarGamesState.source === 'local' ? 'Based on shared genres' : 'Curated by IGDB'}</span></div></div>{similarGamesState.status === 'loading' ? <SectionMessage message="Finding similar games..." /> : null}{similarGamesState.status === 'error' ? <SectionMessage tone="error" message={similarGamesState.error} /> : null}{similarGamesState.status === 'success' && similarGamesState.games.length ? <GameCardsGrid className="games-card-grid game-detail-similar-carousel" games={similarGamesState.games} label="Similar" favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} /> : null}{similarGamesState.status === 'success' && !similarGamesState.games.length ? <SectionMessage message="No similar games are available yet." /> : null}</section></div>
+    <div className="movie-detail-grid game-detail-grid"><section className="content-section movie-detail-panel game-detail-facts"><div className="game-detail-fact"><CalendarIcon /><span>Release date</span><strong>{game.releaseDate ? formatLongDate(game.releaseDate) : 'TBA'}</strong></div><div className="game-detail-fact"><GamepadIcon /><span>Platforms</span><strong>{game.platforms.length ? game.platforms.join(', ') : 'TBA'}</strong></div><div className="game-detail-fact"><StarIcon /><span>Steam activity</span><strong>{game.steamPeakPlayers === null ? 'Unavailable' : formatGamePlayerCount(game.steamPeakPlayers)}</strong></div></section><section className="content-section movie-detail-panel game-detail-genres"><div className="section-header"><h2>Genres</h2></div><div className="movie-detail-tags">{game.genres.length ? game.genres.map((genre) => <span key={genre} className="movie-detail-tag">{genre}</span>) : <span className="movie-detail-tag">Genre TBA</span>}</div></section>{game.tracking ? <section className="content-section movie-detail-panel game-detail-progress"><div className="section-header"><h2>Your Progress</h2></div><div className="game-detail-progress-values"><div><ClockIcon /><span>Played time</span><strong>{game.tracking.playtimeMinutes === 0 ? '0 min' : formatMinutesAsHoursAndMinutes(game.tracking.playtimeMinutes)}</strong></div><div><TrophyIcon /><span>Completion</span><strong>{game.tracking.completionPercent === null ? 'Not logged' : `${game.tracking.completionPercent}%`}</strong></div></div></section> : null}<GameTimeToBeatPanel timeToBeat={game.timeToBeat} /><section className="content-section movie-detail-panel game-detail-similar"><div className="section-header"><div><h2>Similar Games</h2><span>{similarGamesState.source === 'local' ? 'Based on shared genres' : 'Curated by IGDB'}</span></div></div>{similarGamesState.status === 'loading' ? <SectionMessage message="Finding similar games..." /> : null}{similarGamesState.status === 'error' ? <SectionMessage tone="error" message={similarGamesState.error} /> : null}{similarGamesState.status === 'success' && similarGamesState.games.length ? <GameCardsGrid className="games-card-grid game-detail-similar-carousel" games={similarGamesState.games} label="Similar" favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} /> : null}{similarGamesState.status === 'success' && !similarGamesState.games.length ? <SectionMessage message="No similar games are available yet." /> : null}</section></div>
     {trackingOpen ? <GameTrackingDialog game={game} initial={game.tracking} saving={trackingActionState.status === 'loading' && trackingActionState.gameId === game.id} error={trackingActionState.status === 'error' && trackingActionState.gameId === game.id ? trackingActionState.error : ''} onCancel={() => setTrackingOpen(false)} onSave={async (tracking) => { if (await onSaveTracking(game, tracking)) setTrackingOpen(false) }} /> : null}
     {sessionOpen ? <GameSessionDialog game={game} saving={trackingActionState.status === 'loading' && trackingActionState.gameId === game.id} error={trackingActionState.status === 'error' && trackingActionState.gameId === game.id ? trackingActionState.error : ''} onCancel={() => setSessionOpen(false)} onSave={async (session) => { if (await onSaveSession(game, session)) setSessionOpen(false) }} /> : null}
     {ratingOpen ? <MovieRatingDialog movie={game} selectedRating={selectedRating} onSelectRating={setSelectedRating} onCancel={() => setRatingOpen(false)} onSubmit={async () => { if (await onSubmitRating(game, selectedRating)) setRatingOpen(false) }} isSaving={isSavingRating} error={ratingActionState.status === 'error' && ratingActionState.gameId === game.id ? ratingActionState.error : ''} kicker="Your Game Rating" /> : null}
@@ -7838,7 +7839,7 @@ function WatchServiceDialog({ title, onCancel, onSelect }) {
   const [service, setService] = useState('')
   const [isOther, setIsOther] = useState(false)
 
-  return <div className="movie-rating-dialog-backdrop" role="presentation" onMouseDown={onCancel}>
+  return createPortal(<div className="movie-rating-dialog-backdrop" role="presentation" onMouseDown={onCancel}>
     <section className="movie-rating-dialog" role="dialog" aria-modal="true" aria-labelledby="watch-service-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
       <p className="movie-rating-dialog-kicker">Watch service</p>
       <h2 id="watch-service-dialog-title">Where did you watch {title}?</h2>
@@ -7850,7 +7851,7 @@ function WatchServiceDialog({ title, onCancel, onSelect }) {
       {isOther ? <input className="watch-service-other-input" autoFocus value={service} maxLength={80} placeholder="Service name" onChange={(event) => setService(event.target.value)} /> : null}
       <div className="movie-rating-dialog-actions"><button type="button" className="secondary-button" onClick={onCancel}>Cancel</button><button type="button" className="secondary-button" onClick={() => onSelect(null)}>Skip</button><button type="button" className="primary-button" onClick={() => onSelect(service)} disabled={!service.trim()}><CheckIcon /><span>Mark watched</span></button></div>
     </section>
-  </div>
+  </div>, document.body)
 }
 
 function BookReadingFormatDialog({ book, isSaving, onCancel, onSelect }) {
@@ -7881,7 +7882,7 @@ function BookReadingFormatDialog({ book, isSaving, onCancel, onSelect }) {
 }
 
 function MovieRatingDialog({ movie, selectedRating, onSelectRating, onCancel, onSubmit, isSaving, error, kicker = 'Your WatchVault Rating', cancelLabel = 'Cancel' }) {
-  return (
+  return createPortal(
     <div className="movie-rating-dialog-backdrop" role="presentation" onMouseDown={isSaving ? undefined : onCancel}>
       <section className="movie-rating-dialog" role="dialog" aria-modal="true" aria-labelledby="movie-rating-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
         <p className="movie-rating-dialog-kicker">{kicker}</p>
@@ -7912,7 +7913,7 @@ function MovieRatingDialog({ movie, selectedRating, onSelectRating, onCancel, on
           </button>
         </div>
       </section>
-    </div>
+    </div>, document.body
   )
 }
 

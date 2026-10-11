@@ -715,9 +715,26 @@ export async function ensureWatchTogetherTables(pool) {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS watch_together_vote_round_items (
       round_id BIGINT NOT NULL REFERENCES watch_together_vote_rounds(id) ON DELETE CASCADE,
-      item_id BIGINT NOT NULL REFERENCES watch_together_items(id) ON DELETE RESTRICT,
+      item_id BIGINT NOT NULL REFERENCES watch_together_items(id) ON DELETE CASCADE,
       PRIMARY KEY (round_id, item_id)
     )
+  `)
+  // Completed/cancelled ballots must not prevent a title leaving the shortlist.
+  // Upgrade existing databases as well as creating the correct FK for new ones.
+  await pool.query(`
+    DO $$ BEGIN
+      IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'watch_together_vote_round_items'::regclass
+          AND conname = 'watch_together_vote_round_items_item_id_fkey'
+          AND confdeltype <> 'c'
+      ) THEN
+        ALTER TABLE watch_together_vote_round_items
+          DROP CONSTRAINT watch_together_vote_round_items_item_id_fkey,
+          ADD CONSTRAINT watch_together_vote_round_items_item_id_fkey
+            FOREIGN KEY (item_id) REFERENCES watch_together_items(id) ON DELETE CASCADE;
+      END IF;
+    END $$
   `)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS watch_together_vote_round_members (

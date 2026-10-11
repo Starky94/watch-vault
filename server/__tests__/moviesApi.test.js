@@ -1745,7 +1745,7 @@ test('Watch Together movie confirmations also update each confirmer’s watched 
         return { rows: [{ pair_id: 70, user_id: users[username].id, movie_id: 42 }] }
       }
       if (sql.includes('SELECT mine.pair_id, mine.user_id, other.user_id AS partner_user_id')) return { rows: [] }
-      if (sql.includes('SELECT items.id FROM watch_together_items')) return { rows: [{ id: 90 }] }
+      if (sql.includes('SELECT items.id, items.media_id FROM watch_together_items')) return { rows: [{ id: 90, media_id: 42 }] }
       if (sql.includes('INSERT INTO watch_together_item_confirmations')) {
         confirmations.add(params[1])
         return { rows: [] }
@@ -1755,6 +1755,7 @@ test('Watch Together movie confirmations also update each confirmer’s watched 
         watchedTogether.push({ pairId: params[0], movieId: params[1] })
         return { rows: [{ watched_together_at: '2026-07-03T11:35:00.000Z' }] }
       }
+      if (sql.includes('DELETE FROM watch_together_plans')) return { rows: [] }
       if (sql.includes('DELETE FROM watch_together_items')) return { rows: [] }
 
       if (sql.includes('FROM users') && sql.includes('WHERE username = $1') && sql.includes('LIMIT 1')) {

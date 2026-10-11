@@ -63,6 +63,18 @@ test('Watch Together schema enforces request, pairing, and shared-title constrai
   assert.equal(queries.some((sql) => sql.includes('watch_together_one_active_vote_round_idx')), true)
 })
 
+test('shortlist deletion cascades through ballot entries and votes, including existing databases', async () => {
+  const queries = []
+  await ensureWatchTogetherTables({ query: async (sql) => { queries.push(sql); return { rows: [] } } })
+  const entries = queries.find((sql) => sql.includes('CREATE TABLE IF NOT EXISTS watch_together_vote_round_items'))
+  assert.match(entries, /item_id BIGINT NOT NULL REFERENCES watch_together_items\(id\) ON DELETE CASCADE/)
+  const migration = queries.find((sql) => sql.includes('DROP CONSTRAINT watch_together_vote_round_items_item_id_fkey'))
+  assert.match(migration, /confdeltype <> 'c'/)
+  assert.match(migration, /FOREIGN KEY \(item_id\) REFERENCES watch_together_items\(id\) ON DELETE CASCADE/)
+  const votes = queries.find((sql) => sql.includes('CREATE TABLE IF NOT EXISTS watch_together_votes'))
+  assert.match(votes, /REFERENCES watch_together_vote_round_items\(round_id, item_id\) ON DELETE CASCADE/)
+})
+
 test('Watch Together relationship summary counts titles and uses an active local-day streak', () => {
   const summary = buildWatchTogetherRelationshipSummary({
     members: [{ username: 'one', full_name: 'One Viewer' }, { username: 'two', full_name: 'Two Viewer' }],
