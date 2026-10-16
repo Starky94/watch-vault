@@ -382,6 +382,7 @@ function App() {
       const response = await fetch(`/api/games/${gameId}/sessions`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...buildAuthHeaders(user) }, body: JSON.stringify(session) })
       const payload = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(payload.error || 'Unable to save game session.')
+      setGameDetailState((state) => Number(state.game?.id) === gameId ? { ...state, game: { ...state.game, tracking: payload.tracking } } : state)
       receiveAchievementUnlocks(payload.newlyUnlockedAchievements)
       setGameTrackingActionState({ status: 'success', gameId, error: '' })
       void loadGameActivityForUser(user)
@@ -1474,6 +1475,13 @@ function App() {
         watchlisted: (payload.watchlistIds ?? []).map(Number).includes(showId),
         watched: (payload.watchedIds ?? []).map(Number).includes(showId),
       }, { refreshHistory: kind !== 'watchlist' })
+      if (tvDetailState.show?.stoppedWatching && Number(tvDetailState.show.id) === showId) {
+        const detailResponse = await fetch(`/api/tv/${showId}`, { headers: buildAuthHeaders(user) })
+        const detailPayload = await detailResponse.json().catch(() => ({}))
+        if (!detailResponse.ok) throw new Error(detailPayload.error || 'Unable to refresh TV show')
+        setTvDetailState({ status: 'success', show: mapTvDetailPayload(detailPayload.show), error: '' })
+        await loadWatchlistForUser(user)
+      }
       receiveAchievementUnlocks(payload.newlyUnlockedAchievements)
     } catch (error) {
       setTvStatsState((state) => ({ ...state, status: 'error', error: error instanceof Error ? error.message : 'Unable to update TV library.' }))
@@ -1481,6 +1489,21 @@ function App() {
   }
 
   function handleToggleTvWatchlist(show) { return handleToggleTvLibrary(show, 'watchlist') }
+
+  async function handleSetTvWatchingStatus(showId, stoppedWatching) {
+    if (!user) return handleOpenLogin()
+    const response = await fetch(`/api/tv/${showId}/watching-status`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...buildAuthHeaders(user) },
+      body: JSON.stringify({ stoppedWatching }),
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(payload.error || 'Unable to update watching status')
+    setTvDetailState((state) => Number(state.show?.id) === Number(showId)
+      ? { status: 'success', show: mapTvDetailPayload(payload.show), error: '' } : state)
+    setContinueWatchingPageState(createTvCollectionState())
+    await Promise.all([loadTvLibraryForUser(user), loadWatchlistForUser(user)])
+  }
 
   async function handleUpdateTvEpisodes(showId, { action, episodeId, seasonId, watchService = null }) {
     if (!user) return handleOpenLogin()
@@ -1493,7 +1516,7 @@ function App() {
     if (!response.ok) throw new Error(payload.error || 'Unable to update episode')
     setTvDetailState({ status: 'success', show: mapTvDetailPayload(payload.show), error: '' })
     receiveAchievementUnlocks(payload.newlyUnlockedAchievements)
-    await Promise.all([loadTvLibraryForUser(user), loadTvWatchedHistoryForUser(user)])
+    await Promise.all([loadTvLibraryForUser(user), loadTvWatchedHistoryForUser(user), loadWatchlistForUser(user)])
   }
 
   async function handleSubmitTvEpisodeRating(episode, score) {
@@ -2285,7 +2308,7 @@ function App() {
       })
       const payload = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(payload.error || 'Unable to mark this shared episode watched.')
-      await Promise.all([loadTvLibraryForUser(user), loadTvWatchedHistoryForUser(user)])
+      await Promise.all([loadTvLibraryForUser(user), loadTvWatchedHistoryForUser(user), loadWatchlistForUser(user)])
       receiveAchievementUnlocks(payload.newlyUnlockedAchievements)
       const confirmationStatus = payload.watchTogether?.status || 'waiting_for_partner'
       if (confirmationStatus === 'completed') celebrateWatchTogether('complete', 'Watched together!', `${item.title} is now part of your shared story.`)
@@ -3761,6 +3784,7 @@ function App() {
                 onBackToTv={() => handleMovieViewSelection(primaryViews.tvShows)}
                 onToggleWatchlist={handleToggleTvWatchlist}
                 onUpdateEpisodes={handleUpdateTvEpisodes}
+                onSetWatchingStatus={handleSetTvWatchingStatus}
                 onSubmitEpisodeRating={handleSubmitTvEpisodeRating}
                 onOpenTv={handleOpenTvDetail}
                 onOpenPerson={handleOpenPersonDetail}
@@ -5976,9 +6000,9 @@ function GameTimeToBeatPanel({ timeToBeat }) {
 
 const gameManualTags = ['coop', 'no_assists', 'no_damage_boss', 'one_life', 'all_platform_trophies', 'platinum', 'all_collectibles', 'all_side_quests', 'all_optional_objectives', 'secret_ending', 'random_pick', 'recommendation', 'full_saga', 'credits', 'no_guide', 'bad_ending', 'good_ending', 'customization']
 function GameTrackingDialog({ game, initial, saving, error, onCancel, onSave }) {
-  const [status, setStatus] = useState(initial?.status || 'playing'); const [platform, setPlatform] = useState(initial?.platform || game.platforms?.[0] || ''); const [difficulty, setDifficulty] = useState(initial?.difficulty || 'normal'); const [playtime, setPlaytime] = useState(String(initial?.playtimeMinutes || '')); const [percent, setPercent] = useState(String(initial?.completionPercent || '')); const [review, setReview] = useState(initial?.review || ''); const [tags, setTags] = useState(initial?.metadata?.tags || {})
+  const [status, setStatus] = useState(initial?.status || 'playing'); const [platform, setPlatform] = useState(initial?.platform || game.platforms?.[0] || ''); const [difficulty, setDifficulty] = useState(initial?.difficulty || 'normal'); const [playtime, setPlaytime] = useState(String((initial?.manualPlaytimeMinutes ?? initial?.playtimeMinutes) || '')); const [percent, setPercent] = useState(String(initial?.completionPercent || '')); const [review, setReview] = useState(initial?.review || ''); const [tags, setTags] = useState(initial?.metadata?.tags || {})
   const toggle = (key) => setTags((current) => ({ ...current, [key]: !current[key] }))
-  return <div className="movie-rating-dialog-backdrop"><section className="movie-rating-dialog game-tracking-dialog" role="dialog" aria-modal="true"><p className="movie-rating-dialog-kicker">Game tracker</p><h2>{game.title}</h2><div className="game-tracking-fields"><label>Status<select value={status} onChange={(event) => setStatus(event.target.value)}>{['played','backlog','playing','dropped','completed'].map((item) => <option key={item}>{item}</option>)}</select></label><label>Platform<input value={platform} onChange={(event) => setPlatform(event.target.value)} placeholder="PC, PS5, Switch..." /></label><label>Difficulty<select value={difficulty} onChange={(event) => setDifficulty(event.target.value)}>{['easy','normal','hard','highest'].map((item) => <option key={item}>{item}</option>)}</select></label><label>Playtime (minutes)<input type="number" min="0" value={playtime} onChange={(event) => setPlaytime(event.target.value)} /></label><label>Completion %<input type="number" min="0" max="100" value={percent} onChange={(event) => setPercent(event.target.value)} /></label></div><label className="game-tracking-review">Review (optional)<textarea value={review} onChange={(event) => setReview(event.target.value)} placeholder="This counts toward review achievements." /></label><details><summary>Advanced, user-recorded achievement facts</summary><div className="watch-together-session-badges">{gameManualTags.map((tag) => <label key={tag}><input type="checkbox" checked={Boolean(tags[tag])} onChange={() => toggle(tag)} />{tag.replaceAll('_', ' ')}</label>)}</div></details>{error ? <p className="tmdb-search-error">{error}</p> : null}<div className="movie-rating-dialog-actions"><button type="button" className="secondary-button" onClick={onCancel} disabled={saving}>Cancel</button><button type="button" className="primary-button" onClick={() => onSave({ status, platform, difficulty, playtimeMinutes: playtime === '' ? null : Number(playtime), completionPercent: percent === '' ? null : Number(percent), review, metadata: { tags } })} disabled={saving}>{saving ? 'Saving…' : 'Save tracking'}</button></div></section></div>
+  return <div className="movie-rating-dialog-backdrop"><section className="movie-rating-dialog game-tracking-dialog" role="dialog" aria-modal="true"><p className="movie-rating-dialog-kicker">Game tracker</p><h2>{game.title}</h2><div className="game-tracking-fields"><label>Status<select value={status} onChange={(event) => setStatus(event.target.value)}>{['played','backlog','playing','dropped','completed'].map((item) => <option key={item}>{item}</option>)}</select></label><label>Platform<input value={platform} onChange={(event) => setPlatform(event.target.value)} placeholder="PC, PS5, Switch..." /></label><label>Difficulty<select value={difficulty} onChange={(event) => setDifficulty(event.target.value)}>{['easy','normal','hard','highest'].map((item) => <option key={item}>{item}</option>)}</select></label><label>Playtime outside logged sessions (minutes)<input type="number" min="0" value={playtime} onChange={(event) => setPlaytime(event.target.value)} /></label><label>Completion %<input type="number" min="0" max="100" value={percent} onChange={(event) => setPercent(event.target.value)} /></label></div><p>Logged sessions: {formatMinutesAsHoursAndMinutes(initial?.sessionPlaytimeMinutes || 0)}. Session time is added automatically.</p><label className="game-tracking-review">Review (optional)<textarea value={review} onChange={(event) => setReview(event.target.value)} placeholder="This counts toward review achievements." /></label><details><summary>Advanced, user-recorded achievement facts</summary><div className="watch-together-session-badges">{gameManualTags.map((tag) => <label key={tag}><input type="checkbox" checked={Boolean(tags[tag])} onChange={() => toggle(tag)} />{tag.replaceAll('_', ' ')}</label>)}</div></details>{error ? <p className="tmdb-search-error">{error}</p> : null}<div className="movie-rating-dialog-actions"><button type="button" className="secondary-button" onClick={onCancel} disabled={saving}>Cancel</button><button type="button" className="primary-button" onClick={() => onSave({ status, platform, difficulty, playtimeMinutes: playtime === '' ? null : Number(playtime), completionPercent: percent === '' ? null : Number(percent), review, metadata: { tags } })} disabled={saving}>{saving ? 'Saving…' : 'Save tracking'}</button></div></section></div>
 }
 
 function GameSessionDialog({ game, saving, error, onCancel, onSave }) {
@@ -7009,7 +7033,7 @@ function TvWatchlistPanel({ items, onOpenWatchlist, onSelectShow }) {
   )
 }
 
-function TvDetailPage({ tvDetailState, tvReviewsState, watchTogetherState, watchTogetherAchievementsState, user, onBackToTv, onToggleWatchlist, onUpdateEpisodes, onSubmitEpisodeRating, onOpenTv, onOpenPerson, onOpenLogin, isSignedIn, watchlistIds, tvEpisodeRatingActionState, onSaveWatchTogetherSession }) {
+function TvDetailPage({ tvDetailState, tvReviewsState, watchTogetherState, watchTogetherAchievementsState, user, onBackToTv, onToggleWatchlist, onUpdateEpisodes, onSetWatchingStatus, onSubmitEpisodeRating, onOpenTv, onOpenPerson, onOpenLogin, isSignedIn, watchlistIds, tvEpisodeRatingActionState, onSaveWatchTogetherSession }) {
   const [seasonNumber, setSeasonNumber] = useState(null)
   const [trailer, setTrailer] = useState(null)
   const [catchUpEpisode, setCatchUpEpisode] = useState(null)
@@ -7019,8 +7043,9 @@ function TvDetailPage({ tvDetailState, tvReviewsState, watchTogetherState, watch
   const [selectedRating, setSelectedRating] = useState(5)
   const [isOverviewExpanded, setIsOverviewExpanded] = useState(false)
   const [isUpdatingEpisodes, setIsUpdatingEpisodes] = useState(false)
+  const [watchingStatusAction, setWatchingStatusAction] = useState({ saving: false, error: '' })
   const [filelistState, setFilelistState] = useState({ open: false, status: 'idle', results: [], error: '', minutesUntilReset: null, episode: null })
-  useEffect(() => { setSeasonNumber(null); setTrailer(null); setCatchUpEpisode(null); setPendingWatchRequest(null); setRatingEpisode(null); setSessionItem(null); setIsOverviewExpanded(false); setIsUpdatingEpisodes(false); setFilelistState({ open: false, status: 'idle', results: [], error: '', minutesUntilReset: null, episode: null }) }, [tvDetailState.show?.id])
+  useEffect(() => { setWatchingStatusAction({ saving: false, error: '' }); setSeasonNumber(null); setTrailer(null); setCatchUpEpisode(null); setPendingWatchRequest(null); setRatingEpisode(null); setSessionItem(null); setIsOverviewExpanded(false); setIsUpdatingEpisodes(false); setFilelistState({ open: false, status: 'idle', results: [], error: '', minutesUntilReset: null, episode: null }) }, [tvDetailState.show?.id])
   if (tvDetailState.status === 'loading' || tvDetailState.status === 'idle') return <section className="movie-detail-page"><SectionMessage message="Loading TV series detail..." /></section>
   if (tvDetailState.status === 'error' || !tvDetailState.show) return <section className="movie-detail-page"><SectionMessage tone="error" message={tvDetailState.error || 'TV series detail is not available.'} /></section>
   const show = tvDetailState.show
@@ -7041,6 +7066,16 @@ function TvDetailPage({ tvDetailState, tvReviewsState, watchTogetherState, watch
   const isSeasonWatched = seasonAiredEpisodes.length > 0 && seasonAiredEpisodes.every((episode) => episode.watched)
   const yourEpisodeRating = show.yourEpisodeRating ?? { average: null, ratingCount: 0 }
   const filelistTarget = getFilelistTvEpisodeTarget(show)
+
+  async function toggleWatchingStatus() {
+    setWatchingStatusAction({ saving: true, error: '' })
+    try {
+      await onSetWatchingStatus(show.id, !show.stoppedWatching)
+      setWatchingStatusAction({ saving: false, error: '' })
+    } catch (error) {
+      setWatchingStatusAction({ saving: false, error: error instanceof Error ? error.message : 'Unable to update watching status.' })
+    }
+  }
 
   async function updateEpisodes(request, episodeToRate = null) {
     setIsUpdatingEpisodes(true)
@@ -7111,17 +7146,25 @@ function TvDetailPage({ tvDetailState, tvReviewsState, watchTogetherState, watch
         <div className="tv-detail-main"><h1>{show.title}</h1><div className="tv-detail-meta"><span>{show.year}</span><span>{show.genresLabel}</span><span>{show.maturityRating}</span></div>
           <div className="tv-detail-statline"><span className="tv-detail-rating"><StarIcon /> {show.voteAverage}<small>TMDB</small></span><span>{totalEpisodes} Episodes</span><span>{show.seasons.length} {show.seasons.length === 1 ? 'Season' : 'Seasons'}</span><span><TvIcon /> {show.network || 'TBA'}</span></div>
           <p className={`tv-detail-summary${isOverviewExpanded ? ' expanded' : ''}`}>{show.overview}</p>{show.overview?.length > 150 ? <button type="button" className="tv-detail-more" onClick={() => setIsOverviewExpanded((expanded) => !expanded)}>{isOverviewExpanded ? 'Less' : 'More'}</button> : null}
-          <div className="tv-detail-actions"><button type="button" className={`primary-button tv-detail-primary${isWatchlist ? ' is-active' : ''}`} onClick={() => onToggleWatchlist(show)}><PlusIcon /><span>{isWatchlist ? 'In Watchlist' : 'Add to Watchlist'}</span></button><div className="tv-detail-secondary-actions">{show.trailer ? <button type="button" className="secondary-button" onClick={() => setTrailer(show.trailer)}><PlayIcon /><span>Trailer</span></button> : null}<button type="button" className="secondary-button" onClick={handleOpenFilelist} disabled={!filelistTarget} title={!filelistTarget ? 'You are caught up on all aired episodes.' : undefined}><BarsIcon /><span>Filelist</span></button></div></div>
+          {watchingStatusAction.error ? <p role="alert" className="tmdb-search-error">{watchingStatusAction.error}</p> : null}
+          <div className="tv-detail-actions">
+            <button type="button" className={`primary-button tv-detail-primary${isWatchlist ? ' is-active' : ''}`} disabled={watchingStatusAction.saving || isUpdatingEpisodes} onClick={() => onToggleWatchlist(show)}><PlusIcon /><span>{isWatchlist ? 'In Watchlist' : 'Add to Watchlist'}</span></button>
+            <div className="tv-detail-secondary-actions">
+              {show.trailer ? <button type="button" className="secondary-button" onClick={() => setTrailer(show.trailer)}><PlayIcon /><span>Trailer</span></button> : null}
+              <button type="button" className="secondary-button" onClick={handleOpenFilelist} disabled={!filelistTarget} title={!filelistTarget ? 'You are caught up on all aired episodes.' : undefined}><BarsIcon /><span>Filelist</span></button>
+              {isSignedIn && (show.stoppedWatching || show.canStopWatching) ? <TvWatchingStatusControl label={watchingStatusAction.saving ? 'Updating...' : show.stoppedWatching ? 'Resume watching' : 'Stop watching'} disabled={watchingStatusAction.saving || isUpdatingEpisodes} onToggle={toggleWatchingStatus} /> : null}
+            </div>
+          </div>
         </div>
       </div>
     </article>
     <nav className="tv-detail-tabs" aria-label="TV show sections"><button type="button" className="active" onClick={() => scrollToSection('tv-episodes')}>Episodes</button><button type="button" onClick={() => scrollToSection('tv-cast')}>Cast &amp; Crew</button><button type="button" onClick={() => scrollToSection('tv-recommendations')}>More Like This</button><button type="button" onClick={() => scrollToSection('tv-reviews')}>Reviews</button></nav>
     <div className="tv-detail-layout">
-      <section id="tv-episodes" className="content-section tv-detail-panel tv-detail-episodes"><div className="tv-detail-section-heading"><h2>Episodes</h2></div><div className="tv-detail-season-controls"><label><span className="sr-only">Season</span><select value={season?.seasonNumber ?? ''} onChange={(event) => setSeasonNumber(Number(event.target.value))}>{show.seasons.map((item) => <option key={item.id} value={item.seasonNumber}>{item.name}</option>)}</select></label><span>{episodes.length} Episodes</span><button type="button" className="secondary-button tv-season-watch-button" disabled={isUpdatingEpisodes || isSeasonWatched || seasonAiredEpisodes.length === 0} onClick={handleMarkSeasonWatched}><CheckIcon /><span>{isSeasonWatched ? 'Season watched' : isUpdatingEpisodes ? 'Updating...' : 'Mark season watched'}</span></button></div><div className="tv-detail-episode-grid">{episodes.map((episode) => {
+      <section id="tv-episodes" className="content-section tv-detail-panel tv-detail-episodes"><div className="tv-detail-section-heading"><h2>Episodes</h2></div><div className="tv-detail-season-controls"><label><span className="sr-only">Season</span><select value={season?.seasonNumber ?? ''} onChange={(event) => setSeasonNumber(Number(event.target.value))}>{show.seasons.map((item) => <option key={item.id} value={item.seasonNumber}>{item.name}</option>)}</select></label><span>{episodes.length} Episodes</span><button type="button" className="secondary-button tv-season-watch-button" disabled={watchingStatusAction.saving || isUpdatingEpisodes || isSeasonWatched || seasonAiredEpisodes.length === 0} onClick={handleMarkSeasonWatched}><CheckIcon /><span>{isSeasonWatched ? 'Season watched' : isUpdatingEpisodes ? 'Updating...' : 'Mark season watched'}</span></button></div><div className="tv-detail-episode-grid">{episodes.map((episode) => {
         const sharedEpisode = sharedEpisodes.find((item) => Number(item.episodeId) === Number(episode.tmdbId))
-        return <article className="tv-detail-episode-card" key={episode.id}><div className="tv-detail-episode-still">{episode.stillUrl ? <img src={episode.stillUrl} alt="" /> : null}<span>E{episode.episodeNumber}</span></div><div className="tv-detail-episode-copy"><h3>{episode.name}</h3><p>{episode.overview || 'Episode overview is not available.'}</p></div><div className="tv-detail-episode-actions"><span>{episode.runtimeLabel}</span>{sharedEpisode ? <button type="button" className="secondary-button tv-session-button" onClick={() => setSessionItem(sharedEpisode)}>{sharedEpisode.sessionDetails ? 'Edit session' : 'Log session'}</button> : null}{episode.watched ? <button type="button" className="tv-episode-rate" onClick={() => handleOpenEpisodeRating(episode)} aria-label={`${episode.yourScore === null ? 'Rate' : 'Update rating for'} ${episode.name}`}><StarOutlineIcon /></button> : null}<button type="button" disabled={!episode.isAired || isUpdatingEpisodes} className={`tv-episode-toggle${episode.watched ? ' watched' : ''}`} aria-label={episode.isAired ? `${episode.watched ? 'Mark unwatched' : 'Mark watched'} ${episode.name}` : `${episode.name} has not aired yet`} onClick={() => handleEpisodeToggle(episode)}><CheckIcon /></button></div></article>
+        return <article className="tv-detail-episode-card" key={episode.id}><div className="tv-detail-episode-still">{episode.stillUrl ? <img src={episode.stillUrl} alt="" /> : null}<span>E{episode.episodeNumber}</span></div><div className="tv-detail-episode-copy"><h3>{episode.name}</h3><p>{episode.overview || 'Episode overview is not available.'}</p></div><div className="tv-detail-episode-actions"><span>{episode.runtimeLabel}</span>{sharedEpisode ? <button type="button" className="secondary-button tv-session-button" onClick={() => setSessionItem(sharedEpisode)}>{sharedEpisode.sessionDetails ? 'Edit session' : 'Log session'}</button> : null}{episode.watched ? <button type="button" className="tv-episode-rate" onClick={() => handleOpenEpisodeRating(episode)} aria-label={`${episode.yourScore === null ? 'Rate' : 'Update rating for'} ${episode.name}`}><StarOutlineIcon /></button> : null}<button type="button" disabled={watchingStatusAction.saving || !episode.isAired || isUpdatingEpisodes} className={`tv-episode-toggle${episode.watched ? ' watched' : ''}`} aria-label={episode.isAired ? `${episode.watched ? 'Mark unwatched' : 'Mark watched'} ${episode.name}` : `${episode.name} has not aired yet`} onClick={() => handleEpisodeToggle(episode)}><CheckIcon /></button></div></article>
       })}</div></section>
-      <aside className="tv-detail-side"><section className="content-section tv-detail-panel tv-detail-activity"><div className="section-header"><h2>Your Activity</h2><span>{watchedCount} of {totalEpisodes} watched</span></div><div className="tv-detail-progress"><span style={{ width: `${watchedPercentage}%` }} /></div><div className="tv-detail-activity-footer"><span><StarOutlineIcon /> {yourEpisodeRating.ratingCount ? `${formatCommunityRating(yourEpisodeRating.average)} · Rated` : 'Not rated'}</span><button type="button" onClick={() => scrollToSection('tv-reviews')}>Rate show</button></div></section><section id="tv-cast" className="content-section tv-detail-panel tv-detail-cast"><div className="section-header"><h2>Cast &amp; Crew</h2><span>View all</span></div><div className="tv-detail-cast-list">{show.credits.map((member) => <button type="button" className="tv-detail-cast-card" key={`${member.id}-${member.role}`} aria-label={`Open ${member.name}`} onClick={() => onOpenPerson?.(member)} disabled={!Number.isInteger(Number(member.id))}><div className="tv-detail-cast-avatar" style={buildMovieCreditAvatarStyle(member.profileUrl)}>{!member.profileUrl ? getMovieCreditInitials(member.name) : null}</div><strong>{member.name}</strong><small>{member.role}</small></button>)}</div></section></aside>
+      <aside className="tv-detail-side"><section className="content-section tv-detail-panel tv-detail-activity"><div className="section-header"><h2>Your Activity</h2><span>{show.stoppedWatching ? 'Stopped watching' : `${watchedCount} of ${totalEpisodes} watched`}</span></div><div className="tv-detail-progress"><span style={{ width: `${watchedPercentage}%` }} /></div><div className="tv-detail-activity-footer"><span><StarOutlineIcon /> {yourEpisodeRating.ratingCount ? `${formatCommunityRating(yourEpisodeRating.average)} · Rated` : 'Not rated'}</span><button type="button" onClick={() => scrollToSection('tv-reviews')}>Rate show</button></div></section><section id="tv-cast" className="content-section tv-detail-panel tv-detail-cast"><div className="section-header"><h2>Cast &amp; Crew</h2><span>View all</span></div><div className="tv-detail-cast-list">{show.credits.map((member) => <button type="button" className="tv-detail-cast-card" key={`${member.id}-${member.role}`} aria-label={`Open ${member.name}`} onClick={() => onOpenPerson?.(member)} disabled={!Number.isInteger(Number(member.id))}><div className="tv-detail-cast-avatar" style={buildMovieCreditAvatarStyle(member.profileUrl)}>{!member.profileUrl ? getMovieCreditInitials(member.name) : null}</div><strong>{member.name}</strong><small>{member.role}</small></button>)}</div></section></aside>
       <section id="tv-recommendations" className="content-section tv-detail-panel tv-detail-recommendations"><div className="section-header"><h2>More Like This</h2><span>View all</span></div><div className="tv-detail-recommendation-list">{show.recommendations.map((item) => <button key={item.id} type="button" onClick={() => onOpenTv(item)} className="tv-detail-recommendation"><img src={item.posterUrl} alt="" /><span>{item.title}</span><small>{item.rating}</small></button>)}</div></section>
       <section className="content-section tv-detail-panel tv-detail-facts"><DetailFactRow icon={DirectorIcon} label="Created by" value={show.creatorsLabel} /><DetailFactRow icon={LanguageIcon} label="Language" value={show.languagesLabel} /><DetailFactRow icon={TvIcon} label="Status" value={show.status} /><DetailFactRow icon={CalendarIcon} label="First air date" value={show.firstAirDateLabel} /></section>
       <section id="tv-reviews" className="content-section tv-detail-panel tv-detail-reviews"><div className="section-header"><h2>Community Reviews</h2></div>{tvReviewsState.status === 'loading' ? <SectionMessage message="Loading live community reviews..." /> : tvReviewsState.status === 'error' ? <SectionMessage tone="error" message={tvReviewsState.error} /> : tvReviewsState.reviews.length ? <div className="movie-detail-review-grid">{tvReviewsState.reviews.map((review) => <article key={review.id} className="movie-detail-review-card"><strong>{review.author}</strong><span className="movie-detail-stars">{review.rating ? `★ ${review.rating}` : 'No score'}</span><p>{review.copy}</p><small>{review.date}</small></article>)}</div> : <SectionMessage message="No community reviews available right now." />}</section></div>
@@ -7136,6 +7179,39 @@ function TvDetailPage({ tvDetailState, tvReviewsState, watchTogetherState, watch
       return saved
     }} /> : null}
   </section>
+}
+
+function TvWatchingStatusControl({ label, disabled, onToggle }) {
+  const [open, setOpen] = useState(false)
+  const containerRef = useRef(null)
+  const triggerRef = useRef(null)
+  useEffect(() => {
+    if (!open) return
+    const dismiss = (event) => {
+      if (!containerRef.current?.contains(event.target)) setOpen(false)
+    }
+    const escape = (event) => {
+      if (event.key === 'Escape') {
+        setOpen(false)
+        triggerRef.current?.focus()
+      }
+    }
+    document.addEventListener('pointerdown', dismiss)
+    document.addEventListener('keydown', escape)
+    return () => {
+      document.removeEventListener('pointerdown', dismiss)
+      document.removeEventListener('keydown', escape)
+    }
+  }, [open])
+  return <>
+    <button type="button" className="secondary-button tv-detail-watching-status" disabled={disabled} onClick={onToggle}>{label}</button>
+    <div className="tv-detail-more-actions" ref={containerRef} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false) }}>
+      <button type="button" className="secondary-button" ref={triggerRef} aria-expanded={open} aria-controls="tv-detail-more-options" disabled={disabled} onClick={() => setOpen((value) => !value)}>More <span aria-hidden="true">▾</span></button>
+      {open ? <div id="tv-detail-more-options" className="tv-detail-more-options">
+        <button type="button" disabled={disabled} onClick={() => { setOpen(false); triggerRef.current?.focus(); onToggle() }}>{label}</button>
+      </div> : null}
+    </div>
+  </>
 }
 
 function WatchlistCard({ item, compact = false, onOpenItem, onRemove, onMarkComplete, onSetPriority }) {
@@ -9823,6 +9899,8 @@ function mapSearchActorPayload(actor) {
 function mapTvDetailPayload(show) {
   return {
     id: show.id,
+    stoppedWatching: Boolean(show.stoppedWatching),
+    canStopWatching: Boolean(show.canStopWatching),
     title: show.title,
     overview: show.overview,
     year: formatMovieYear(show.firstAirDate),

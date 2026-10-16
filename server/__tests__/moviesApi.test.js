@@ -7,6 +7,8 @@ import { addMovieReleaseReminderForUser, buildStatsInsights, countMovies, countS
 
 function isSchemaSetupQuery(sql) {
   return (
+    sql.includes('DELETE FROM tv_watchlist_items wi USING tv_shows t, users u') ||
+    sql.includes('qualifying_shows AS') ||
     sql.includes('CREATE TABLE IF NOT EXISTS movies') ||
     sql.includes('CREATE TABLE IF NOT EXISTS movie_release_reminders') ||
     sql.includes('CREATE TABLE IF NOT EXISTS movie_keyword') ||
@@ -61,6 +63,7 @@ function isSchemaSetupQuery(sql) {
     sql.includes('CREATE TABLE IF NOT EXISTS tv_recommendations') ||
     sql.includes('CREATE TABLE IF NOT EXISTS tv_trailers') ||
     sql.includes('CREATE TABLE IF NOT EXISTS watched_tv_episodes') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS stopped_tv_shows') ||
     sql.includes('ALTER TABLE watched_tv_episodes') ||
     sql.includes('CREATE TABLE IF NOT EXISTS tv_episode_ratings') ||
     sql.includes('ALTER TABLE tv_shows')
@@ -5181,6 +5184,7 @@ test('GET /api/tv/:showId hydrates summary-only records once before returning de
         showLookupCount += 1
         return { rows: [showLookupCount === 1 ? summaryOnlyShow : hydratedShow] }
       }
+      if (sql.includes('AS can_stop_watching')) return { rows: [] }
       if (sql.includes('community_average')) return { rows: [{ community_average: null, community_vote_count: 0, your_average: null, your_rating_count: 0 }] }
       if (sql.includes('FROM tv_seasons')) {
         return { rows: [
@@ -5785,10 +5789,12 @@ function createTvWatchUpdatePool({ episode = { id: 301, season_number: 2, episod
     async query(sql, params = []) {
       calls.push({ sql, params })
       if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [], rowCount: 0 }
+      if (sql.includes('DELETE FROM stopped_tv_shows')) return { rows: [], rowCount: 0 }
+      if (sql.includes('AS is_complete')) return { rows: [{ user_id: 11, show_id: 22, is_complete: isEnded && total > 0 && watched === total }] }
+      if (sql.includes('DELETE FROM tv_watchlist_items wi USING')) return { rows: [], rowCount: 1 }
       if (sql.includes('FROM users u CROSS JOIN tv_shows t')) return { rows: [{ user_id: 11, show_id: 22 }] }
       if (sql.includes('SELECT e.id, e.episode_number, s.season_number')) return { rows: [episode] }
       if (sql.includes('SELECT id FROM tv_seasons')) return { rows: [season] }
-      if (sql.includes('episode_totals AS')) return { rows: [{ user_id: 11, show_id: 22, watched, total, is_ended: isEnded }] }
       if (sql.includes('INSERT INTO watched_tv_episodes') || sql.includes('DELETE FROM watched_tv_episodes')) return { rows: [], rowCount: 2 }
       if (sql.includes('INSERT INTO watched_tv_shows')) return { rows: completionInserted ? [{ tv_show_id: 22 }] : [], rowCount: 1 }
       if (sql.includes('DELETE FROM watched_tv_shows')) return { rows: [], rowCount: 1 }
@@ -5860,8 +5866,8 @@ test('only ended TV shows become completed after every eligible episode is watch
   assert.deepEqual(await updateTvEpisodeWatchStateForUser(ended.pool, {
     username: 'florind', showId: 900, action: 'mark_episode', episodeId: 301,
   }), { status: 'ok', updatedCount: 2, newlyCompletedShowId: 22 })
-  const completionCheck = ended.calls.find(({ sql }) => sql.includes('episode_totals AS'))
-  assert.match(completionCheck.sql, /COALESCE\(detail_payload->>'status', raw_payload->>'status'\) = 'Ended'/)
+  const completionCheck = ended.calls.find(({ sql }) => sql.includes('AS is_complete'))
+  assert.match(completionCheck.sql, /COALESCE\(t\.detail_payload->>'status', t\.raw_payload->>'status'\) = 'Ended'/)
 })
 
 test('special episodes cannot be marked through the episode watch API', async () => {

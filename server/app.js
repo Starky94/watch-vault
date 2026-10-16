@@ -109,6 +109,8 @@ import {
   getPersonFilmographyPersonalStates,
   getPersonHistoryForUser,
   getTvLibraryForUser,
+  reconcileCompletedTvWatchlists,
+  setTvWatchingStatusForUser,
   getTvDetailForUser,
   getTvStatsForUser,
   getTvShowByTmdbId,
@@ -341,6 +343,8 @@ export async function createApp(pool, options = {}) {
   await ensureRssSourcesTable(pool)
   await ensureUserSectionPreferencesTable(pool)
   await ensureUserNewsPreferencesTable(pool)
+
+  await reconcileCompletedTvWatchlists(pool)
 
   const app = express()
   app.locals.resolveSession = options.resolveSession ?? findUserBySession
@@ -1121,6 +1125,7 @@ export async function createApp(pool, options = {}) {
         return
       }
 
+      await reconcileCompletedTvWatchlists(pool, user.username)
       const [movies, books, tvShows] = await Promise.all([
         listWatchlistMoviesForUser(pool, user.username),
         listWatchlistBooksForUser(pool, user.username),
@@ -1684,8 +1689,8 @@ export async function createApp(pool, options = {}) {
       if (!user) return response.status(401).json({ error: 'Authentication required' })
       const period = readStatsPeriod(request, response)
       if (!period) return
-      const [library, stats, watchlistShows, continueWatchingShows] = await Promise.all([
-        getTvLibraryForUser(pool, user.username),
+      const library = await getTvLibraryForUser(pool, user.username)
+      const [stats, watchlistShows, continueWatchingShows] = await Promise.all([
         getTvStatsForUser(pool, user.username, period),
         listTvWatchlistShowsForUser(pool, user.username),
         listContinueWatchingTvShowsForUser(pool, user.username, { limit: 5 }),
@@ -1747,8 +1752,8 @@ export async function createApp(pool, options = {}) {
         result = await toggleTvLibraryItemForUser(pool, { username: user.username, showId, kind })
       }
       if (result.status === 'missing_show') return response.status(404).json({ error: `TV show ${showId} could not be loaded from TMDB` })
-      const [library, stats, watchlistShows] = await Promise.all([
-        getTvLibraryForUser(pool, user.username),
+      const library = await getTvLibraryForUser(pool, user.username)
+      const [stats, watchlistShows] = await Promise.all([
         getTvStatsForUser(pool, user.username, period),
         listTvWatchlistShowsForUser(pool, user.username),
       ])
@@ -2243,7 +2248,8 @@ export async function createApp(pool, options = {}) {
       const saved = await upsertGameTrackingForUser(pool, { username: user.username, gameId, tracking })
       if (saved.status !== 'ok') return response.status(401).json({ error: 'Authentication required' })
       const newlyUnlockedAchievements = await evaluateGameAchievementsForUser(pool, user.username)
-      response.json({ tracking: mapGameTracking(saved.tracking), newlyUnlockedAchievements })
+      const updatedTracking = await getGameTrackingForUser(pool, { username: user.username, gameId })
+      response.json({ tracking: mapGameTracking(updatedTracking), newlyUnlockedAchievements })
     } catch (error) { next(error) }
   })
 
@@ -2259,7 +2265,8 @@ export async function createApp(pool, options = {}) {
       const saved = await addGameSessionForUser(pool, { username: user.username, gameId, session })
       if (saved.status !== 'ok') return response.status(401).json({ error: 'Authentication required' })
       const newlyUnlockedAchievements = await evaluateGameAchievementsForUser(pool, user.username)
-      response.status(201).json({ sessionId: saved.id, newlyUnlockedAchievements })
+      const tracking = await getGameTrackingForUser(pool, { username: user.username, gameId })
+      response.status(201).json({ sessionId: saved.id, tracking: mapGameTracking(tracking), newlyUnlockedAchievements })
     } catch (error) { next(error) }
   })
 
@@ -2680,6 +2687,23 @@ export async function createApp(pool, options = {}) {
         results: mapFilelistResults(payload),
         usage: { count: usage.count, limit: 150, resetAt: usage.resetAt },
       })
+    } catch (error) { next(error) }
+  })
+
+  app.put('/api/tv/:showId/watching-status', async (request, response, next) => {
+    const showId = Number(request.params.showId)
+    if (!Number.isSafeInteger(showId) || showId <= 0 || typeof request.body?.stoppedWatching !== 'boolean') {
+      return response.status(400).json({ error: 'A valid showId and boolean stoppedWatching are required' })
+    }
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const result = await setTvWatchingStatusForUser(pool, { username: user.username, showId, stoppedWatching: request.body.stoppedWatching })
+      if (result.status === 'missing_show') return response.status(404).json({ error: 'TV show was not found' })
+      if (result.status === 'cannot_stop') return response.status(409).json({ error: 'Only started, unfinished TV shows can be stopped' })
+      if (result.status !== 'ok') return response.status(404).json({ error: 'User was not found' })
+      const detail = await getTvDetailForUser(pool, { showId, username: user.username })
+      response.json({ show: mapTvDetail(detail) })
     } catch (error) { next(error) }
   })
 
@@ -3204,6 +3228,8 @@ function mapTvDetail(detail) {
   const payload = show.detail_payload ?? {}
   return {
     id: show.tmdb_id,
+    stoppedWatching: Boolean(detail.stoppedWatching),
+    canStopWatching: Boolean(detail.canStopWatching),
     title: show.name,
     overview: show.overview || 'Overview not available yet.',
     firstAirDate: show.first_air_date,
@@ -3367,6 +3393,8 @@ function mapGameTracking(tracking) {
     platform: tracking.platform ?? null, difficulty: tracking.difficulty ?? null,
     difficultyRating: tracking.difficulty_rating ?? tracking.difficultyRating ?? null,
     completionPercent: tracking.completion_percent ?? tracking.completionPercent ?? null,
+    manualPlaytimeMinutes: Number(tracking.manual_playtime_minutes ?? tracking.playtime_minutes ?? 0),
+    sessionPlaytimeMinutes: Number(tracking.session_playtime_minutes ?? 0),
     playtimeMinutes: Number(tracking.playtime_minutes ?? tracking.playtimeMinutes ?? 0), review: tracking.review ?? null,
     metadata: tracking.completion_metadata ?? tracking.metadata ?? { tags: {} },
   }

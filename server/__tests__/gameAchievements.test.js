@@ -28,3 +28,22 @@ test('game achievement values only use tracked records and combine metadata, ses
   assert.equal(values['tag:credits'], 1)
   assert.equal(values['tag:rerated_up'], 1)
 })
+
+
+test('playtime achievements include sessions for tracked and untracked games once', () => {
+  const entries = [{ game_igdb_id: 1, status: 'completed', completed_at: '2026-10-01', playtime_minutes: 120 }]
+  const sessions = [
+    { game_igdb_id: 1, duration_minutes: 3000 },
+    { game_igdb_id: 1, duration_minutes: 2880 },
+    { game_igdb_id: 2, duration_minutes: 90 },
+  ]
+  const values = buildGameAchievementValues({ entries, sessions })
+  assert.equal(values.total_playtime, 6090)
+  assert.equal(values.per_game_playtime, 6000)
+  assert.equal(values.completion_playtime_high, 6000)
+  assert.equal(values.completion_playtime_low, 0)
+  assert.equal(values.completed_games, 1)
+  // Achievement evaluation must not mutate stored manual time or count sessions twice on re-evaluation.
+  assert.equal(entries[0].playtime_minutes, 120)
+  assert.equal(buildGameAchievementValues({ entries, sessions }).total_playtime, 6090)
+})

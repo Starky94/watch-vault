@@ -1302,6 +1302,15 @@ export async function upsertBookRatingForUser(pool, { username, bookId, score })
 
 export async function ensureTvDetailTables(pool) {
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS stopped_tv_shows (
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      tv_show_id BIGINT NOT NULL REFERENCES tv_shows(id) ON DELETE CASCADE,
+      stopped_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (user_id, tv_show_id)
+    )
+  `)
+
+  await pool.query(`
     ALTER TABLE tv_shows
     ADD COLUMN IF NOT EXISTS detail_hydrated_at TIMESTAMPTZ
   `)
@@ -3325,6 +3334,7 @@ export async function confirmWatchTogetherEpisodeForUser(pool, { username, episo
       await client.query('INSERT INTO watch_together_item_confirmations (item_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [item.id, context.user_id])
     }
     const confirmations = await client.query('SELECT COUNT(*)::INTEGER AS count FROM watch_together_item_confirmations WHERE item_id = $1', [item.id])
+    if (updatedCount) await resumeStoppedTvShow(client, context.user_id, item.tv_show_id)
     const completion = updatedCount ? await syncTvShowWatchCompletion(client, username, item.tv_show_id) : null
     if (Number(confirmations.rows[0]?.count) < 2) {
       await client.query('COMMIT')
@@ -4089,7 +4099,16 @@ const weekKey = (value) => { const date = new Date(value); const day = (date.get
 const bestConsecutive = (keys, increment) => { const sorted = [...new Set(keys.filter(Boolean))].sort(); let best = 0; let current = 0; let prior = null; for (const key of sorted) { const value = new Date(`${key}T00:00:00Z`).getTime(); current = prior !== null && value - prior === increment ? current + 1 : 1; best = Math.max(best, current); prior = value } return best }
 
 export function buildGameAchievementValues({ entries = [], sessions = [], ratings = [], ratingHistory = [], now = new Date() }) {
-  const completed = entries.filter((entry) => entry.status === 'completed' && entry.completed_at)
+  // Tracking playtime records time outside sessions; include every session once.
+  const entriesByGame = new Map(entries.map((entry) => [Number(entry.game_igdb_id), { ...entry }]))
+  for (const session of sessions) {
+    const gameId = Number(session.game_igdb_id)
+    const entry = entriesByGame.get(gameId) || { game_igdb_id: gameId, status: 'playing', playtime_minutes: 0 }
+    entry.playtime_minutes = (Number(entry.playtime_minutes) || 0) + (Number(session.duration_minutes) || 0)
+    entriesByGame.set(gameId, entry)
+  }
+  const timedEntries = [...entriesByGame.values()]
+  const completed = entries.map((entry) => entriesByGame.get(Number(entry.game_igdb_id))).filter((entry) => entry.status === 'completed' && entry.completed_at)
   const values = { completed_games: completed.length, library_count: entries.length, rating_count: ratings.length, review_count: entries.filter((entry) => String(entry.review || '').trim()).length }
   const completedGenres = new Map(), platforms = new Set(), series = new Map(), developers = new Map(), publishers = new Map(), decades = new Set(), moods = new Set()
   const bump = (map, key) => { if (key) map.set(key, (map.get(key) || 0) + 1) }
@@ -4104,7 +4123,7 @@ export function buildGameAchievementValues({ entries = [], sessions = [], rating
   values.genre_diversity = completedGenres.size; values.genre_max = maxCount([...completedGenres.values()]); values.platform_diversity = platforms.size; values.series_max = maxCount([...series.values()]); values.developer_max = maxCount([...developers.values()]); values.publisher_max = maxCount([...publishers.values()]); values.decade_diversity = decades.size; values.mood_diversity = moods.size
   values.full_completions = completed.filter((entry) => Number(entry.completion_percent) >= 100).length; values.completion_percent = maxCount(completed.map((entry) => Number(entry.completion_percent) || 0)); values.difficulty_rating = maxCount(completed.map((entry) => Number(entry.difficulty_rating) || 0)); values.hard_completions = completed.filter((entry) => ['hard','highest'].includes(String(entry.difficulty || '').toLowerCase())).length
   for (const difficulty of ['easy','normal','hard','highest']) values[`difficulty:${difficulty}`] = completed.filter((entry) => String(entry.difficulty || '').toLowerCase() === difficulty).length
-  values.total_playtime = entries.reduce((sum, entry) => sum + (Number(entry.playtime_minutes) || 0), 0); values.per_game_playtime = maxCount(entries.map((entry) => Number(entry.playtime_minutes) || 0)); values.completion_playtime_high = maxCount(completed.map((entry) => Number(entry.playtime_minutes) || 0)); values.completion_playtime_low = completed.some((entry) => Number(entry.playtime_minutes) > 0 && Number(entry.playtime_minutes) < 300) ? 300 : 0
+  values.total_playtime = timedEntries.reduce((sum, entry) => sum + (Number(entry.playtime_minutes) || 0), 0); values.per_game_playtime = maxCount(timedEntries.map((entry) => Number(entry.playtime_minutes) || 0)); values.completion_playtime_high = maxCount(completed.map((entry) => Number(entry.playtime_minutes) || 0)); values.completion_playtime_low = completed.some((entry) => Number(entry.playtime_minutes) > 0 && Number(entry.playtime_minutes) < 300) ? 300 : 0
   values.backlog_completions = completed.filter((entry) => entry.library_added_at && new Date(entry.library_added_at) < new Date(entry.completed_at)).length; values.backlog_age = maxCount(completed.map((entry) => entry.library_added_at ? Math.floor((new Date(entry.completed_at) - new Date(entry.library_added_at)) / 86400000) : 0)); values.zero_backlog = entries.length > 0 && !entries.some((entry) => entry.status === 'backlog') ? 1 : 0
   values.coop_completions = completed.filter((entry) => metadataValue(entry.completion_metadata, 'coop')).length
   const datedSessions = sessions.filter((session) => session.occurred_at); values.session_duration_high = maxCount(datedSessions.map((session) => Number(session.duration_minutes) || 0)); values.session_duration_low = datedSessions.some((session) => Number(session.duration_minutes) < 45) ? 45 : 0; values.short_sessions = datedSessions.filter((session) => Number(session.duration_minutes) < 30).length; values.coop_sessions = datedSessions.filter((session) => session.mode === 'coop').length; values.versus_sessions = datedSessions.filter((session) => session.mode === 'versus').length; values.multiplayer_games = new Set(datedSessions.filter((session) => session.mode !== 'solo').map((session) => session.game_igdb_id)).size; values.multiplayer_days = new Set(datedSessions.filter((session) => session.mode !== 'solo').map((session) => dateKey(session.occurred_at))).size
@@ -4121,12 +4140,27 @@ export function buildGameAchievementValues({ entries = [], sessions = [], rating
 }
 
 export async function getGameTrackingForUser(pool, { username, gameId }) {
-  const result = await pool.query(`SELECT status,library_added_at,started_at,completed_at,platform,difficulty,difficulty_rating,completion_percent,playtime_minutes,review,completion_metadata FROM game_tracking_entries WHERE user_id=(SELECT id FROM users WHERE username=$1) AND game_igdb_id=$2`, [username, gameId])
+  const result = await pool.query(`
+    WITH selected_user AS (SELECT id FROM users WHERE username=$1 LIMIT 1),
+    session_totals AS (
+      SELECT SUM(duration_minutes) AS minutes FROM game_sessions
+      WHERE user_id=(SELECT id FROM selected_user) AND game_igdb_id=$2
+    )
+    SELECT COALESCE(e.status, 'playing') AS status,
+      e.library_added_at,e.started_at,e.completed_at,e.platform,e.difficulty,e.difficulty_rating,
+      e.completion_percent,e.review,e.completion_metadata,
+      COALESCE(e.playtime_minutes, 0) AS manual_playtime_minutes,
+      COALESCE(s.minutes, 0) AS session_playtime_minutes,
+      COALESCE(e.playtime_minutes, 0) + COALESCE(s.minutes, 0) AS playtime_minutes
+    FROM selected_user u CROSS JOIN session_totals s
+    LEFT JOIN game_tracking_entries e ON e.user_id=u.id AND e.game_igdb_id=$2
+    WHERE e.id IS NOT NULL OR s.minutes > 0
+  `, [username, gameId])
   return result.rows[0] ?? null
 }
 
 export async function upsertGameTrackingForUser(pool, { username, gameId, tracking }) {
-  const result = await pool.query(`WITH selected_user AS (SELECT id FROM users WHERE username=$1 LIMIT 1), saved AS (INSERT INTO game_tracking_entries (user_id,game_igdb_id,status,library_added_at,started_at,completed_at,platform,difficulty,difficulty_rating,completion_percent,playtime_minutes,review,completion_metadata) SELECT id,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb FROM selected_user ON CONFLICT (user_id,game_igdb_id) DO UPDATE SET status=EXCLUDED.status,library_added_at=COALESCE(EXCLUDED.library_added_at,game_tracking_entries.library_added_at),started_at=COALESCE(EXCLUDED.started_at,game_tracking_entries.started_at),completed_at=COALESCE(EXCLUDED.completed_at,game_tracking_entries.completed_at),platform=EXCLUDED.platform,difficulty=EXCLUDED.difficulty,difficulty_rating=EXCLUDED.difficulty_rating,completion_percent=EXCLUDED.completion_percent,playtime_minutes=EXCLUDED.playtime_minutes,review=EXCLUDED.review,completion_metadata=EXCLUDED.completion_metadata,updated_at=NOW() RETURNING *) SELECT EXISTS(SELECT 1 FROM selected_user) AS has_user,(SELECT row_to_json(saved) FROM saved) AS tracking`, [username,gameId,tracking.status,tracking.libraryAddedAt,tracking.startedAt,tracking.completedAt,tracking.platform,tracking.difficulty,tracking.difficultyRating,tracking.completionPercent,tracking.playtimeMinutes,tracking.review,JSON.stringify(tracking.metadata || {})])
+  const result = await pool.query(`WITH selected_user AS (SELECT id FROM users WHERE username=$1 LIMIT 1), saved AS (INSERT INTO game_tracking_entries (user_id,game_igdb_id,status,library_added_at,started_at,completed_at,platform,difficulty,difficulty_rating,completion_percent,playtime_minutes,review,completion_metadata) SELECT id,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb FROM selected_user ON CONFLICT (user_id,game_igdb_id) DO UPDATE SET status=EXCLUDED.status,library_added_at=COALESCE(EXCLUDED.library_added_at,game_tracking_entries.library_added_at),started_at=COALESCE(EXCLUDED.started_at,game_tracking_entries.started_at),completed_at=COALESCE(EXCLUDED.completed_at,game_tracking_entries.completed_at),platform=EXCLUDED.platform,difficulty=EXCLUDED.difficulty,difficulty_rating=EXCLUDED.difficulty_rating,completion_percent=EXCLUDED.completion_percent,playtime_minutes=EXCLUDED.playtime_minutes,review=EXCLUDED.review,completion_metadata=EXCLUDED.completion_metadata,updated_at=NOW() RETURNING *) SELECT EXISTS(SELECT 1 FROM selected_user) AS has_user,(SELECT row_to_json(saved) FROM saved) AS tracking`, [username,gameId,tracking.status,tracking.libraryAddedAt,tracking.startedAt,tracking.completedAt,tracking.platform,tracking.difficulty,tracking.difficultyRating,tracking.completionPercent,tracking.playtimeMinutes ?? 0,tracking.review,JSON.stringify(tracking.metadata || {})])
   const row = result.rows[0] ?? {}; return row.has_user ? { status: 'ok', tracking: row.tracking } : { status: 'missing_user' }
 }
 
@@ -4142,7 +4176,8 @@ export async function getGameActivityForUser(pool, username) {
     )
     SELECT
       (SELECT COUNT(*)::INTEGER FROM played_games WHERE user_id = (SELECT id FROM selected_user)) AS games_played,
-      COALESCE((SELECT SUM(playtime_minutes)::INTEGER FROM game_tracking_entries WHERE user_id = (SELECT id FROM selected_user)), 0) AS playtime_minutes,
+      COALESCE((SELECT SUM(playtime_minutes) FROM game_tracking_entries WHERE user_id = (SELECT id FROM selected_user)), 0)
+        + COALESCE((SELECT SUM(duration_minutes) FROM game_sessions WHERE user_id = (SELECT id FROM selected_user)), 0) AS playtime_minutes,
       (SELECT MAX(completed_at) FROM game_tracking_entries WHERE user_id = (SELECT id FROM selected_user) AND status = 'completed') AS last_completed_at
   `, [username])
   const row = result.rows[0] ?? {}
@@ -5251,16 +5286,19 @@ export async function replaceTvDetailRelations(pool, tmdbId, detail = {}) {
 export async function getTvDetailForUser(pool, { showId, username = null }) {
   const show = await getTvShowByTmdbId(pool, showId)
   if (!show) return null
-  const [seasons, credits, recommendations, trailers, ratingSummary] = await Promise.all([
+  const [seasons, credits, recommendations, trailers, ratingSummary, watchingState] = await Promise.all([
     pool.query(`SELECT s.*, COALESCE(json_agg(json_build_object('id', e.id, 'tmdb_id', e.tmdb_id, 'episode_number', e.episode_number, 'name', e.name, 'overview', e.overview, 'air_date', e.air_date, 'runtime_minutes', e.runtime_minutes, 'still_path', e.still_path, 'is_aired', e.air_date IS NULL OR e.air_date <= CURRENT_DATE, 'watched', w.id IS NOT NULL, 'your_score', r.score) ORDER BY e.episode_number) FILTER (WHERE e.id IS NOT NULL), '[]') AS episodes FROM tv_seasons s LEFT JOIN tv_episodes e ON e.tv_season_id=s.id LEFT JOIN watched_tv_episodes w ON w.tv_episode_id=e.id AND w.user_id=(SELECT id FROM users WHERE username=$2) LEFT JOIN tv_episode_ratings r ON r.tv_episode_id=e.id AND r.user_id=(SELECT id FROM users WHERE username=$2) WHERE s.tv_show_id=$1 AND s.season_number > 0 GROUP BY s.id ORDER BY s.season_number`, [show.id, username]),
     pool.query('SELECT * FROM tv_show_credits WHERE tv_show_id = $1 ORDER BY credit_type, billing_order NULLS LAST LIMIT 12', [show.id]),
     pool.query('SELECT * FROM tv_recommendations WHERE tv_show_id = $1 ORDER BY display_order LIMIT 10', [show.id]),
     pool.query('SELECT * FROM tv_trailers WHERE tv_show_id = $1 ORDER BY is_official DESC LIMIT 5', [show.id]),
     pool.query(`SELECT AVG(r.score)::DOUBLE PRECISION AS community_average, COUNT(r.id)::INTEGER AS community_vote_count, AVG(r.score) FILTER (WHERE r.user_id = (SELECT id FROM users WHERE username = $2))::DOUBLE PRECISION AS your_average, COUNT(r.id) FILTER (WHERE r.user_id = (SELECT id FROM users WHERE username = $2))::INTEGER AS your_rating_count FROM tv_episodes e JOIN tv_seasons s ON s.id = e.tv_season_id LEFT JOIN tv_episode_ratings r ON r.tv_episode_id = e.id WHERE s.tv_show_id = $1 AND s.season_number > 0`, [show.id, username]),
+    getTvWatchingState(pool, username, show.id),
   ])
   const ratings = ratingSummary.rows[0] ?? {}
   return {
     show,
+    stoppedWatching: Boolean(watchingState?.stopped_watching),
+    canStopWatching: Boolean(watchingState?.can_stop_watching),
     seasons: seasons.rows,
     credits: credits.rows,
     recommendations: recommendations.rows,
@@ -5296,7 +5334,8 @@ export async function updateTvEpisodeWatchStateForUser(pool, { username, showId,
       `SELECT u.id AS user_id, t.id AS show_id
        FROM users u CROSS JOIN tv_shows t
        WHERE u.username = $1 AND (t.tmdb_id = $2 OR t.id = $2)
-       LIMIT 1`,
+       ORDER BY CASE WHEN t.tmdb_id = $2 THEN 0 ELSE 1 END
+       LIMIT 1 FOR UPDATE OF u`,
       [username, showId]
     )
     const context = contextResult.rows[0]
@@ -5371,18 +5410,124 @@ export async function updateTvEpisodeWatchStateForUser(pool, { username, showId,
       return { status: 'invalid_action' }
     }
 
-    const completion = await syncTvShowWatchCompletion(client, username, showId)
+    if (action !== 'unmark_episode') await resumeStoppedTvShow(client, context.user_id, context.show_id)
+    const completion = await syncTvShowWatchCompletion(client, username, context.show_id)
     await client.query('COMMIT')
     return { status: 'ok', updatedCount, ...(completion?.newlyCompletedShowId ? { newlyCompletedShowId: completion.newlyCompletedShowId } : {}) }
   } catch (error) { await client.query('ROLLBACK'); throw error } finally { client.release() }
 }
 
+// Use the same completion rule for watched status, cleanup, and watchlist additions.
+function completedTvShowSql(showAlias, userIdSql) {
+  return `COALESCE(${showAlias}.detail_payload->>'status', ${showAlias}.raw_payload->>'status') = 'Ended'
+    AND EXISTS (
+      SELECT 1 FROM tv_episodes e JOIN tv_seasons s ON s.id = e.tv_season_id
+      WHERE s.tv_show_id = ${showAlias}.id AND s.season_number > 0
+        AND (e.air_date IS NULL OR e.air_date <= CURRENT_DATE)
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM tv_episodes e JOIN tv_seasons s ON s.id = e.tv_season_id
+      WHERE s.tv_show_id = ${showAlias}.id AND s.season_number > 0
+        AND (e.air_date IS NULL OR e.air_date <= CURRENT_DATE)
+        AND NOT EXISTS (
+          SELECT 1 FROM watched_tv_episodes w
+          WHERE w.tv_episode_id = e.id AND w.user_id = ${userIdSql}
+        )
+    )`
+}
+
+function startedTvShowSql(showAlias, userIdSql) {
+  return `EXISTS (
+    SELECT 1 FROM watched_tv_episodes w
+    JOIN tv_episodes e ON e.id = w.tv_episode_id
+    JOIN tv_seasons s ON s.id = e.tv_season_id
+    WHERE w.user_id = ${userIdSql} AND s.tv_show_id = ${showAlias}.id
+      AND s.season_number > 0 AND (e.air_date IS NULL OR e.air_date <= CURRENT_DATE)
+  )`
+}
+
+async function getTvWatchingState(pool, username, internalShowId) {
+  const result = await pool.query(`
+    SELECT u.id AS user_id, t.id AS show_id,
+      EXISTS (SELECT 1 FROM stopped_tv_shows stopped WHERE stopped.user_id = u.id AND stopped.tv_show_id = t.id) AS stopped_watching,
+      (${startedTvShowSql('t', 'u.id')} AND NOT COALESCE((${completedTvShowSql('t', 'u.id')}), FALSE)) AS can_stop_watching
+    FROM users u CROSS JOIN tv_shows t
+    WHERE u.username = $1 AND t.id = $2
+  `, [username, internalShowId])
+  return result.rows[0] ?? null
+}
+
+async function restoreTvWatchlistMembership(client, userId, internalShowId) {
+  await client.query(`
+    INSERT INTO tv_watchlist_items (user_id, tv_show_id)
+    SELECT $1, t.id FROM tv_shows t WHERE t.id = $2
+      AND NOT COALESCE((${completedTvShowSql('t', '$1')}), FALSE)
+    ON CONFLICT DO NOTHING
+  `, [userId, internalShowId])
+}
+
+async function resumeStoppedTvShow(client, userId, internalShowId) {
+  const removed = await client.query('DELETE FROM stopped_tv_shows WHERE user_id = $1 AND tv_show_id = $2 RETURNING tv_show_id', [userId, internalShowId])
+  if (removed.rowCount > 0) await restoreTvWatchlistMembership(client, userId, internalShowId)
+}
+
+export async function setTvWatchingStatusForUser(pool, { username, showId, stoppedWatching }) {
+  if (typeof stoppedWatching !== 'boolean') return { status: 'invalid_state' }
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const user = (await client.query('SELECT id FROM users WHERE username = $1 FOR UPDATE', [username])).rows[0]
+    if (!user) { await client.query('ROLLBACK'); return { status: 'missing_user' } }
+    const show = (await client.query(`SELECT id FROM tv_shows WHERE tmdb_id = $1 OR id = $1
+      ORDER BY CASE WHEN tmdb_id = $1 THEN 0 ELSE 1 END LIMIT 1`, [showId])).rows[0]
+    if (!show) { await client.query('ROLLBACK'); return { status: 'missing_show' } }
+    const state = await getTvWatchingState(client, username, show.id)
+    if (stoppedWatching) {
+      if (!state.stopped_watching && !state.can_stop_watching) {
+        await client.query('ROLLBACK')
+        return { status: 'cannot_stop' }
+      }
+      await client.query('INSERT INTO stopped_tv_shows (user_id, tv_show_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [user.id, show.id])
+      await client.query('DELETE FROM tv_watchlist_items WHERE user_id = $1 AND tv_show_id = $2', [user.id, show.id])
+    } else {
+      // Repeated resume requests also ensure membership, without changing its date or priority.
+      await client.query('DELETE FROM stopped_tv_shows WHERE user_id = $1 AND tv_show_id = $2', [user.id, show.id])
+      await restoreTvWatchlistMembership(client, user.id, show.id)
+      await reconcileCompletedTvWatchlists(client, username, show.id)
+    }
+    await client.query('COMMIT')
+    return { status: 'ok' }
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally { client.release() }
+}
+
+// The existing AFTER DELETE trigger removes priorities and closes queue gaps.
+// Accept either a pool or a transaction client so completion cleanup is atomic.
+export async function reconcileCompletedTvWatchlists(pool, username = null, showId = null) {
+  return pool.query(`
+    DELETE FROM tv_watchlist_items wi USING tv_shows t, users u
+    WHERE wi.tv_show_id = t.id AND wi.user_id = u.id
+      AND ($1::text IS NULL OR u.username = $1)
+      AND ($2::bigint IS NULL OR t.id = $2)
+      AND (${completedTvShowSql('t', 'wi.user_id')})
+  `, [username, showId])
+}
+
 async function syncTvShowWatchCompletion(client, username, showId) {
-  const result = await client.query(`WITH selected_user AS (SELECT id FROM users WHERE username=$1), selected_show AS (SELECT id, COALESCE(detail_payload->>'status', raw_payload->>'status') = 'Ended' AS is_ended FROM tv_shows WHERE tmdb_id=$2 OR id=$2 LIMIT 1), episode_totals AS (SELECT COUNT(*)::integer total, COUNT(w.id)::integer watched FROM tv_episodes e JOIN tv_seasons s ON s.id=e.tv_season_id LEFT JOIN watched_tv_episodes w ON w.tv_episode_id=e.id AND w.user_id=(SELECT id FROM selected_user) WHERE s.tv_show_id=(SELECT id FROM selected_show) AND s.season_number > 0 AND (e.air_date IS NULL OR e.air_date <= CURRENT_DATE)) SELECT (SELECT id FROM selected_user) user_id, (SELECT id FROM selected_show) show_id, (SELECT is_ended FROM selected_show) is_ended, total, watched FROM episode_totals`, [username, showId])
+  const result = await client.query(`
+    SELECT u.id AS user_id, t.id AS show_id,
+      (${completedTvShowSql('t', 'u.id')}) AS is_complete
+    FROM users u CROSS JOIN tv_shows t
+    WHERE u.username = $1 AND t.id = $2
+    LIMIT 1
+  `, [username, showId])
   const row = result.rows[0]
   if (!row?.user_id || !row?.show_id) return null
-  if (row.is_ended && row.total > 0 && row.total === row.watched) {
+  if (row.is_complete) {
     const inserted = await client.query('INSERT INTO watched_tv_shows (user_id,tv_show_id) VALUES ($1,$2) ON CONFLICT DO NOTHING RETURNING tv_show_id', [row.user_id, row.show_id])
+    await reconcileCompletedTvWatchlists(client, username, row.show_id)
     return { newlyCompletedShowId: inserted.rows[0]?.tv_show_id ?? null }
   }
   await client.query('DELETE FROM watched_tv_shows WHERE user_id=$1 AND tv_show_id=$2', [row.user_id, row.show_id])
@@ -6792,35 +6937,24 @@ function formatStatsWeekLabel(start, end) {
 }
 
 export async function getTvLibraryForUser(pool, username) {
+  await pool.query(`
+    WITH selected_user AS (SELECT id FROM users WHERE username = $1 LIMIT 1),
+    qualifying_shows AS (
+      SELECT t.id FROM tv_shows t
+      WHERE (${completedTvShowSql('t', '(SELECT id FROM selected_user)')})
+    ), deleted AS (
+      DELETE FROM watched_tv_shows
+      WHERE user_id IN (SELECT id FROM selected_user)
+        AND tv_show_id NOT IN (SELECT id FROM qualifying_shows)
+    )
+    INSERT INTO watched_tv_shows (user_id, tv_show_id)
+    SELECT selected_user.id, qualifying_shows.id FROM selected_user CROSS JOIN qualifying_shows
+    ON CONFLICT DO NOTHING
+  `, [username])
+  await reconcileCompletedTvWatchlists(pool, username)
+  // Separate statements ensure these reads see the preceding writes.
   const result = await pool.query(
     `
-      WITH selected_user AS (SELECT id FROM users WHERE users.username=$1 LIMIT 1), qualifying_shows AS (
-        SELECT tv_shows.id
-        FROM tv_shows
-        WHERE COALESCE(tv_shows.detail_payload->>'status', tv_shows.raw_payload->>'status') = 'Ended'
-          AND EXISTS (
-            SELECT 1 FROM tv_episodes
-            JOIN tv_seasons ON tv_seasons.id = tv_episodes.tv_season_id
-            WHERE tv_seasons.tv_show_id = tv_shows.id AND tv_seasons.season_number > 0
-              AND (tv_episodes.air_date IS NULL OR tv_episodes.air_date <= CURRENT_DATE)
-          )
-          AND NOT EXISTS (
-            SELECT 1 FROM tv_episodes
-            JOIN tv_seasons ON tv_seasons.id = tv_episodes.tv_season_id
-            LEFT JOIN watched_tv_episodes ON watched_tv_episodes.tv_episode_id = tv_episodes.id
-              AND watched_tv_episodes.user_id IN (SELECT id FROM selected_user)
-            WHERE tv_seasons.tv_show_id = tv_shows.id AND tv_seasons.season_number > 0
-              AND (tv_episodes.air_date IS NULL OR tv_episodes.air_date <= CURRENT_DATE)
-              AND watched_tv_episodes.id IS NULL
-          )
-      ), deleted AS (
-        DELETE FROM watched_tv_shows
-        WHERE user_id IN (SELECT id FROM selected_user) AND tv_show_id NOT IN (SELECT id FROM qualifying_shows)
-      ), inserted AS (
-        INSERT INTO watched_tv_shows (user_id, tv_show_id)
-        SELECT selected_user.id, qualifying_shows.id FROM selected_user CROSS JOIN qualifying_shows
-        ON CONFLICT DO NOTHING
-      )
       SELECT
         COALESCE(ARRAY(SELECT tv_shows.tmdb_id FROM watched_tv_shows JOIN tv_shows ON tv_shows.id = watched_tv_shows.tv_show_id WHERE watched_tv_shows.user_id = users.id), '{}') AS watched_ids,
         COALESCE(ARRAY(SELECT tv_shows.tmdb_id FROM tv_watchlist_items JOIN tv_shows ON tv_shows.id = tv_watchlist_items.tv_show_id WHERE tv_watchlist_items.user_id = users.id), '{}') AS watchlist_ids
@@ -6917,6 +7051,11 @@ export async function listContinueWatchingTvShowsForUser(pool, username, options
           AND watched_tv_episodes.user_id = (SELECT id FROM users WHERE username = $1 LIMIT 1)
         WHERE (tv_episodes.air_date IS NULL OR tv_episodes.air_date <= CURRENT_DATE)
           AND tv_seasons.season_number > 0
+          AND NOT EXISTS (
+            SELECT 1 FROM stopped_tv_shows stopped
+            WHERE stopped.tv_show_id = tv_seasons.tv_show_id
+              AND stopped.user_id = (SELECT id FROM users WHERE username = $1 LIMIT 1)
+          )
         GROUP BY tv_seasons.tv_show_id
         HAVING COUNT(watched_tv_episodes.id) > 0
           AND COUNT(watched_tv_episodes.id) < COUNT(*)
@@ -7021,15 +7160,24 @@ export async function toggleTvLibraryItemForUser(pool, { username, showId, kind 
   if (kind !== 'watchlist') return { status: 'unsupported_kind' }
   const table = 'tv_watchlist_items'
   const column = 'tv_show_id'
+  await reconcileCompletedTvWatchlists(pool, username)
   const result = await pool.query(
     `
-      WITH selected_user AS (SELECT id FROM users WHERE username = $1 LIMIT 1),
+      WITH selected_user AS (SELECT id FROM users WHERE username = $1 LIMIT 1 FOR UPDATE),
       selected_show AS (SELECT id FROM tv_shows WHERE tmdb_id = $2 OR id = $2 ORDER BY CASE WHEN tmdb_id = $2 THEN 0 ELSE 1 END LIMIT 1),
       deleted AS (DELETE FROM ${table} WHERE user_id IN (SELECT id FROM selected_user) AND ${column} IN (SELECT id FROM selected_show) RETURNING id),
+      resumed AS (
+        DELETE FROM stopped_tv_shows WHERE user_id IN (SELECT id FROM selected_user)
+          AND tv_show_id IN (SELECT id FROM selected_show) RETURNING tv_show_id
+      ),
       inserted AS (
         INSERT INTO ${table} (user_id, ${column}, created_at)
         SELECT selected_user.id, selected_show.id, NOW() FROM selected_user CROSS JOIN selected_show
         WHERE NOT EXISTS (SELECT 1 FROM deleted)
+          AND NOT EXISTS (
+            SELECT 1 FROM tv_shows t WHERE t.id = selected_show.id
+              AND (${completedTvShowSql('t', 'selected_user.id')})
+          )
         ON CONFLICT (user_id, ${column}) DO NOTHING
         RETURNING id
       )

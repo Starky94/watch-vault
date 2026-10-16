@@ -114,6 +114,8 @@ docker compose down
 - `npm run dev:stack` starts frontend and backend together outside Docker.
 - `npm test` runs the backend unit tests.
 
+TV watchlist completion integration tests also run when `WATCHVAULT_TEST_DATABASE_URL` points to a disposable PostgreSQL database. Run `WATCHVAULT_TEST_DATABASE_URL=postgresql://... node --test server/__tests__/tvWatchlistCompletion.integration.test.js`; the test creates and drops its own isolated schema.
+
 ## Version management
 
 - Use Node.js 24 for local development and Docker builds. The `.nvmrc` file records the local Node major; Docker base images and `package.json`'s `engines` field record the runtime requirement.
@@ -124,6 +126,7 @@ docker compose down
 ## API
 
 - `GET /api/health` returns a basic health response.
+- `PUT /api/tv/:showId/watching-status` accepts `{ "stoppedWatching": true }` or `false` for the signed-in user. Stopping a started, unfinished show removes it from the watchlist and Continue Watching while preserving episode history and ratings. Resuming, adding it to the watchlist, or marking episodes watched resumes it; completed ended shows stay off the watchlist.
 - `GET /api/movies` returns the imported popular movies ordered by popularity plus a featured movie payload derived from the top result.
 - `GET /api/books` returns imported books from the local database.
 - `GET /api/books/:bookId` returns a stored book's full metadata.

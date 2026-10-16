@@ -8073,6 +8073,16 @@ html[data-theme='halloween'] ::selection {
 .tv-detail-secondary-actions { display: flex; gap: 12px; }
 .tv-detail-secondary-actions .secondary-button { min-width: 130px; background: rgba(11, 16, 30, .72); }
 
+.tv-detail-more-actions { display: none; }
+@media (max-width: 720px) {
+  .tv-detail-secondary-actions .tv-detail-watching-status { display: none; }
+  .tv-detail-more-actions { display: block; position: relative; }
+  .tv-detail-more-actions > .secondary-button { width: 100%; }
+  .tv-detail-more-options { position: absolute; right: 0; bottom: calc(100% + 8px); z-index: 5; min-width: 180px; padding: 5px; border: 1px solid rgba(163, 124, 255, .3); border-radius: 10px; background: #121525; box-shadow: 0 8px 24px rgba(0, 0, 0, .4); }
+  .tv-detail-more-options button { width: 100%; min-height: 44px; padding: 10px 12px; border: 0; border-radius: 6px; color: var(--text-primary); background: transparent; font: inherit; text-align: left; cursor: pointer; }
+  .tv-detail-more-options button:hover, .tv-detail-more-options button:focus-visible { background: rgba(142, 84, 255, .25); }
+}
+
 .tv-detail-tabs { display: flex; gap: 4px; margin: 14px 0 20px; border-bottom: 1px solid rgba(166, 145, 231, .18); overflow-x: auto; scrollbar-width: none; }
 .tv-detail-tabs::-webkit-scrollbar { display: none; }
 .tv-detail-tabs button { position: relative; flex: 0 0 auto; height: 40px; padding: 0 16px; border: 0; color: #bfb7d8; background: transparent; font: inherit; font-size: .89rem; font-weight: 650; cursor: pointer; }
