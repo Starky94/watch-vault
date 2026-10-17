@@ -1,3 +1,4 @@
+import { runCollectionImport } from './collectionImportRunner.js'
 import { importNowPlayingMovies, importPopularMovies, importUpcomingMovies } from './movieImportService.js'
 import { importAiringTodayTvShows, importOnTheAirTvShows, importPopularTvShows } from './tvImportService.js'
 import { importBooks } from './bookImportService.js'
@@ -7,6 +8,7 @@ import { importEntertainmentNews } from './newsImportService.js'
 import { runNewsCleanup } from './newsCleanupService.js'
 
 export const adminJobs = [
+  { key: 'collections', name: 'Movie Collections Import', execution: 'Daily scheduler worker', frequency: 'Daily at 08:30 UTC (new collections only)', run: runCollectionImport },
   { key: 'theme-scheduler', name: 'Seasonal Theme Scheduler', execution: 'Daily scheduler worker', frequency: 'Daily at 00:05', source: 'theme-scheduler', run: runThemeScheduler },
   { key: 'books', name: 'Books Import', execution: 'Interval-based loop', frequency: 'Every hour', source: 'google-books', run: importBooks },
   { key: 'entertainment-news', name: 'News Import', execution: 'Interval-based loop', frequency: 'Every hour', source: 'rss', run: importEntertainmentNews },

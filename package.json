@@ -33,7 +33,9 @@
     "backfill:movie-credits": "node server/backfillMovieCreditsCli.js",
     "dev:stack": "node scripts/dev-stack.js",
     "deploy:prod-8181": "bash scripts/deploy-production-8181.sh",
-    "test": "node --test"
+    "test": "node --test",
+    "import:collections": "node server/importCollectionsCli.js",
+    "schedule:collections": "node server/collectionImportWorker.js"
   },
   "dependencies": {
     "dotenv": "^17.4.2",

@@ -12,6 +12,8 @@ function isSchemaSetupQuery(sql) {
     sql.includes('CREATE TABLE IF NOT EXISTS movies') ||
     sql.includes('CREATE TABLE IF NOT EXISTS movie_release_reminders') ||
     sql.includes('CREATE TABLE IF NOT EXISTS movie_keyword') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS movie_collections') ||
+    sql.includes('CREATE INDEX IF NOT EXISTS movie_collections') ||
     sql.includes('CREATE TABLE IF NOT EXISTS books') ||
     sql.includes('CREATE TABLE IF NOT EXISTS games') ||
     sql.includes('CREATE TABLE IF NOT EXISTS played_games') ||

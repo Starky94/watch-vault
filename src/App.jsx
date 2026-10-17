@@ -1,3 +1,5 @@
+import FranchiseCollections from './movie/FranchiseCollections.jsx'
+import { readCollectionsRoute } from './movie/franchiseCollections.js'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import './App.css'
@@ -69,7 +71,7 @@ const sectionByPrimaryView = {
   [primaryViews.calendar]: 'calendar',
 }
 
-const movieTabs = ['All Movies', 'Popular', 'Now Playing', 'Upcoming', 'Top Rated']
+const movieTabs = ['All Movies', 'Popular', 'Now Playing', 'Upcoming', 'Top Rated', 'Collections']
 const statsTabs = [
   { label: 'Overview' },
   { label: 'Movies', section: 'movies' },
@@ -90,6 +92,7 @@ const appScreens = {
 }
 
 const routeKinds = {
+  collections: 'collections',
   home: 'home',
   adminErrors: 'adminErrors',
   profile: 'profile',
@@ -218,11 +221,11 @@ function App() {
         ? primaryViews.books
       : readAppRoute().kind === routeKinds.gameDetail
         ? primaryViews.games
-      : readAppRoute().kind === routeKinds.movieDetail || readAppRoute().kind === routeKinds.personDetail || readAppRoute().kind === routeKinds.tvDetail
+      : readAppRoute().kind === routeKinds.collections || readAppRoute().kind === routeKinds.movieDetail || readAppRoute().kind === routeKinds.personDetail || readAppRoute().kind === routeKinds.tvDetail
       ? primaryViews.movies
       : primaryViews.home
   )
-  const [activeMovieTab, setActiveMovieTab] = useState(movieTabs[0])
+  const [activeMovieTab, setActiveMovieTab] = useState(() => readAppRoute().kind === routeKinds.collections ? 'Collections' : movieTabs[0])
   const [activeTvTab, setActiveTvTab] = useState(tvShowTabs[0])
   const [activeWatchlistTab, setActiveWatchlistTab] = useState(() => readWatchlistViewState().tab)
   const [watchlistAvailability, setWatchlistAvailability] = useState(() => readWatchlistViewState().availability)
@@ -544,10 +547,11 @@ function App() {
               ? primaryViews.books
             : nextRoute.kind === routeKinds.gameDetail
               ? primaryViews.games
-            : nextRoute.kind === routeKinds.movieDetail || nextRoute.kind === routeKinds.personDetail || nextRoute.kind === routeKinds.tvDetail
+            : nextRoute.kind === routeKinds.collections || nextRoute.kind === routeKinds.movieDetail || nextRoute.kind === routeKinds.personDetail || nextRoute.kind === routeKinds.tvDetail
           ? primaryViews.movies
           : primaryViews.home
       )
+      if (nextRoute.kind === routeKinds.collections) setActiveMovieTab('Collections')
       if (nextRoute.kind === routeKinds.watchlist) {
         const view = readWatchlistViewState()
         setActiveWatchlistTab(view.tab)
@@ -976,6 +980,14 @@ function App() {
     }
   }
 
+  function handleOpenCollectionsPath(path) {
+    const url = new URL(path, window.location.origin)
+    const route = readCollectionsRoute(url.pathname, url.search)
+    if (!route) return
+    setActiveMovieTab('Collections')
+    handleNavigateToPath(path, route, primaryViews.movies)
+  }
+
   function handleOpenMovieDetail(movie) {
     const normalizedMovieId = Number(movie?.id)
 
@@ -994,6 +1006,7 @@ function App() {
       movieId: normalizedMovieId,
     }, primaryViews.movies, {
       moviePreview: movie,
+      collectionReturnPath: currentRoute.kind === routeKinds.collections ? window.location.pathname + window.location.search : null,
     })
   }
 
@@ -1258,6 +1271,11 @@ function App() {
 
     setSelectedGenre(null)
 
+    if (activeMovieTab === 'Collections') {
+      handleNavigateToPath('/movies/collections', { kind: routeKinds.collections, collectionId: null, page: 1 }, primaryViews.movies)
+      return
+    }
+
     if (activeMovieTab === 'Popular') {
       setMoviesScreenMode(movieScreenModes.popularList)
       return
@@ -1326,6 +1344,14 @@ function App() {
   }
 
   function handleMovieTabChange(tab) {
+    if (tab === 'Collections') {
+      setActiveMovieTab(tab)
+      handleNavigateToPath('/movies/collections', { kind: routeKinds.collections, collectionId: null, page: 1 }, primaryViews.movies)
+      return
+    }
+    if (currentRoute.kind === routeKinds.collections) {
+      handleNavigateToPath('/', { kind: routeKinds.home }, primaryViews.movies)
+    }
     setActiveMovieTab(tab)
     setSelectedGenre(null)
 
@@ -3351,7 +3377,7 @@ function App() {
     }
   }, [])
 
-  const movieCollectionOptions = { activeView, screenMode: moviesScreenMode, hideWatchedMovies, user, watchedMovies: watchedState.movies, catalogSort }
+  const movieCollectionOptions = { activeView: currentRoute.kind === routeKinds.collections ? null : activeView, screenMode: moviesScreenMode, hideWatchedMovies, user, watchedMovies: watchedState.movies, catalogSort }
   useMovieCollection(movieCollectionConfigs.popular, { ...movieCollectionOptions, page: popularMoviesPage, setState: setPopularMoviesState })
   useMovieCollection(movieCollectionConfigs.upcoming, { ...movieCollectionOptions, page: upcomingMoviesPage, setState: setUpcomingMoviesState })
   useMovieCollection(movieCollectionConfigs.recent, { ...movieCollectionOptions, page: recentMoviesPage, setState: setRecentMoviesState })
@@ -4005,13 +4031,27 @@ function App() {
                 favoriteActorIds={favoriteActorIds}
                 onToggleFavorite={handleToggleFavoriteActor}
               />
+            ) : currentRoute.kind === routeKinds.collections ? (
+              <FranchiseCollections key={`${currentRoute.collectionId || 'list'}-${currentRoute.page}-${currentRoute.query || ''}-${currentRoute.sort || 'popularity'}`} route={currentRoute} tabs={movieTabs} onTabChange={handleMovieTabChange}
+                isSignedIn={Boolean(user)} watchedStatus={watchedState.status} watchedMovieIds={watchedMovieIds}
+                watchlistMovieIds={watchlistMovieIds}
+                onToggleWatchlist={handleToggleMovieInWatchlist}
+                onToggleWatched={handleToggleMovieWatched}
+                ui={{ QuickMediaActions, CheckCircleIcon, StarIcon }}
+                onNavigate={handleOpenCollectionsPath}
+                onOpenMovie={handleOpenMovieDetail} />
             ) : currentRoute.kind === routeKinds.movieDetail ? (
               <MovieDetailPage
                 movieDetailState={movieDetailState}
                 similarMoviesState={similarMoviesState}
                 watchTogetherState={watchTogetherState}
                 watchTogetherAchievementsState={watchTogetherAchievementsState}
-                onBackToMovies={() => handleMovieViewSelection(primaryViews.movies)}
+                onBackToMovies={() => {
+                  const path = window.history.state?.collectionReturnPath
+                  if (path) {
+                    handleOpenCollectionsPath(path)
+                  } else handleMovieViewSelection(primaryViews.movies)
+                }}
                 onOpenPerson={handleOpenPersonDetail}
                 onToggleWatched={handleToggleMovieWatched}
                 onToggleWatchlist={handleToggleMovieInWatchlist}
@@ -10239,6 +10279,8 @@ function getSeasonalThemeLabel(theme) {
 }
 
 function readAppRoute(pathname = window.location.pathname, search = window.location.search) {
+  const collectionsRoute = readCollectionsRoute(pathname, search)
+  if (collectionsRoute) return collectionsRoute
   if (/^\/admin\/errors\/?$/.test(pathname)) return { kind: routeKinds.adminErrors }
   if (/^\/profile\/?$/.test(pathname)) return { kind: routeKinds.profile }
   if (/^\/news\/?$/.test(pathname)) {

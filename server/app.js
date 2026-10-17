@@ -1,3 +1,4 @@
+import { ensureCollectionsTable, listCollections, getCollection } from './collectionRepository.js'
 import express from 'express'
 import crypto from 'node:crypto'
 import { ensureErrorLogsTable, listErrorLogs, recordErrorSafely } from './errorLogs.js'
@@ -332,6 +333,7 @@ export async function createApp(pool, options = {}) {
   await initializeAuthSchema()
   await ensureNewsTables(pool)
   await ensureMovieKeywordTables(pool)
+  await ensureCollectionsTable(pool)
   await ensureBooksTable(pool)
   await ensureGamesTable(pool)
   await ensureTvDetailTables(pool)
@@ -2096,6 +2098,7 @@ export async function createApp(pool, options = {}) {
           await recordErrorSafely(pool, { source: 'job', context: `entertainment-news: ${safeFeedPath(feedError.feed)}`, error: feedError.message })
         }
       }
+      if (result.skipped) return response.status(409).json({ error: 'Collections import is already running.' })
       const lastExecutedAt = await recordAdminJobExecution(pool, job.key)
 
       response.json({
@@ -2116,6 +2119,28 @@ export async function createApp(pool, options = {}) {
     } catch (error) {
       next(error)
     }
+  })
+
+  app.get('/api/movies/collections', async (request, response, next) => {
+    try {
+      const { page, limit } = readPaginationQuery(request, { defaultLimit: 30 })
+      const query = typeof request.query.q === 'string' ? request.query.q.trim() : ''
+      const sort = ['rating', 'completion'].includes(request.query.sort) ? request.query.sort : 'popularity'
+      const hideWatched = request.query.hideWatched === 'true'
+      const user = sort === 'completion' || hideWatched ? await getAuthenticatedUser(pool, request) : null
+      if ((sort === 'completion' || hideWatched) && !user) return response.status(401).json({ error: 'Authentication required' })
+      response.json(await listCollections(pool, { page, limit, query, sort, hideWatched, username: user?.username }))
+    } catch (error) { next(error) }
+  })
+
+  app.get('/api/movies/collections/:collectionId', async (request, response, next) => {
+    const id = Number(request.params.collectionId)
+    if (!Number.isSafeInteger(id) || id <= 0) return response.status(400).json({ error: 'Invalid collection ID' })
+    try {
+      const collection = await getCollection(pool, id)
+      if (!collection) return response.status(404).json({ error: 'Collection not found' })
+      response.json({ collection })
+    } catch (error) { next(error) }
   })
 
   app.get('/api/movies', async (request, response, next) => {

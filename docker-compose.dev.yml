@@ -90,6 +90,13 @@ services:
       - .:/app
       - api-node-modules:/app/node_modules
 
+  importer-collections:
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-watchvault}
+    volumes:
+      - .:/app
+      - api-node-modules:/app/node_modules
+
 volumes:
   api-node-modules:
   web-node-modules:

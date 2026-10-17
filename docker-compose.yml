@@ -315,5 +315,22 @@ services:
       api:
         condition: service_healthy
 
+  importer-collections:
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    restart: unless-stopped
+    command: ["npm", "run", "schedule:collections"]
+    env_file:
+      - ${APP_ENV_FILE:-.env}
+    environment:
+      COLLECTIONS_IMPORT_ON_STARTUP: ${COLLECTIONS_IMPORT_ON_STARTUP:-false}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@db:5432/watchvault}
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+
 volumes:
   postgres-data:

@@ -45,6 +45,7 @@ async function tmdbRequest(fetchImpl, options) {
   }
 
   const response = await fetchImpl(url, {
+    ...(options.timeoutMs ? { signal: AbortSignal.timeout(options.timeoutMs) } : {}),
     headers: {
       Authorization: `Bearer ${token}`,
       accept: 'application/json',
@@ -53,7 +54,10 @@ async function tmdbRequest(fetchImpl, options) {
 
   if (!response.ok) {
     const body = await response.text()
-    throw new Error(`TMDB request failed with status ${response.status}: ${body}`)
+    const error = new Error(`TMDB request failed with status ${response.status}: ${body}`)
+    error.status = response.status
+    error.retryAfterMs = Number(response.headers?.get('retry-after') || 0) * 1000
+    throw error
   }
 
   return response.json()
@@ -345,4 +349,11 @@ export function getTmdbRateLimitConfig() {
     requestsPerSecond: TMDB_RATE_LIMIT_PER_SECOND,
     minIntervalMs: TMDB_MIN_INTERVAL_MS,
   }
+}
+
+export async function fetchCollectionDetails(fetchImpl, { token, baseUrl, collectionId }) {
+  return tmdbRequest(fetchImpl, {
+    token, baseUrl, path: `collection/${collectionId}`, timeoutMs: 30_000,
+    searchParams: { language: 'en-US' },
+  })
 }

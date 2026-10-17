@@ -133,3 +133,15 @@ TV watchlist completion integration tests also run when `WATCHVAULT_TEST_DATABAS
 - `GET /api/movies/recently-released` returns recently released movies from the local DB.
 - `GET /api/movies/upcoming` returns upcoming movies releasing in the next 30 days from the local DB.
 - `GET /api/games/upcoming` returns upcoming games releasing in the next 30 days from the local DB.
+
+### Movie collections
+
+The `importer-collections` worker imports new TMDB collections daily at **08:30 UTC**. It waits for the next scheduled run after startup, so restarting Docker does not immediately resume an interrupted import. Set `COLLECTIONS_IMPORT_ON_STARTUP=true` to additionally import immediately at worker startup. The container uses `restart: unless-stopped` to resume scheduling when Docker restarts. It downloads the latest expected available `collection_ids_MM_DD_YYYY.json.gz` (previous UTC day before 08:00), extracts it, and immediately removes the archive. All temporary files are removed on completion or failure.
+
+Run `npm run import:collections` for a one-off import or `npm run schedule:collections` for the worker. The Admin jobs panel also supports manual execution. Concurrent imports are prevented by a PostgreSQL advisory lock; failed entries are logged and retried on subsequent runs. Existing successfully stored collections are skipped and retained unchanged.
+
+Each new collection requires one collection-details request, using English metadata and the supplied poster/backdrop paths and member summaries. No image-gallery or individual movie requests are made, and no movies are written to movie tables by this importer. The **Movies → Collections** tab and collection detail pages use stored summaries only. A member movie is fetched and saved through the existing movie-detail flow only when clicked. Existing movie import jobs are unchanged.
+
+The Rating sort orders collection cards by their average member-movie TMDB rating, highest first, with name/ID tie-breakers. The average is unweighted and uses the stored collection summaries; zero or missing ratings are treated as unrated and excluded. Unrated collections appear last. Both collection and member movie ratings are displayed out of 10 without extra TMDB requests.
+
+Popularity is displayed beside ratings on collections and their member movies. Collection popularity is the unweighted average of available member popularity values (zero counts; missing values do not). The collection list offers Popularity (default) and Rating sorts, descending with missing values last. Search, pagination, and detail/back navigation preserve the selected sort. All scores come from stored summaries.
