@@ -40,7 +40,7 @@
     "schedule:trending-videos": "node server/trendingVideoWorker.js"
   },
   "dependencies": {
-    "dotenv": "^17.4.2",
+    "dotenv": "^18.0.8",
     "express": "^5.2.1",
     "fast-xml-parser": "^5.11.1",
     "pg": "^8.22.0",
