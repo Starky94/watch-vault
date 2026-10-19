@@ -45,7 +45,7 @@ async function tmdbRequest(fetchImpl, options) {
   }
 
   const response = await fetchImpl(url, {
-    ...(options.timeoutMs ? { signal: AbortSignal.timeout(options.timeoutMs) } : {}),
+    signal: AbortSignal.timeout(options.timeoutMs ?? 15000),
     headers: {
       Authorization: `Bearer ${token}`,
       accept: 'application/json',
@@ -87,6 +87,10 @@ export async function fetchUpcomingMoviesPage(fetchImpl, options) {
       page,
     },
   })
+}
+
+export async function fetchTrendingMedia(fetchImpl, { token, baseUrl, mediaType }) {
+  return tmdbRequest(fetchImpl, { token, baseUrl, path: `trending/${mediaType}/week`, timeoutMs: 15000 })
 }
 
 export async function fetchPopularMoviesPage(fetchImpl, options) {

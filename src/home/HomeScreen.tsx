@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { TrendingVideosSection } from './TrendingVideosSection.tsx'
 import type { ContinueWatchingState, HomeActions, HomeStatsItem, HomeUi, HomeViewData, NextUpItem, TonightPick } from './homeTypes.ts'
 
 type HomeProps = { data: HomeViewData; actions: HomeActions; ui: HomeUi }
@@ -106,6 +107,7 @@ function ContinueWatchingSection({ data, actions, ui }: HomeProps) {
 function HomeExploreSections({ data, actions, ui }: HomeProps) {
   return (
     <section className="home-tertiary-stack" aria-label="More to explore">
+      <TrendingVideosSection data={data} actions={actions} ui={ui} />
       <HomeWatchlistSection data={data} actions={actions} ui={ui} />
       <TrendingMoviesSection data={data} actions={actions} ui={ui} />
       <NewEpisodesSection data={data} actions={actions} ui={ui} />

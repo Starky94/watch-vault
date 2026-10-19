@@ -17,6 +17,7 @@ import {
   searchPeople,
   searchTvShows,
   fetchTvDetails,
+  fetchTvVideos,
   fetchUpcomingMoviesPage,
   getTmdbRateLimitConfig,
   resetTmdbRateLimiterForTests,
@@ -306,6 +307,19 @@ test('fetchMovieVideos requests the movie videos endpoint with bearer authorizat
   await fetchMovieVideos(fetchImpl, { token: 'token', baseUrl: 'https://api.themoviedb.org/3', movieId: 42 })
 
   assert.match(requestedUrl, /\/movie\/42\/videos$/)
+  assert.equal(requestedHeaders.Authorization, 'Bearer token')
+})
+
+test('fetchTvVideos requests the TV videos endpoint with bearer authorization', async () => {
+  let requestedUrl = ''
+  let requestedHeaders = null
+  const fetchImpl = async (url, options) => {
+    requestedUrl = String(url)
+    requestedHeaders = options.headers
+    return { ok: true, async json() { return { results: [] } } }
+  }
+  await fetchTvVideos(fetchImpl, { token: 'token', baseUrl: 'https://api.themoviedb.org/3', tvShowId: 42 })
+  assert.match(requestedUrl, /\/tv\/42\/videos$/)
   assert.equal(requestedHeaders.Authorization, 'Bearer token')
 })
 

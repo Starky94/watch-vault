@@ -13,6 +13,7 @@ function isSchemaSetupQuery(sql) {
     sql.includes('CREATE TABLE IF NOT EXISTS movie_release_reminders') ||
     sql.includes('CREATE TABLE IF NOT EXISTS movie_keyword') ||
     sql.includes('CREATE TABLE IF NOT EXISTS movie_collections') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS trending_video_') ||
     sql.includes('CREATE INDEX IF NOT EXISTS movie_collections') ||
     sql.includes('CREATE TABLE IF NOT EXISTS books') ||
     sql.includes('CREATE TABLE IF NOT EXISTS games') ||
@@ -5654,11 +5655,82 @@ test('movie rating endpoint rejects unauthenticated, invalid, and unknown-movie 
   }
 })
 
+for (const { apiPath, tmdbPath, invalidLabel, fallbackName } of [
+  { apiPath: 'movies', tmdbPath: 'movie', invalidLabel: 'movie', fallbackName: 'Movie video' },
+  { apiPath: 'tv', tmdbPath: 'tv', invalidLabel: 'TV show', fallbackName: 'TV video' },
+]) {
+  test(`GET /api/${apiPath}/:id/videos maps, sorts, and deduplicates playable videos without media persistence`, async () => {
+    const pool = {
+      async query(sql) {
+        if (isSchemaSetupQuery(sql)) return { rowCount: null }
+        if (sql.startsWith('INSERT INTO error_logs')) return { rowCount: 1 }
+        throw new Error(`Unexpected query: ${sql}`)
+      },
+    }
+    const results = [
+      { id: 'clip-id', site: 'YouTube', key: 'clip', name: 'A clip', type: 'Clip' },
+      { site: 'YouTube', key: 'teaser', name: 'Teaser', type: 'Teaser', official: true },
+      { site: 'YouTube', key: 'trailer', name: 'Trailer', type: 'Trailer' },
+      { id: 'official-id', site: 'YouTube', key: ' official ', name: ' Official Trailer ', type: 'Trailer', official: true },
+      { site: 'YouTube', key: 'official', name: 'Duplicate', type: 'Trailer' },
+      { site: 'YouTube', key: 'featurette', name: 'Featurette', type: 'Featurette', official: true },
+      { site: 'YouTube', key: 'behind', name: 'Behind the scenes', type: 'Behind the Scenes' },
+      { site: 'YouTube', key: 'fallback', name: ' ', type: null },
+      { site: 'Vimeo', key: 'vimeo', type: 'Trailer' },
+      { site: 'YouTube', key: '' },
+      { site: 'YouTube', key: '   ' },
+      { site: 'YouTube', key: 123 },
+      { site: 'YouTube', key: 'invalid/key' },
+      null,
+      {},
+    ]
+    const originalFetch = global.fetch
+    const upstreamRequests = []
+    global.fetch = async (url, options) => {
+      if (!String(url).startsWith('https://example.test')) return originalFetch(url, options)
+      upstreamRequests.push(String(url))
+      const mediaId = String(url).match(new RegExp(`/${tmdbPath}/(\\d+)/videos$`))?.[1]
+      if (mediaId === '45') return { ok: false, status: 503, async text() { return 'TMDB unavailable' } }
+      return { ok: true, async json() { return mediaId === '42' ? { results } : mediaId === '43' ? { results: [] } : { results: null } } }
+    }
+    const app = await createApp(pool, { loadRuntimeConfig: () => ({ tmdbBearerToken: 'token', tmdbBaseUrl: 'https://example.test' }) })
+    const server = app.listen(0)
+    try {
+      const baseUrl = `http://127.0.0.1:${server.address().port}/api/${apiPath}`
+      const response = await originalFetch(`${baseUrl}/42/videos`)
+      assert.equal(response.status, 200)
+      const { videos } = await response.json()
+      assert.deepEqual(upstreamRequests, [`https://example.test/${tmdbPath}/42/videos`])
+      assert.deepEqual(videos.map((video) => video.key), ['official', 'trailer', 'teaser', 'featurette', 'clip', 'behind', 'fallback'])
+      assert.deepEqual(videos[0], { id: 'official-id', provider: 'YouTube', key: 'official', name: 'Official Trailer', type: 'Trailer', official: true })
+      assert.deepEqual(videos.at(-1), { id: 'fallback', provider: 'YouTube', key: 'fallback', name: fallbackName, type: 'Video', official: false })
+      assert.equal(videos.find((video) => video.key === 'clip').id, 'clip-id')
+      for (const id of [43, 44]) {
+        const empty = await originalFetch(`${baseUrl}/${id}/videos`)
+        assert.equal(empty.status, 200)
+        assert.deepEqual(await empty.json(), { videos: [] })
+      }
+      for (const id of ['not-a-number', '42garbage', '0', '-1', '1.5', '9007199254740992']) {
+        const invalid = await originalFetch(`${baseUrl}/${id}/videos`)
+        assert.equal(invalid.status, 400)
+        assert.match((await invalid.json()).error, new RegExp(`Invalid ${invalidLabel} id`))
+      }
+      const unavailable = await originalFetch(`${baseUrl}/45/videos`)
+      assert.equal(unavailable.status, 500)
+      assert.match((await unavailable.json()).error, /TMDB request failed with status 503/)
+    } finally {
+      global.fetch = originalFetch
+      await closeServer(server)
+    }
+  })
+}
+
 test('GET /api/movies/:movieId/trailer selects a transient playable YouTube trailer', async () => {
   const nonSchemaQueries = []
   const pool = {
     async query(sql) {
       if (isSchemaSetupQuery(sql)) return { rowCount: null }
+      if (sql.startsWith('INSERT INTO error_logs')) return { rowCount: 1 }
       nonSchemaQueries.push(sql)
       throw new Error(`Unexpected query: ${sql}`)
     },

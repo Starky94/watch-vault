@@ -1,5 +1,6 @@
 import { ensureCollectionsTable, listCollections, getCollection } from './collectionRepository.js'
 import express from 'express'
+import { ensureTrendingVideoTables, readTrendingVideoCache } from './trendingVideoRepository.js'
 import crypto from 'node:crypto'
 import { ensureErrorLogsTable, listErrorLogs, recordErrorSafely } from './errorLogs.js'
 import { loadConfig } from './config.js'
@@ -192,7 +193,7 @@ import {
   upsertBookRatingForUser,
 } from './database.js'
 import { adminJobs, findAdminJob, listAdminJobs } from './adminJobs.js'
-import { discoverMoviesByKeyword, discoverTitles, fetchMovieReviews, fetchMovieVideos, fetchPersonCombinedCredits, fetchPersonDetails, fetchTvReviews, searchMovieKeywords, searchMovies as searchTmdbMovies, searchPeople, searchTvShows as searchTmdbTvShows } from './tmdbClient.js'
+import { discoverMoviesByKeyword, discoverTitles, fetchMovieReviews, fetchMovieVideos, fetchPersonCombinedCredits, fetchPersonDetails, fetchTvReviews, fetchTvVideos, searchMovieKeywords, searchMovies as searchTmdbMovies, searchPeople, searchTvShows as searchTmdbTvShows } from './tmdbClient.js'
 import { hydrateMovieByTmdbId } from './movieImportService.js'
 import { hydrateGameByIgdbId } from './gameImportService.js'
 import { hydrateTvShowByTmdbId } from './tvImportService.js'
@@ -334,6 +335,7 @@ export async function createApp(pool, options = {}) {
   await ensureNewsTables(pool)
   await ensureMovieKeywordTables(pool)
   await ensureCollectionsTable(pool)
+  await ensureTrendingVideoTables(pool)
   await ensureBooksTable(pool)
   await ensureGamesTable(pool)
   await ensureTvDetailTables(pool)
@@ -363,6 +365,15 @@ export async function createApp(pool, options = {}) {
 
   app.get('/api/health', async (_request, response) => {
     response.json({ ok: true })
+  })
+
+  app.get('/api/videos/trending', async (request, response, next) => {
+    try {
+      const limit = request.query.limit === '60' ? 60 : 12
+      const cache = await readTrendingVideoCache(pool)
+      response.set('Cache-Control', 'public, max-age=60')
+      response.json({ ...cache, videos: cache.videos.slice(0, limit), total: cache.videos.length })
+    } catch (error) { next(error) }
   })
 
   app.get('/api/theme', async (_request, response, next) => {
@@ -2651,6 +2662,18 @@ export async function createApp(pool, options = {}) {
     }
   })
 
+  app.get('/api/tv/:showId/videos', async (request, response, next) => {
+    const showId = Number(request.params.showId)
+    if (!Number.isSafeInteger(showId) || showId <= 0) {
+      return response.status(400).json({ error: `Invalid TV show id: ${request.params.showId}` })
+    }
+    try {
+      const config = loadRuntimeConfig()
+      const payload = await fetchTvVideos(fetch, { token: config.tmdbBearerToken, baseUrl: config.tmdbBaseUrl, tvShowId: showId })
+      response.json({ videos: mapPlayableVideos(payload?.results, 'TV video') })
+    } catch (error) { next(error) }
+  })
+
   app.get('/api/tv/:showId/reviews', async (request, response, next) => {
     const showId = Number.parseInt(request.params.showId, 10)
     if (!Number.isInteger(showId)) return response.status(400).json({ error: `Invalid TV show id: ${request.params.showId}` })
@@ -2891,6 +2914,25 @@ export async function createApp(pool, options = {}) {
       if (!upstream.ok) throw new Error(`Filelist search failed with status ${upstream.status}`)
       response.json({ query: movie.title, results: mapFilelistResults(payload), usage: { count: usage.count, limit: 150, resetAt: usage.resetAt } })
     } catch (error) { next(error) }
+  })
+
+  app.get('/api/movies/:movieId/videos', async (request, response, next) => {
+    const movieId = Number(request.params.movieId)
+    if (!Number.isSafeInteger(movieId) || movieId <= 0) {
+      return response.status(400).json({ error: `Invalid movie id: ${request.params.movieId}` })
+    }
+
+    try {
+      const config = loadRuntimeConfig()
+      const payload = await fetchMovieVideos(fetch, {
+        token: config.tmdbBearerToken,
+        baseUrl: config.tmdbBaseUrl,
+        movieId,
+      })
+      response.json({ videos: mapPlayableVideos(payload?.results) })
+    } catch (error) {
+      next(error)
+    }
   })
 
   app.get('/api/movies/:movieId/trailer', async (request, response, next) => {
@@ -3313,6 +3355,29 @@ async function loadMovieReviews(movieId, loadRuntimeConfig) {
   } catch {
     return []
   }
+}
+
+function mapPlayableVideos(videos, fallbackName = 'Movie video') {
+  if (!Array.isArray(videos)) return []
+  const typePriority = (type) => type === 'Trailer' ? 0 : type === 'Teaser' ? 1 : 2
+  const seen = new Set()
+
+  return videos
+    .filter((video) => video?.site === 'YouTube' && typeof video.key === 'string' && /^[\w-]+$/.test(video.key.trim()))
+    .map((video) => ({
+      id: typeof video.id === 'string' && video.id.trim() ? video.id.trim() : video.key.trim(),
+      provider: 'YouTube',
+      key: video.key.trim(),
+      name: typeof video.name === 'string' && video.name.trim() ? video.name.trim() : fallbackName,
+      type: typeof video.type === 'string' && video.type.trim() ? video.type.trim() : 'Video',
+      official: video.official === true,
+    }))
+    .sort((a, b) => typePriority(a.type) - typePriority(b.type) || Number(b.official) - Number(a.official))
+    .filter((video) => {
+      if (seen.has(video.key)) return false
+      seen.add(video.key)
+      return true
+    })
 }
 
 function selectPlayableMovieTrailer(videos) {

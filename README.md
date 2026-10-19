@@ -116,6 +116,70 @@ docker compose down
 
 TV watchlist completion integration tests also run when `WATCHVAULT_TEST_DATABASE_URL` points to a disposable PostgreSQL database. Run `WATCHVAULT_TEST_DATABASE_URL=postgresql://... node --test server/__tests__/tvWatchlistCompletion.integration.test.js`; the test creates and drops its own isolated schema.
 
+## Trending videos
+
+The homepage's **Trending Videos** carousel serves twelve cached movie/TV videos from
+`GET /api/videos/trending`. **See all** expands up to sixty cached results in place
+(`?limit=60`). Both views use the existing movie/TV detail navigation and watchlist
+actions. Playback uses the shared privacy-enhanced YouTube dialog, with a direct
+YouTube link and fallback for blocked, unavailable, or non-embeddable videos.
+
+Set the server-only `YOUTUBE_API_KEY` to a key with YouTube Data API v3 enabled.
+The existing `TMDB_BEARER_TOKEN` supplies exact movie/TV video associations.
+Never prefix either credential with `VITE_`. No YouTube requests are made during
+homepage reads, and credentials are never sent to the browser.
+
+Run `npm run sync:trending-videos` for one synchronization or
+`npm run schedule:trending-videos` for the worker. Docker Compose includes the
+`trending-videos` service; `npm run dev:stack` also starts the worker. It runs on
+startup and two hours after each completed synchronization. Without a YouTube key,
+the worker remains idle and the homepage displays its empty state.
+
+Configuration (also documented in `.env.example`):
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `TRENDING_VIDEO_REGIONS` | `US,GB,CA,AU,DE,FR,BR,IN,JP,KR` | Regional Film & Animation charts to merge |
+| `TRENDING_VIDEO_CHANNEL_HANDLES` | Eight studio/streamer handles in `.env.example` | Trusted official channels; use an empty value to disable |
+| `TRENDING_VIDEO_SYNC_MINUTES` | `120` | Delay between completed runs, minimum 15 minutes |
+| `TRENDING_VIDEO_SEARCHES_PER_SYNC` | `2` | Rotating recent searches per run, maximum 7 |
+| `TRENDING_VIDEO_DAILY_SEARCH_CALLS` | `24` | Persisted daily search-call budget, zero disables search |
+| `TRENDING_VIDEO_DAILY_QUOTA_UNITS` | `8000` | Conservative daily quota allocation for this feature |
+
+Discovery merges each region's chart, recent searches, one recent upload-playlist
+page per official channel, and videos for trending movies/TV and upcoming movies
+from TMDB. Only API-resolved channel IDs and upload-playlist IDs are persisted;
+no IDs are guessed. Handle ownership is refreshed every 28 days. Configure only
+handles you have verified as official. Search results and chart category alone do
+not establish relevance: each accepted video must come from a trusted channel or
+match an exact TMDB YouTube ID. English title filters reject common gaming, music,
+reaction, and fan/concept-trailer patterns; these heuristics are intentionally
+conservative and may miss legitimate content in other languages.
+
+The score combines logarithmic views per hour, total views, publication recency,
+multi-region presence, trusted-channel evidence, and TMDB's official flag. After
+two comparable snapshots, measured view growth replaces lifetime-average velocity.
+Older videos need current regional-chart presence or observed renewed engagement.
+The output prefers no more than two videos per channel/title and four single-region
+videos per region, relaxing preferences when needed to fill available slots. Exact
+IDs and normalized duplicate promotional titles are deduplicated. This is a
+**custom global trending approximation**, not an official global YouTube ranking.
+Fewer than twelve results are shown when insufficient legitimate videos qualify.
+
+PostgreSQL stores an atomic ranked snapshot, channel resolutions, and daily quota
+reservations. An advisory lock prevents concurrent workers/manual runs. Quotas
+reset on the Pacific calendar day, survive restarts, and conservatively account
+for each search as 100 units as well as one search call. Leave room for other
+features/projects using the same key; the budget only accounts for this worker.
+Failed source requests are isolated; an incomplete statistics refresh preserves
+the previous snapshot. Videos missing from a successful details response are
+removed. The UI labels delayed updates after six hours and stops serving metadata
+unrefreshed for thirty days. Worker failures use the existing error log.
+
+`node --test server/__tests__/trendingVideos.test.js` verifies classification,
+ranking/diversity, stale-cache handling, deleted videos, quota reservations,
+channel resolution, exact TMDB association, failure recovery, and the public API.
+
 ## Version management
 
 - Use Node.js 24 for local development and Docker builds. The `.nvmrc` file records the local Node major; Docker base images and `package.json`'s `engines` field record the runtime requirement.

@@ -35,7 +35,9 @@
     "deploy:prod-8181": "bash scripts/deploy-production-8181.sh",
     "test": "node --test",
     "import:collections": "node server/importCollectionsCli.js",
-    "schedule:collections": "node server/collectionImportWorker.js"
+    "schedule:collections": "node server/collectionImportWorker.js",
+    "sync:trending-videos": "node server/trendingVideoWorker.js --once",
+    "schedule:trending-videos": "node server/trendingVideoWorker.js"
   },
   "dependencies": {
     "dotenv": "^17.4.2",

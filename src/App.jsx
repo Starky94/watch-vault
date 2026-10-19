@@ -12,6 +12,8 @@ import { mapMovieRowToCard, mapMovieRowToSimilarCard, mapFeaturedMoviePayload, m
 import { formatMovieYear, formatMovieRating, formatTomatoScore, formatVoteCount, formatLongDate, resolveMoviePosterUrl, resolveMovieBackdropUrl } from './movie/movieFormatting.ts'
 import { readMediaDetailRoute } from './movie/movieTypes.ts'
 import { MovieCollectionGrid } from './movie/MovieCollectionGrid.tsx'
+import { MediaVideosPanel } from './movie/MediaVideosPanel.tsx'
+import { VideoPlayerDialog } from './movie/VideoPlayerDialog.tsx'
 import { createMovieDetailState, createPersonDetailState, loadingPersonDetailState, loadMovieDetailData, loadPersonDetailData } from './movie/movieDetailRequests.ts'
 import { defaultThemeKey, seasonalThemes } from '../shared/themes.js'
 import { NEWS_CATEGORIES } from '../shared/newsCategories.js'
@@ -7207,6 +7209,7 @@ function TvDetailPage({ tvDetailState, tvReviewsState, watchTogetherState, watch
       <aside className="tv-detail-side"><section className="content-section tv-detail-panel tv-detail-activity"><div className="section-header"><h2>Your Activity</h2><span>{show.stoppedWatching ? 'Stopped watching' : `${watchedCount} of ${totalEpisodes} watched`}</span></div><div className="tv-detail-progress"><span style={{ width: `${watchedPercentage}%` }} /></div><div className="tv-detail-activity-footer"><span><StarOutlineIcon /> {yourEpisodeRating.ratingCount ? `${formatCommunityRating(yourEpisodeRating.average)} · Rated` : 'Not rated'}</span><button type="button" onClick={() => scrollToSection('tv-reviews')}>Rate show</button></div></section><section id="tv-cast" className="content-section tv-detail-panel tv-detail-cast"><div className="section-header"><h2>Cast &amp; Crew</h2><span>View all</span></div><div className="tv-detail-cast-list">{show.credits.map((member) => <button type="button" className="tv-detail-cast-card" key={`${member.id}-${member.role}`} aria-label={`Open ${member.name}`} onClick={() => onOpenPerson?.(member)} disabled={!Number.isInteger(Number(member.id))}><div className="tv-detail-cast-avatar" style={buildMovieCreditAvatarStyle(member.profileUrl)}>{!member.profileUrl ? getMovieCreditInitials(member.name) : null}</div><strong>{member.name}</strong><small>{member.role}</small></button>)}</div></section></aside>
       <section id="tv-recommendations" className="content-section tv-detail-panel tv-detail-recommendations"><div className="section-header"><h2>More Like This</h2><span>View all</span></div><div className="tv-detail-recommendation-list">{show.recommendations.map((item) => <button key={item.id} type="button" onClick={() => onOpenTv(item)} className="tv-detail-recommendation"><img src={item.posterUrl} alt="" /><span>{item.title}</span><small>{item.rating}</small></button>)}</div></section>
       <section className="content-section tv-detail-panel tv-detail-facts"><DetailFactRow icon={DirectorIcon} label="Created by" value={show.creatorsLabel} /><DetailFactRow icon={LanguageIcon} label="Language" value={show.languagesLabel} /><DetailFactRow icon={TvIcon} label="Status" value={show.status} /><DetailFactRow icon={CalendarIcon} label="First air date" value={show.firstAirDateLabel} /></section>
+      <MediaVideosPanel key={`tv-videos-${show.id}`} mediaType="tv" mediaId={show.id} onPlay={setTrailer} />
       <section id="tv-reviews" className="content-section tv-detail-panel tv-detail-reviews"><div className="section-header"><h2>Community Reviews</h2></div>{tvReviewsState.status === 'loading' ? <SectionMessage message="Loading live community reviews..." /> : tvReviewsState.status === 'error' ? <SectionMessage tone="error" message={tvReviewsState.error} /> : tvReviewsState.reviews.length ? <div className="movie-detail-review-grid">{tvReviewsState.reviews.map((review) => <article key={review.id} className="movie-detail-review-card"><strong>{review.author}</strong><span className="movie-detail-stars">{review.rating ? `★ ${review.rating}` : 'No score'}</span><p>{review.copy}</p><small>{review.date}</small></article>)}</div> : <SectionMessage message="No community reviews available right now." />}</section></div>
     {trailer ? <MovieTrailerDialog movie={{ title: show.title }} trailer={trailer} onClose={() => setTrailer(null)} /> : null}
     {filelistState.open ? <FilelistDialog title={show.title} subtitle={filelistState.episode ? formatFilelistEpisodeLabel(filelistState.episode) : null} emptyMessage="No Filelist results found for this episode." state={filelistState} onClose={() => setFilelistState((state) => ({ ...state, open: false }))} /> : null}
@@ -7351,6 +7354,11 @@ function useMovieDetailMedia(movieId, user) {
     setTrailerState({ status: 'idle', trailer: null, error: '' })
   }
 
+  function playVideo(video) {
+    trailerRequestId.current += 1
+    setTrailerState({ status: 'success', trailer: video, error: '' })
+  }
+
   async function openFilelist() {
     const requestId = ++filelistRequestId.current
     setFilelistState({ open: true, status: 'loading', results: [], error: '', minutesUntilReset: null })
@@ -7373,7 +7381,7 @@ function useMovieDetailMedia(movieId, user) {
     setFilelistState((state) => ({ ...state, open: false }))
   }
 
-  return { trailerState, filelistState, openTrailer, closeTrailer, openFilelist, closeFilelist }
+  return { trailerState, filelistState, openTrailer, closeTrailer, playVideo, openFilelist, closeFilelist }
 }
 
 function useMovieDetailChrome(movieId) {
@@ -7511,7 +7519,7 @@ function MovieDetailPage({
   onSaveWatchTogetherSession,
 }) {
   const movieId = movieDetailState.movie?.id
-  const { trailerState, filelistState, openTrailer, closeTrailer, openFilelist, closeFilelist } = useMovieDetailMedia(movieId, user)
+  const { trailerState, filelistState, openTrailer, closeTrailer, playVideo, openFilelist, closeFilelist } = useMovieDetailMedia(movieId, user)
   const { isOverflowOpen, setIsOverflowOpen, overflowMenuOffset, isStickyHeaderVisible, heroRef, overflowRef, overflowMenuRef, toggleOverflow } = useMovieDetailChrome(movieId)
   const isInWatchlist = watchlistMovieIds.has(Number(movieId))
   const isWatched = watchedMovieIds.has(Number(movieId))
@@ -7704,6 +7712,8 @@ function MovieDetailPage({
           <SimilarMoviesGrid similarMoviesState={similarMoviesState} onOpenMovie={onOpenMovie} />
         </section>
 
+        <MediaVideosPanel key={`videos-${movie.id}`} mediaType="movie" mediaId={movie.id} onPlay={playVideo} />
+
         <MovieReviewsPanel reviews={Array.isArray(movie.reviews) ? movie.reviews : []} />
       </div>
     </section>
@@ -7891,39 +7901,7 @@ function FilelistDialog({ title, subtitle = null, emptyMessage = 'No Filelist re
 }
 
 function MovieTrailerDialog({ movie, trailer, onClose }) {
-  const embedUrl = `https://www.youtube-nocookie.com/embed/${encodeURIComponent(trailer.key)}?autoplay=1`
-
-  useEffect(() => {
-    function handleKeyDown(event) {
-      if (event.key === 'Escape') {
-        onClose()
-      }
-    }
-
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [onClose])
-
-  return (
-    <div className="movie-trailer-dialog-backdrop" role="presentation" onMouseDown={onClose}>
-      <section className="movie-trailer-dialog" role="dialog" aria-modal="true" aria-labelledby="movie-trailer-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
-        <div className="movie-trailer-dialog-header">
-          <div>
-            <p className="movie-rating-dialog-kicker">{trailer.provider}</p>
-            <h2 id="movie-trailer-dialog-title">{trailer.name} — {movie.title}</h2>
-          </div>
-          <button type="button" className="movie-trailer-close" onClick={onClose} aria-label="Close trailer">×</button>
-        </div>
-        <iframe
-          className="movie-trailer-player"
-          src={embedUrl}
-          title={`${movie.title} trailer`}
-          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-          allowFullScreen
-        />
-      </section>
-    </div>
-  )
+  return <VideoPlayerDialog videoId={trailer.key} title={`${trailer.name} — ${movie.title}`} onClose={onClose} />
 }
 
 function TvEpisodeCatchUpDialog({ episode, earlierCount, isSaving, onCancel, onMarkCurrent, onMarkEarlier }) {

@@ -332,5 +332,19 @@ services:
       api:
         condition: service_healthy
 
+  trending-videos:
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    command: ["npm", "run", "schedule:trending-videos"]
+    restart: unless-stopped
+    env_file:
+      - ${APP_ENV_FILE:-.env}
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@db:5432/watchvault}
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   postgres-data:
