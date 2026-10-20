@@ -3,7 +3,7 @@ FROM node:24-alpine
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN npm install --global npm@12.2.0 && npm ci
 
 COPY . .
 

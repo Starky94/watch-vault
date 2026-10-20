@@ -180,9 +180,29 @@ unrefreshed for thirty days. Worker failures use the existing error log.
 ranking/diversity, stale-cache handling, deleted videos, quota reservations,
 channel resolution, exact TMDB association, failure recovery, and the public API.
 
+The Games overview includes a separate **Trending Videos** rail before Popular
+Right Now, with official game trailers and teasers (including gameplay trailers).
+It uses `/api/games/videos/trending` with the same 12/60 limits and player as the
+homepage. No catalog match or IGDB credentials are required. Videos have no game
+association or favorite controls.
+
+The existing `schedule:trending-videos` worker and `sync:trending-videos` command
+refresh both feeds independently, using separate caches and synchronization locks.
+Both share `YOUTUBE_API_KEY`, `TRENDING_VIDEO_REGIONS`, the refresh interval, and
+the existing daily quota ledger/budget. Set `TRENDING_GAME_VIDEO_CHANNEL_HANDLES`
+to customize official gaming sources (PlayStation, Xbox, Nintendo America,
+Ubisoft, and EA by default). Handles are resolved through YouTube; unresolved
+channels are skipped. Game discovery combines recent official uploads with
+regional Gaming charts and makes no search calls. Only trailers/teasers from
+configured channels qualify; standalone gameplay, walkthroughs, reactions,
+fan/concept trailers, livestreams, and unrelated promotions are excluded.
+Ranking, stale-cache behavior, and thirty-day metadata expiry match the homepage.
+Without a YouTube key, the worker stays idle and an unpopulated feed shows an
+empty state. No additional Docker service is needed.
+
 ## Version management
 
-- Use Node.js 24 for local development and Docker builds. The `.nvmrc` file records the local Node major; Docker base images and `package.json`'s `engines` field record the runtime requirement.
+- Use Node.js 24.15.0 or newer within Node 24, with npm 12.2.0. For local setup, run `nvm install`, `nvm use`, then `npm install --global npm@12.2.0`. The `.nvmrc` file pins the local Node version; `package.json` records the Node and npm requirements. CI and Docker builds install npm 12.2.0 before installing dependencies.
 - GitHub Dependabot checks npm dependencies, Docker images, and GitHub Actions weekly and opens pull requests for updates. Patch and minor npm updates are grouped; major updates stay separate for review.
 - Review each update pull request, then merge it after the CI checks pass. `package-lock.json` pins the exact npm dependency tree used by `npm ci`.
 - For a manual check, run `npm outdated` for direct dependencies or `npm outdated --all` for the full dependency tree. TypeScript is not currently used by this JavaScript project.

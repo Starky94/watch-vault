@@ -7,6 +7,14 @@ const categories = [
   ['Promotional Clip', /\bclip\b|first look|announcement|promo|sneak peek/i],
 ]
 
+export function classifyGameVideo(video, _association, trusted) {
+  const title = video.snippet?.title ?? ''
+  if (!trusted || (video.snippet?.liveBroadcastContent && video.snippet.liveBroadcastContent !== 'none')) return null
+  if (/\b(reaction|reacts|fan[ -]?made|fan trailer|concept trailer|concept teaser|AI trailer|unofficial|walkthrough|livestream|live stream|music video|lyric video|movie|film|TV series|TV show|console|controller|hardware)\b/i.test(title)) return null
+  if (/\bteaser\b/i.test(title)) return 'Teaser'
+  return /\btrailer\b/i.test(title) ? 'Trailer' : null
+}
+
 export function classifyVideo(video, association, trusted) {
   const title = video.snippet?.title ?? ''
   if (excluded.test(title)) return null
@@ -18,7 +26,7 @@ export function classifyVideo(video, association, trusted) {
   return knownType ?? category ?? null
 }
 
-export function rankTrendingVideos(candidates, { previous = [], previousAt, now = Date.now(), trustedChannels = new Set(), limit = 60 } = {}) {
+export function rankTrendingVideos(candidates, { previous = [], previousAt, now = Date.now(), trustedChannels = new Set(), limit = 60, classify = classifyVideo } = {}) {
   const prior = new Map(previous.map((video) => [video.id, video]))
   const elapsedHours = (now - new Date(previousAt).getTime()) / 3600_000
   const ranked = []
@@ -30,7 +38,7 @@ export function rankTrendingVideos(candidates, { previous = [], previousAt, now 
     const ageHours = (now - published) / 3600_000
     if (!Number.isFinite(ageHours) || ageHours < 0) continue
     const trusted = trustedChannels.has(video.snippet.channelId)
-    const category = classifyVideo(video, association, trusted)
+    const category = classify(video, association, trusted)
     if (!category) continue
     const rawViews = Number(video.statistics?.viewCount)
     const views = Number.isFinite(rawViews) && rawViews >= 0 ? rawViews : null

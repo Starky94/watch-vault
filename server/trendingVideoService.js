@@ -1,19 +1,23 @@
 import { fetchTrendingMedia, fetchUpcomingMoviesPage, fetchMovieVideos, fetchTvVideos } from './tmdbClient.js'
 import { readTrendingVideoCache, reserveYoutubeQuota, saveTrendingVideoCache } from './trendingVideoRepository.js'
-import { rankTrendingVideos, youtubeIdPattern } from './trendingVideoRanking.js'
+import { classifyGameVideo, rankTrendingVideos, youtubeIdPattern } from './trendingVideoRanking.js'
 
 const queries = ['official movie trailer', 'official TV series trailer', 'upcoming movie teaser', 'Netflix official trailer', 'movie behind the scenes', 'upcoming series trailer', 'new movie trailer']
 const parts = 'snippet,statistics,contentDetails,status'
 
 export async function synchronizeTrendingVideos(pool, { config, token, baseUrl, fetchImpl = fetch, now = Date.now() }) {
   if (!config.apiKey) return { skipped: 'YOUTUBE_API_KEY is not configured' }
+  const feed = config.feed ?? 'movies'
+  if (!['movies', 'games'].includes(feed)) throw new Error('Invalid trending video feed')
+  const games = feed === 'games'
+  const lockId = games ? 874216904 : 874216903
   const client = await pool.connect()
   let locked = false
   try {
-    const { rows } = await client.query('SELECT pg_try_advisory_lock(874216903) AS locked')
+    const { rows } = await client.query('SELECT pg_try_advisory_lock($1) AS locked', [lockId])
     locked = rows[0]?.locked === true
     if (!locked) return { skipped: 'Synchronization already running' }
-    const previous = await readTrendingVideoCache(client, now)
+    const previous = await readTrendingVideoCache(client, now, feed)
     const candidates = new Map(), trustedChannels = new Set(), failures = []
     let quotaBlocked = false, successfulDiscovery = 0
     function add(id, source, region, association) {
@@ -42,7 +46,7 @@ export async function synchronizeTrendingVideos(pool, { config, token, baseUrl, 
     async function attempt(source, work) {
       try { await work(); successfulDiscovery++ } catch { failures.push(source) }
     }
-    for (const video of previous.videos) add(video.id, 'cache', null, video.media ? { ...video.media, type: video.category, official: false } : null)
+    for (const video of previous.videos) add(video.id, 'cache', null, !games && video.media ? { ...video.media, type: video.category, official: false } : null)
 
     // Resolve and persist real API-returned IDs and upload playlists, refreshing monthly.
     for (const handle of config.handles) {
@@ -68,19 +72,19 @@ export async function synchronizeTrendingVideos(pool, { config, token, baseUrl, 
     }
     for (const region of config.regions) {
       await attempt(`region:${region}`, async () => {
-        const videos = await youtube('videos', { chart: 'mostPopular', part: parts, videoCategoryId: 1, maxResults: 50, regionCode: region })
+        const videos = await youtube('videos', { chart: 'mostPopular', part: parts, videoCategoryId: games ? 20 : 1, maxResults: 50, regionCode: region })
         for (const video of videos) { add(video.id, 'most-popular', region); if (candidates.has(video.id)) candidates.get(video.id).video = video }
       })
     }
     // Rotate queries; persistently enforced daily budgets also cover restarts/manual runs.
     const queryStart = Math.floor(now / config.intervalMs) * config.searchesPerSync
-    for (let i = 0; i < config.searchesPerSync; i++) {
+    for (let i = 0; i < (games ? 0 : config.searchesPerSync); i++) {
       await attempt('search', async () => {
         const items = await youtube('search', { part: 'snippet', type: 'video', q: queries[(queryStart + i) % queries.length], maxResults: 50, order: 'date', publishedAfter: new Date(now - 7 * 86400_000).toISOString() })
         for (const item of items) add(item.id?.videoId, 'search')
       })
     }
-    if (token) {
+    if (token && !games) {
       const titles = new Map()
       for (const kind of ['movie', 'tv']) {
         await attempt(`tmdb:${kind}`, async () => {
@@ -119,16 +123,30 @@ export async function synchronizeTrendingVideos(pool, { config, token, baseUrl, 
     }
     const videos = rankTrendingVideos([...candidates.values()].filter((entry) => entry.video), {
       previous: previous.videos, previousAt: previous.updatedAt, now, trustedChannels,
+      ...(games ? { classify: classifyGameVideo } : {}),
     })
     if ((!successfulDiscovery || (ids.length && !detailSuccesses) || (!videos.length && failures.length))) throw new Error('Trending videos synchronization failed; keeping the previous cache')
     // A partial details refresh would lose the velocity baseline and remove valid cached
     // videos. Keep the atomic previous snapshot until every batch can be revalidated.
     if (failures.includes('video-details')) throw new Error('Incomplete YouTube statistics refresh; keeping the previous cache')
-    await saveTrendingVideoCache(client, videos, { failures, candidateCount: ids.length }, now)
+    await saveTrendingVideoCache(client, videos, { failures, candidateCount: ids.length }, now, feed)
     await client.query('DELETE FROM trending_video_quota WHERE day < CURRENT_DATE - 35')
     return { count: videos.length, failures }
   } finally {
-    if (locked) await client.query('SELECT pg_advisory_unlock(874216903)')
+    if (locked) await client.query('SELECT pg_advisory_unlock($1)', [lockId])
     client.release()
   }
+}
+
+// Isolate failures: each feed owns its cache/lock while sharing the quota ledger.
+export async function synchronizeTrendingVideoFeeds(pool, { configs, ...options }) {
+  const outcomes = []
+  for (const config of configs) {
+    try {
+      outcomes.push({ feed: config.feed ?? 'movies', result: await synchronizeTrendingVideos(pool, { ...options, config }) })
+    } catch (error) {
+      outcomes.push({ feed: config.feed ?? 'movies', error })
+    }
+  }
+  return outcomes
 }

@@ -1,5 +1,15 @@
+function cacheTable(feed) {
+  if (feed === 'movies') return 'trending_video_cache'
+  if (feed === 'games') return 'trending_game_video_cache'
+  throw new Error('Invalid trending video feed')
+}
+
 export async function ensureTrendingVideoTables(pool) {
   await pool.query(`CREATE TABLE IF NOT EXISTS trending_video_cache (
+    id INTEGER PRIMARY KEY CHECK (id = 1), videos JSONB NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL, diagnostics JSONB NOT NULL DEFAULT '{}'::jsonb
+  )`)
+  await pool.query(`CREATE TABLE IF NOT EXISTS trending_game_video_cache (
     id INTEGER PRIMARY KEY CHECK (id = 1), videos JSONB NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL, diagnostics JSONB NOT NULL DEFAULT '{}'::jsonb
   )`)
@@ -12,8 +22,8 @@ export async function ensureTrendingVideoTables(pool) {
   )`)
 }
 
-export async function readTrendingVideoCache(pool, now = Date.now()) {
-  const { rows } = await pool.query('SELECT videos, updated_at FROM trending_video_cache WHERE id = 1')
+export async function readTrendingVideoCache(pool, now = Date.now(), feed = 'movies') {
+  const { rows } = await pool.query(`SELECT videos, updated_at FROM ${cacheTable(feed)} WHERE id = 1`)
   const row = rows[0]
   const age = row ? now - new Date(row.updated_at).getTime() : Infinity
   // Never serve unrefreshed YouTube metadata past 30 days.
@@ -25,8 +35,8 @@ export async function readTrendingVideoCache(pool, now = Date.now()) {
   }
 }
 
-export async function saveTrendingVideoCache(pool, videos, diagnostics, now) {
-  await pool.query(`INSERT INTO trending_video_cache (id, videos, updated_at, diagnostics)
+export async function saveTrendingVideoCache(pool, videos, diagnostics, now, feed = 'movies') {
+  await pool.query(`INSERT INTO ${cacheTable(feed)} (id, videos, updated_at, diagnostics)
     VALUES (1, $1::jsonb, $2, $3::jsonb) ON CONFLICT (id) DO UPDATE SET
     videos = EXCLUDED.videos, updated_at = EXCLUDED.updated_at, diagnostics = EXCLUDED.diagnostics`,
   [JSON.stringify(videos), new Date(now), JSON.stringify(diagnostics)])

@@ -2,12 +2,13 @@ import { loadConfig } from './config.js'
 import { createPool } from './database.js'
 import { loadTrendingVideoConfig } from './trendingVideoConfig.js'
 import { ensureTrendingVideoTables } from './trendingVideoRepository.js'
-import { synchronizeTrendingVideos } from './trendingVideoService.js'
+import { synchronizeTrendingVideoFeeds } from './trendingVideoService.js'
 import { ensureErrorLogsTable, recordErrorSafely, recordCliError } from './errorLogs.js'
 
 async function start() {
   const runtime = loadConfig()
   const config = loadTrendingVideoConfig()
+  const gameConfig = loadTrendingVideoConfig(process.env, 'games')
   const once = process.argv.includes('--once')
   if (!config.apiKey) {
     console.log('Trending videos disabled: set YOUTUBE_API_KEY to enable discovery.')
@@ -25,12 +26,15 @@ async function start() {
   await ensureTrendingVideoTables(pool)
   await ensureErrorLogsTable(pool)
   async function run() {
-    try {
-      console.log('Trending videos:', await synchronizeTrendingVideos(pool, { config, token: runtime.tmdbBearerToken, baseUrl: runtime.tmdbBaseUrl }))
-    } catch (error) {
-      console.error(error.message)
-      await recordErrorSafely(pool, { source: 'job', context: 'trending-videos', error })
-      if (once) process.exitCode = 1
+    const outcomes = await synchronizeTrendingVideoFeeds(pool, { configs: [config, gameConfig], token: runtime.tmdbBearerToken, baseUrl: runtime.tmdbBaseUrl })
+    for (const { feed, result, error } of outcomes) {
+      if (error) {
+        console.error(`${feed} trending videos:`, error.message)
+        await recordErrorSafely(pool, { source: 'job', context: `trending-videos:${feed}`, error })
+        if (once) process.exitCode = 1
+      } else {
+        console.log(`${feed} trending videos:`, result)
+      }
     }
     if (!stopping && !once) timeout = setTimeout(() => { active = run() }, config.intervalMs)
   }

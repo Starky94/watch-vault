@@ -376,6 +376,15 @@ export async function createApp(pool, options = {}) {
     } catch (error) { next(error) }
   })
 
+  app.get('/api/games/videos/trending', async (request, response, next) => {
+    try {
+      const limit = request.query.limit === '60' ? 60 : 12
+      const cache = await readTrendingVideoCache(pool, Date.now(), 'games')
+      response.set('Cache-Control', 'public, max-age=60')
+      response.json({ ...cache, videos: cache.videos.slice(0, limit), total: cache.videos.length })
+    } catch (error) { next(error) }
+  })
+
   app.get('/api/theme', async (_request, response, next) => {
     try {
       response.json({ activeTheme: await getActiveSiteTheme(pool) })

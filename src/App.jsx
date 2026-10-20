@@ -4,6 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { createPortal } from 'react-dom'
 import './App.css'
 import { useHomePage } from './home/useHomePage.ts'
+import { TrendingVideosSection } from './video/TrendingVideosSection.tsx'
 import { HomeScreen } from './home/HomeScreen.tsx'
 import { loadCollection, requestJson } from './collectionLoader.js'
 import { mapPersonHistoryPayload, mapPersonPreview, selectPersonFilmography } from './personMappers.ts'
@@ -5888,7 +5889,7 @@ function GamesScreen({ activeTab, dashboardState, favoriteGames, gameActivitySta
 
       <div className="games-layout">
         <div className="games-main">
-          {activeTab === 'all' ? <GamesDashboard dashboardState={dashboardState} gameActivityState={gameActivityState} gameAchievementsState={gameAchievementsState} favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} onOpenGameAchievements={onOpenGameAchievements} onTabChange={onTabChange} /> : activeTab === 'favorites' ? <section className="games-catalog">
+          {activeTab === 'all' ? <GamesDashboard dashboardState={dashboardState} gameActivityState={gameActivityState} gameAchievementsState={gameAchievementsState} favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} onOpenGameAchievements={onOpenGameAchievements} onTabChange={onTabChange} trendingVideos={<GameTrendingVideos />} /> : activeTab === 'favorites' ? <section className="games-catalog">
             <div className="games-shelf-heading"><h2>Favorite Games</h2></div>
             {favoriteGames.length ? <GameCardsGrid className="games-catalog-grid" games={favoriteGames} label="Favorite" favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} /> : <SectionMessage message="No favorite games yet. Use the heart on a game to add it here." />}
           </section> : <section className="games-catalog">
@@ -5914,15 +5915,20 @@ function GameActivityPanel({ state }) {
   return <section className="games-side-card games-activity-strip"><h2><GamepadIcon />Your Game Activity</h2><GameMetric icon={<GamepadIcon />} label="Games Played" value={value(String(activity.gamesPlayed))} /><GameMetric icon={<ClockIcon />} label="Hours Played" value={value(formatMinutesAsHoursAndMinutes(activity.playtimeMinutes))} /><GameMetric icon={<CalendarIcon />} label="Last Completed" value={value(activity.lastCompletedAt ? formatLongDate(activity.lastCompletedAt) : '—')} detail={!isSignedIn ? 'Sign in to see activity' : undefined} /></section>
 }
 
-function GamesDashboard({ dashboardState, gameActivityState, gameAchievementsState, favoriteGameIds, onToggleFavorite, onOpenGame, onOpenGameAchievements, onTabChange }) {
+function GameTrendingVideos() {
+  return <TrendingVideosSection endpoint="/api/games/videos/trending" subtitle="Discover the latest trending video game trailers." label="Global game trailer picks" rankingDescription="A custom ranking from regional gaming charts and official gaming channels. This is not an official global YouTube chart." ui={homeUi} />
+}
+
+function GamesDashboard({ dashboardState, gameActivityState, gameAchievementsState, favoriteGameIds, onToggleFavorite, onOpenGame, onOpenGameAchievements, onTabChange, trendingVideos }) {
   const [featuredIndex, setFeaturedIndex] = useState(0)
   const featuredGames = dashboardState.popularGames.slice(0, 3)
   const activeFeaturedIndex = Math.min(featuredIndex, Math.max(0, featuredGames.length - 1))
   const featuredGame = featuredGames[activeFeaturedIndex]
-  if (dashboardState.status === 'loading' || dashboardState.status === 'idle') return <SectionMessage message="Loading games from your local database..." />
-  if (dashboardState.status === 'error') return <SectionMessage message={`Could not load the games dashboard. ${dashboardState.error}`} tone="error" />
-  if (!featuredGame) return <SectionMessage message="No games are available in the local database yet." />
+  const loading = dashboardState.status === 'loading' || dashboardState.status === 'idle'
+  const ready = dashboardState.status === 'success' && featuredGame
   return <>
+    {loading ? <SectionMessage message="Loading games from your local database..." /> : dashboardState.status === 'error' ? <SectionMessage message={`Could not load the games dashboard. ${dashboardState.error}`} tone="error" /> : !featuredGame ? <SectionMessage message="No games are available in the local database yet." /> : null}
+    {ready ? <>
     <article className="games-featured-card" style={featuredGame.coverUrl ? { '--games-hero-image': `url("${featuredGame.coverUrl}")` } : undefined}>
       <div className="games-featured-copy">
         <span className="games-kicker">Popular</span>
@@ -5934,12 +5940,16 @@ function GamesDashboard({ dashboardState, gameActivityState, gameAchievementsSta
       {featuredGames.length > 1 ? <div className="games-featured-pagination" aria-label="Featured games">{featuredGames.map((game, index) => <button type="button" key={game.id} className={index === activeFeaturedIndex ? 'active' : ''} aria-label={`Feature ${game.title}`} aria-current={index === activeFeaturedIndex ? 'true' : undefined} onClick={() => setFeaturedIndex(index)} />)}</div> : null}
     </article>
     <GameActivityPanel state={gameActivityState} />
+    </> : null}
+    {trendingVideos}
+    {ready ? <>
     <GamesShelf title="Popular Right Now" games={dashboardState.popularGames} label="Popular" tab="popular" onViewAll={onTabChange} favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} />
     {dashboardState.recentGames.length ? <GamesShelf title="Recently Released" games={dashboardState.recentGames.slice(0, 4)} label="Recent" tab="recent" onViewAll={onTabChange} favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} /> : null}
     <div className="games-bottom-row">
       {dashboardState.upcomingGames.length ? <GamesShelf title="Upcoming Games" games={dashboardState.upcomingGames.slice(0, 4)} label="Upcoming" tab="upcoming" onViewAll={onTabChange} favoriteGameIds={favoriteGameIds} onToggleFavorite={onToggleFavorite} onOpenGame={onOpenGame} /> : null}
       <GameAchievementsPanel state={gameAchievementsState} onViewAll={onOpenGameAchievements} />
     </div>
+    </> : null}
   </>
 }
 
