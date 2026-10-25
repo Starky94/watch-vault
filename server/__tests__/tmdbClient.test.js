@@ -342,7 +342,8 @@ test('fetchTvDetails requests the TMDB TV detail endpoint', async () => {
     tvShowId: 77,
   })
 
-  assert.match(requestedUrl, /\/tv\/77$/)
+  assert.equal(new URL(requestedUrl).pathname, '/3/tv/77')
+  assert.equal(new URL(requestedUrl).searchParams.get('append_to_response'), 'watch/providers')
 })
 
 test('fetchPersonDetails requests the TMDB person endpoint', async () => {

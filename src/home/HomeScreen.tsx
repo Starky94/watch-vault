@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { ChristmasGifts } from './ChristmasGifts.tsx'
 import { TrendingVideosSection } from './TrendingVideosSection.tsx'
 import type { ContinueWatchingState, HomeActions, HomeStatsItem, HomeUi, HomeViewData, NextUpItem, TonightPick } from './homeTypes.ts'
 
@@ -29,12 +30,16 @@ function HomeHero({ data, actions, ui }: HomeProps) {
   const { SparklesIcon, ClockIcon, PlayIcon, BookmarkIcon, StatsPanel, getFirstName, getSeasonalThemeLabel } = ui
   const { user, seasonalTheme, stats, statsPeriod, tonightPick } = data
   const { onOpenDiscover, onOpenSeasonalMovies, onOpenWatchlist, onStatsPeriodChange, openTonightPick } = actions
-  const greeting = user ? `Good evening, ${getFirstName(user.fullName)}! 🍿` : 'Good evening! 🍿'
+  const greetingEmoji = seasonalTheme?.name === 'Christmas' ? '🎁' : '🍿'
+  const greeting = user ? `Good evening, ${getFirstName(user.fullName)}! ${greetingEmoji}` : `Good evening! ${greetingEmoji}`
 
   return (
     <section className={`hero-panel${tonightPick ? ' has-tonight-pick' : ''}`}>
       <div className="hero-copy">
-        <p className="eyebrow">{greeting}</p>
+        <div className="christmas-hero-welcome">
+          <p className="eyebrow">{greeting}</p>
+          <ChristmasGifts className="christmas-hero-gifts" />
+        </div>
         <p className="tonight-pick-label"><SparklesIcon /> Tonight&apos;s pick</p>
         <h1>{tonightPick?.title || 'Find something great for tonight.'}</h1>
         <p className="hero-subcopy">{tonightPick ? `${tonightPick.reason}. ${tonightPick.detail}.` : 'Tell us your mood and available time for a tailored recommendation.'}</p>
@@ -211,6 +216,7 @@ function NextUpSection({ ui, isSignedIn, continueWatchingState, items, onOpenMov
           <p>Continue a story or start a priority pick from your watchlist.</p>
         </div>
         <button type="button" className="section-link" onClick={onOpenWatchlist}>Open watchlist</button>
+        <ChristmasGifts className="christmas-next-up-gifts" />
       </div>
       {!isSignedIn ? <SectionMessage message="Sign in to build your cross-media Next up queue." /> : null}
       {isSignedIn && continueWatchingState.status === 'loading' ? <SectionMessage message="Building your Next up queue..." /> : null}

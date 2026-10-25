@@ -1,3 +1,4 @@
+import { MovieCatalogFilters } from './movie/MovieCatalogFilters.tsx'
 import FranchiseCollections from './movie/FranchiseCollections.jsx'
 import { readCollectionsRoute } from './movie/franchiseCollections.js'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
@@ -74,7 +75,7 @@ const sectionByPrimaryView = {
   [primaryViews.calendar]: 'calendar',
 }
 
-const movieTabs = ['All Movies', 'Popular', 'Now Playing', 'Upcoming', 'Top Rated', 'Collections']
+const movieTabs = ['All Movies', 'All', 'Popular', 'Now Playing', 'Upcoming', 'Top Rated', 'Collections']
 const statsTabs = [
   { label: 'Overview' },
   { label: 'Movies', section: 'movies' },
@@ -126,7 +127,7 @@ const adminRunIdleState = {
 
 const watchlistAccentOptions = ['gold', 'violet', 'silver']
 
-const tvShowTabs = ['All Shows', 'Popular', 'Airing Now', 'Upcoming', 'Top Rated']
+const tvShowTabs = ['All Shows', 'All', 'Popular', 'Airing Now', 'Upcoming', 'Top Rated']
 const initialTvWatchlistIds = []
 const initialTvWatchedIds = []
 
@@ -286,6 +287,9 @@ function App() {
     error: '',
     message: '',
   })
+  const [allMoviesPage, setAllMoviesPage] = useState(1)
+  const [allMoviesState, setAllMoviesState] = useState(() => createMovieCollectionState())
+  const [allMovieFilters, setAllMovieFilters] = useState({ year: '', decade: '', genre: '', minRating: 0, maxRating: 10, streamingOnly: false, excludeWatched: true })
   const [popularMoviesPage, setPopularMoviesPage] = useState(1)
   const [hideWatchedMovies, setHideWatchedMovies] = useState(false)
   const [catalogSort, setCatalogSort] = useState('featured')
@@ -293,6 +297,10 @@ function App() {
   const [recentMoviesPage, setRecentMoviesPage] = useState(1)
   const [upcomingMoviesPage, setUpcomingMoviesPage] = useState(1)
   const [topRatedMoviesPage, setTopRatedMoviesPage] = useState(1)
+  const [allTvPage, setAllTvPage] = useState(1)
+  const [allTvState, setAllTvState] = useState(() => createTvCollectionState())
+  const [allTvFilters, setAllTvFilters] = useState({ year: '', decade: '', genre: '', minRating: 0, maxRating: 10, streamingOnly: false, excludeWatched: true })
+  const [tvGenresState, setTvGenresState] = useState({ status: 'idle', genres: [], error: '' })
   const [popularTvPage, setPopularTvPage] = useState(1)
   const [recentTvPage, setRecentTvPage] = useState(1)
   const [upcomingTvPage, setUpcomingTvPage] = useState(1)
@@ -1279,6 +1287,11 @@ function App() {
       return
     }
 
+    if (activeMovieTab === 'All') {
+      setMoviesScreenMode(movieScreenModes.allList)
+      return
+    }
+
     if (activeMovieTab === 'Popular') {
       setMoviesScreenMode(movieScreenModes.popularList)
       return
@@ -1317,6 +1330,11 @@ function App() {
   function handleTvTabChange(tab) {
     setActiveTvTab(tab)
     setSelectedTvShowId(null)
+
+    if (tab === 'All') {
+      setAllTvPage(1)
+      return
+    }
 
     if (tab === 'All Shows') {
       setPopularTvPage(1)
@@ -1357,6 +1375,12 @@ function App() {
     }
     setActiveMovieTab(tab)
     setSelectedGenre(null)
+
+    if (tab === 'All') {
+      setAllMoviesPage(1)
+      setMoviesScreenMode(movieScreenModes.allList)
+      return
+    }
 
     if (tab === 'All Movies') {
       setPopularMoviesPage(1)
@@ -1413,6 +1437,7 @@ function App() {
 
   function handleCatalogSortChange(nextSort) {
     setCatalogSort(nextSort)
+    if (moviesScreenMode === movieScreenModes.allList) setAllMoviesPage(1)
     if (moviesScreenMode === movieScreenModes.genreList) setGenreMoviesPage(1)
     if (moviesScreenMode === movieScreenModes.popularList) setPopularMoviesPage(1)
     if (moviesScreenMode === movieScreenModes.nowPlayingList) setRecentMoviesPage(1)
@@ -3381,6 +3406,7 @@ function App() {
   }, [])
 
   const movieCollectionOptions = { activeView: currentRoute.kind === routeKinds.collections ? null : activeView, screenMode: moviesScreenMode, hideWatchedMovies, user, watchedMovies: watchedState.movies, catalogSort }
+  useMovieCollection(movieCollectionConfigs.all, { ...movieCollectionOptions, hideWatchedMovies: allMovieFilters.excludeWatched, filters: allMovieFilters, page: allMoviesPage, setState: setAllMoviesState })
   useMovieCollection(movieCollectionConfigs.popular, { ...movieCollectionOptions, page: popularMoviesPage, setState: setPopularMoviesState })
   useMovieCollection(movieCollectionConfigs.upcoming, { ...movieCollectionOptions, page: upcomingMoviesPage, setState: setUpcomingMoviesState })
   useMovieCollection(movieCollectionConfigs.recent, { ...movieCollectionOptions, page: recentMoviesPage, setState: setRecentMoviesState })
@@ -3470,6 +3496,35 @@ function App() {
     loadBookDetail()
     return () => { cancelled = true }
   }, [currentRoute, user])
+
+  useEffect(() => {
+    if (activeView !== primaryViews.tvShows || activeTvTab !== 'All') return
+    return loadCollection({
+      url: '/api/tv/genres', setState: setTvGenresState,
+      loadingState: { status: 'loading', genres: [], error: '' },
+      itemsKey: 'genres', mapItem: (genre) => genre,
+      errorMessage: 'Unable to load TV genres right now.',
+    })
+  }, [activeView, activeTvTab])
+
+  useEffect(() => {
+    if (activeView !== primaryViews.tvShows || activeTvTab !== 'All') return
+    const params = new URLSearchParams({ page: String(allTvPage), limit: String(moviesPageSize) })
+    if (allTvFilters.year) params.set('year', allTvFilters.year)
+    if (allTvFilters.decade) params.set('decade', allTvFilters.decade)
+    if (allTvFilters.genre) params.set('genre', allTvFilters.genre)
+    if (allTvFilters.minRating > 0) params.set('minRating', String(allTvFilters.minRating))
+    if (allTvFilters.maxRating < 10) params.set('maxRating', String(allTvFilters.maxRating))
+    if (allTvFilters.streamingOnly) params.set('streamingOnly', 'true')
+    if (allTvFilters.excludeWatched && user) params.set('hideWatched', 'true')
+    return loadCollection({
+      url: `/api/tv?${params}`, setState: setAllTvState,
+      loadingState: createTvCollectionLoadingState({ page: allTvPage }),
+      itemsKey: 'shows', mapItem: mapTvRowToCard,
+      mapPagination: (value) => mapPaginationPayload(value, allTvPage),
+      errorMessage: 'Unable to load TV shows right now.',
+    })
+  }, [activeView, activeTvTab, allTvPage, allTvFilters, user, tvWatchedIds])
 
   useEffect(() => {
     if (activeView !== primaryViews.tvShows) return
@@ -3963,6 +4018,12 @@ function App() {
               />
             ) : activeView === primaryViews.tvShows ? (
               <TvShowsScreen
+                allTvState={allTvState}
+                allTvFilters={allTvFilters}
+                onAllTvFiltersChange={(filters) => { setAllTvFilters(filters); setAllTvPage(1) }}
+                onChangeAllPage={setAllTvPage}
+                tvGenresState={tvGenresState}
+                isSignedIn={Boolean(user)}
                 activeTab={activeTvTab}
                 popularTvState={popularTvState}
                 recentTvState={recentTvState}
@@ -4093,6 +4154,11 @@ function App() {
               />
             ) : (
               <MoviesScreen
+                allMoviesState={allMoviesState}
+                onChangeAllPage={setAllMoviesPage}
+                allMovieFilters={allMovieFilters}
+                onAllMovieFiltersChange={(filters) => { setAllMovieFilters(filters); setAllMoviesPage(1) }}
+                genres={genresState.genres}
                 activeTab={activeMovieTab}
                 setActiveTab={handleMovieTabChange}
                 screenMode={moviesScreenMode}
@@ -5679,6 +5745,7 @@ function CalendarEventRow({ event, onOpen, agenda = false }) {
 }
 
 function MoviesScreen({
+  allMoviesState, onChangeAllPage, allMovieFilters, onAllMovieFiltersChange, genres,
   activeTab,
   setActiveTab,
   screenMode,
@@ -5715,6 +5782,7 @@ function MoviesScreen({
   onOpenMovie,
 }) {
   const collections = {
+    all: { config: movieGridConfigs.all, state: allMoviesState, onPageChange: onChangeAllPage },
     genre: { config: movieGridConfigs.genre, state: genreMoviesState, onPageChange: onChangeGenrePage },
     popular: { config: movieGridConfigs.popular, state: popularMoviesState, onPageChange: onChangePopularPage, onOpenAll: onOpenPopularMovies },
     recent: { config: movieGridConfigs.recent, state: recentMoviesState, onPageChange: onChangeRecentPage, onOpenAll: onOpenRecentlyReleasedMovies },
@@ -5769,7 +5837,7 @@ function MoviesScreen({
               <option value="release">Release date</option>
             </select>
           </label> : null}
-        {isSignedIn && isCatalogListMode ? (
+        {isSignedIn && isCatalogListMode && activeTab !== 'All' ? (
           <button type="button" className={`filter-pill movies-hide-watched-filter${hideWatched ? ' active' : ''}`} aria-pressed={hideWatched} onClick={() => onHideWatchedChange(!hideWatched)}>
             <CheckIcon />
             <span>Hide watched</span>
@@ -5777,6 +5845,8 @@ function MoviesScreen({
         ) : null}
         </section>
       </div>
+
+      {activeTab === 'All' ? <MovieCatalogFilters value={allMovieFilters} onChange={onAllMovieFiltersChange} genres={genres} isSignedIn={isSignedIn} /> : null}
 
       {catalogCollection ? (
         <ContentSection title={catalogTitle}>
@@ -5958,7 +6028,12 @@ function GamesShelf({ title, games, label, tab, onViewAll, favoriteGameIds, onTo
 }
 
 function GameCardsGrid({ className, games, label, favoriteGameIds, onToggleFavorite, onOpenGame, dashboard = false }) {
-  return <div className={className}>{games.map((game) => <article className={`games-card games-art-${game.art || 'trivia'}`} key={game.id || game.title}><button type="button" className={`games-favorite-toggle${favoriteGameIds.has(game.id) ? ' active' : ''}`} onClick={() => onToggleFavorite(game)} aria-label={favoriteGameIds.has(game.id) ? `Remove ${game.title} from favorites` : `Add ${game.title} to favorites`} aria-pressed={favoriteGameIds.has(game.id)}><HeartIcon /></button><button type="button" className="games-card-open" onClick={() => onOpenGame(game)} aria-label={`Open ${game.title}`}><GameArt game={game} showLabel={!game.coverUrl} /><h3>{game.title}</h3>{dashboard ? null : <small>{game.playersLabel || game.meta}</small>}<div><span><StarIcon /> {game.rating}</span>{dashboard ? null : <em>{label}</em>}</div></button></article>)}</div>
+  return <div className={className}>{games.map((game) => <article className={`games-card games-art-${game.art || 'trivia'}`} key={game.id || game.title}><button type="button" className={`games-favorite-toggle${favoriteGameIds.has(game.id) ? ' active' : ''}`} onClick={() => onToggleFavorite(game)} aria-label={favoriteGameIds.has(game.id) ? `Remove ${game.title} from favorites` : `Add ${game.title} to favorites`} aria-pressed={favoriteGameIds.has(game.id)}><HeartIcon /></button><button type="button" className="games-card-open" onClick={() => onOpenGame(game)} aria-label={`Open ${game.title}`}><GameArt game={game} showLabel={!game.coverUrl} /><h3>{game.title}</h3>{dashboard ? null : <small>{game.playersLabel || game.meta}</small>}<div><span><StarIcon /> {formatGameCardRating(game.rating)}</span>{dashboard ? null : <em>{label}</em>}</div></button></article>)}</div>
+}
+
+function formatGameCardRating(rating) {
+  const numericRating = Number(rating)
+  return rating !== null && rating !== undefined && rating !== '' && Number.isFinite(numericRating) ? numericRating.toFixed(1) : 'N/A'
 }
 
 function GameArt({ game, featured = false, showLabel = true }) {
@@ -6238,6 +6313,7 @@ function ContinueWatchingPage({ isSignedIn, pageState, onOpenLogin, onOpenTvShow
 }
 
 function TvShowsScreen({
+  allTvState, allTvFilters, onAllTvFiltersChange, onChangeAllPage, tvGenresState, isSignedIn,
   activeTab,
   popularTvState,
   recentTvState,
@@ -6270,6 +6346,7 @@ function TvShowsScreen({
   const featuredShow = selectedShow ?? popularTvState.featuredShow ?? tvCatalog[0] ?? null
   const watchlistShows = favoriteShows.slice(0, 4)
   const tvStats = buildTvStats(stats)
+  const isAllListMode = activeTab === 'All'
   const isPopularListMode = activeTab === 'Popular'
   const isAiringNowListMode = activeTab === 'Airing Now'
   const isUpcomingListMode = activeTab === 'Upcoming'
@@ -6280,7 +6357,7 @@ function TvShowsScreen({
       <div className="movies-heading tv-shows-heading">
         <h1>TV Shows</h1>
         <p>
-          {isPopularListMode
+          {isAllListMode ? 'Browse all TV shows in your local database, 30 titles at a time.' : isPopularListMode
             ? 'Browse popular TV shows imported from your local database, 30 titles at a time.'
             : isAiringNowListMode
               ? 'Browse recently aired TV shows from your local database, 30 titles at a time.'
@@ -6305,7 +6382,16 @@ function TvShowsScreen({
         ))}
       </section>
 
-      {isPopularListMode ? (
+      {isAllListMode ? <>
+        <MovieCatalogFilters value={allTvFilters} onChange={onAllTvFiltersChange} genres={tvGenresState.genres} isSignedIn={isSignedIn} mediaLabel="TV shows" />
+        {tvGenresState.status === 'error' ? <SectionMessage message={tvGenresState.error} tone="error" /> : null}
+        <ContentSection title="All TV Shows">
+          {allTvState.status === 'success' && allTvState.shows.length === 0
+            ? <SectionMessage message="No TV shows match these filters. Try adjusting your filters." />
+            : <TvShowsGrid tvState={allTvState} layout="catalog" onSelectShow={onSelectShow} watchedIds={watchedIds} watchlistIds={watchlistIds} activeShowId={selectedShowId} />}
+          <PaginationControls pagination={allTvState.pagination} onPageChange={onChangeAllPage} />
+        </ContentSection>
+      </> : isPopularListMode ? (
         <ContentSection title="Popular Right Now">
           <TvShowsGrid
             tvState={popularTvState}
@@ -8611,7 +8697,7 @@ function StatsScreen({ initialTab = 'Overview', movieStats, movieStatsStatus, wa
           {watchedState.status === 'error' ? <SectionMessage tone="error" message={watchedState.error || 'Unable to load your watched movies right now.'} /> : null}
           {watchedState.status === 'success' && watchedMovies.length === 0 ? <SectionMessage message="You have not marked any movies as watched yet." /> : null}
           {watchedState.status === 'success' && watchedMovies.length > 0 ? <>
-            <div className="popular-movies-catalog stats-watched-movies-grid">
+            <div className="popular-movies-catalog stats-watched-movies-grid stats-movie-history-grid">
               {visibleWatchedMovies.map((movie) => <StatsWatchedMovieCard key={movie.id} movie={movie} onOpenMovie={onOpenMovie} />)}
             </div>
             <PaginationControls pagination={movieHistoryPagination} onPageChange={setMovieHistoryPage} />
@@ -8944,11 +9030,16 @@ function ContentSection({ title, action, onAction, compact = false, className = 
 }
 
 function QuickMediaActions({ title, isInWatchlist = false, isWatched = false, onOpen, onToggleWatchlist, onToggleWatched, watchedLabel = 'watched' }) {
+  const handleToggleWatched = () => {
+    if (watchedLabel === 'watched' && !isWatched && !window.confirm(`Mark “${title}” as watched?`)) return
+    onToggleWatched()
+  }
+
   return (
     <div className="quick-media-actions" aria-label={`Quick actions for ${title}`}>
       <button type="button" className="quick-media-action" onClick={onOpen} aria-label={`Open details for ${title}`} title="Details"><ChevronRight /></button>
       {onToggleWatchlist ? <button type="button" className={`quick-media-action${isInWatchlist ? ' is-active' : ''}`} onClick={onToggleWatchlist} aria-label={`${isInWatchlist ? 'Remove' : 'Add'} ${title} ${isInWatchlist ? 'from' : 'to'} watchlist`} title={isInWatchlist ? 'Remove from watchlist' : 'Add to watchlist'}><BookmarkIcon /></button> : null}
-      {onToggleWatched ? <button type="button" className={`quick-media-action${isWatched ? ' is-active watched' : ''}`} onClick={onToggleWatched} aria-label={`${isWatched ? 'Mark' : 'Mark'} ${title} as ${isWatched ? `not ${watchedLabel}` : watchedLabel}`} title={isWatched ? `Mark as not ${watchedLabel}` : `Mark as ${watchedLabel}`}><CheckIcon /></button> : null}
+      {onToggleWatched ? <button type="button" className={`quick-media-action${isWatched ? ' is-active watched' : ''}`} onClick={handleToggleWatched} aria-label={`${isWatched ? 'Mark' : 'Mark'} ${title} as ${isWatched ? `not ${watchedLabel}` : watchedLabel}`} title={isWatched ? `Mark as not ${watchedLabel}` : `Mark as ${watchedLabel}`}><CheckIcon /></button> : null}
     </div>
   )
 }

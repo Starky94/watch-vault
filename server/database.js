@@ -2255,6 +2255,20 @@ function movieCollectionPageOptions({ limit = 30, page = 1, pageSize = limit, ex
   return { params, watchedFilterSql: buildWatchedMovieExclusion(normalizedUsername, params) }
 }
 
+// Use the same region preference as movie details; rentals and purchases never qualify.
+function subscriptionStreamingFilterSql(table) {
+  return `EXISTS (
+      SELECT 1 FROM jsonb_array_elements(
+        COALESCE((COALESCE(
+          ${table}.detail_payload #> '{watch/providers,results,RO}',
+          ${table}.detail_payload #> '{watch/providers,results,US}',
+          (SELECT region.value FROM jsonb_each(COALESCE(${table}.detail_payload #> '{watch/providers,results}', '{}'::jsonb)) AS region LIMIT 1)
+        ))->'flatrate', '[]'::jsonb)
+      ) AS streaming_provider
+      WHERE NULLIF(streaming_provider->>'provider_name', '') IS NOT NULL
+    )`
+}
+
 export async function listMovies(pool, options = {}) {
   const { limit = 30, page = 1, pageSize = limit, genre = '', sort = 'featured', excludeWatchedForUsername = '' } = options
   const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 30
@@ -2280,6 +2294,20 @@ export async function listMovies(pool, options = {}) {
   if (normalizedExcludedUsername) {
     filters.push(buildWatchedMovieExclusion(normalizedExcludedUsername, params))
   }
+
+  for (const [key, expression, operator] of [
+    ['year', 'EXTRACT(YEAR FROM movies.release_date)', '='],
+    ['decade', 'FLOOR(EXTRACT(YEAR FROM movies.release_date) / 10) * 10', '='],
+    ['minRating', 'movies.vote_average', '>='],
+    ['maxRating', 'movies.vote_average', '<='],
+  ]) {
+    if (typeof options[key] === 'number' && Number.isFinite(options[key])) {
+      params.push(options[key])
+      filters.push(`${expression} ${operator} $${params.length}`)
+    }
+  }
+
+  if (options.streamingOnly === true) filters.push(subscriptionStreamingFilterSql('movies'))
 
   const filterSql = filters.length > 0 ? `WHERE ${filters.join('\n      AND ')}` : ''
 
@@ -2435,6 +2463,16 @@ export async function searchMovies(pool, query, limit = 30) {
     [query, normalizedLimit]
   )
 
+  return result.rows
+}
+
+export async function listTvGenres(pool) {
+  const result = await pool.query(`
+    SELECT tv_genres.tmdb_genre_id, tv_genres.name
+    FROM tv_genres
+    WHERE EXISTS (SELECT 1 FROM tv_shows WHERE tv_genres.tmdb_genre_id = ANY(tv_shows.genre_ids))
+    ORDER BY LOWER(tv_genres.name) ASC, tv_genres.tmdb_genre_id ASC
+  `)
   return result.rows
 }
 
@@ -4904,10 +4942,34 @@ export async function listUpcomingMovies(pool, options = {}) {
 }
 
 export async function listTvShows(pool, options = {}) {
-  const { limit = 30, page = 1 } = options
+  const { limit = 30, page = 1, pageSize = limit } = options
   const normalizedLimit = Number.isInteger(limit) ? Math.max(1, limit) : 30
   const normalizedPage = Number.isInteger(page) ? Math.max(1, page) : 1
-  const offset = (normalizedPage - 1) * normalizedLimit
+  const normalizedPageSize = Number.isInteger(pageSize) ? Math.max(1, pageSize) : normalizedLimit
+  const offset = (normalizedPage - 1) * normalizedPageSize
+  const params = [normalizedLimit, offset]
+  const filters = []
+  if (typeof options.genre === 'string' && options.genre.trim()) {
+    params.push(options.genre.trim())
+    filters.push(`EXISTS (SELECT 1 FROM tv_genres AS selected_genres WHERE selected_genres.tmdb_genre_id = ANY(tv_shows.genre_ids) AND LOWER(selected_genres.name) = LOWER($${params.length}))`)
+  }
+  if (typeof options.excludeWatchedForUsername === 'string' && options.excludeWatchedForUsername.trim()) {
+    params.push(options.excludeWatchedForUsername.trim())
+    filters.push(`NOT EXISTS (SELECT 1 FROM watched_tv_shows JOIN users ON users.id = watched_tv_shows.user_id WHERE watched_tv_shows.tv_show_id = tv_shows.id AND users.username = $${params.length})`)
+  }
+  for (const [key, expression, operator] of [
+    ['year', 'EXTRACT(YEAR FROM tv_shows.first_air_date)', '='],
+    ['decade', 'FLOOR(EXTRACT(YEAR FROM tv_shows.first_air_date) / 10) * 10', '='],
+    ['minRating', 'tv_shows.vote_average', '>='],
+    ['maxRating', 'tv_shows.vote_average', '<='],
+  ]) {
+    if (typeof options[key] === 'number' && Number.isFinite(options[key])) {
+      params.push(options[key])
+      filters.push(`${expression} ${operator} $${params.length}`)
+    }
+  }
+  if (options.streamingOnly === true) filters.push(subscriptionStreamingFilterSql('tv_shows'))
+  const filterSql = filters.length ? `WHERE ${filters.join(' AND ')}` : ''
 
   const result = await pool.query(
     `
@@ -4935,12 +4997,13 @@ export async function listTvShows(pool, options = {}) {
     FROM tv_shows
     LEFT JOIN LATERAL UNNEST(tv_shows.genre_ids) WITH ORDINALITY AS genre_ids(tmdb_genre_id, ordinality) ON TRUE
     LEFT JOIN tv_genres ON tv_genres.tmdb_genre_id = genre_ids.tmdb_genre_id
+    ${filterSql}
     GROUP BY tv_shows.id
     ORDER BY tv_shows.popularity DESC NULLS LAST, tv_shows.tmdb_id ASC
     LIMIT $1
     OFFSET $2
   `,
-    [normalizedLimit, offset]
+    params
   )
 
   return result.rows

@@ -4,7 +4,7 @@ import { mapFeaturedMoviePayload, mapMovieRowToCard } from './movieMappers.ts'
 import type { FeaturedMovieApi, MovieCollectionState, MovieRowApi, Pagination } from './movieTypes.ts'
 
 export const movieScreenModes = {
-  overview: 'overview', popularList: 'popularList', nowPlayingList: 'nowPlayingList',
+  overview: 'overview', allList: 'allList', popularList: 'popularList', nowPlayingList: 'nowPlayingList',
   topRatedList: 'topRatedList', upcomingList: 'upcomingList', genreList: 'genreList',
 } as const
 
@@ -13,6 +13,7 @@ type MovieCatalogSort = 'featured' | 'rating' | 'release'
 interface CollectionConfig { path: string; screenMode: MovieScreenMode; featured?: boolean; errorMessage: string }
 
 export const movieCollectionConfigs = {
+  all: { path: '/api/movies', screenMode: movieScreenModes.allList, errorMessage: 'Unable to load movies right now.' },
   popular: { path: '/api/movies', screenMode: movieScreenModes.popularList, featured: true, errorMessage: 'Unable to load movies right now.' },
   upcoming: { path: '/api/movies/upcoming', screenMode: movieScreenModes.upcomingList, errorMessage: 'Unable to load upcoming movies right now.' },
   recent: { path: '/api/movies/recently-released', screenMode: movieScreenModes.nowPlayingList, errorMessage: 'Unable to load recently released movies right now.' },
@@ -34,6 +35,7 @@ export interface GridConfig {
 }
 
 export const movieGridConfigs = {
+  all: { screenMode: movieScreenModes.allList, tab: 'All', title: 'All Movies', description: 'Browse all movies in your local database, 30 titles at a time.', catalogLabel: 'All movies list', errorLabel: 'movies', emptyMessage: 'No movies match these filters. Try adjusting your filters.' },
   popular: { screenMode: movieScreenModes.popularList, tab: 'Popular', title: 'Popular Right Now', description: 'Browse popular movies imported from your local database, 30 titles at a time.', railLabel: 'Popular movies', catalogLabel: 'Popular movies list', railKind: 'popular', errorLabel: 'popular movies', emptyMessage: 'No movies are available in the local database yet.' },
   recent: { screenMode: movieScreenModes.nowPlayingList, tab: 'Now Playing', title: 'Now Playing', overviewTitle: 'Recently Released', description: 'Browse recently released movies from your local database, 30 titles at a time.', railLabel: 'Recently released movies', catalogLabel: 'Now playing movies list', railKind: 'recent', errorLabel: 'recently released movies', emptyMessage: 'No recently released movies are available in the local database yet.' },
   upcoming: { screenMode: movieScreenModes.upcomingList, tab: 'Upcoming', title: 'Upcoming Soon', description: 'Browse upcoming releases from the next 30 days, 30 titles at a time.', railLabel: 'Upcoming movies', catalogLabel: 'Upcoming movies list', railKind: 'upcoming', errorLabel: 'upcoming movies', emptyMessage: 'No upcoming movies are available in the local database yet.' },
@@ -62,6 +64,8 @@ export function createMovieCollectionState({ includeFeaturedMovie = false } = {}
   return { status: 'idle', movies: [], pagination: paginationState(), ...(includeFeaturedMovie ? { featuredMovie: null } : {}), error: '' }
 }
 
+export interface MovieCatalogFilters { year: string; decade: string; genre: string; minRating: number; maxRating: number; streamingOnly: boolean; excludeWatched: boolean }
+
 interface CollectionOptions {
   activeView: string
   screenMode: MovieScreenMode
@@ -70,6 +74,7 @@ interface CollectionOptions {
   watchedMovies: readonly unknown[]
   page: number
   setState: Dispatch<SetStateAction<MovieCollectionState>>
+  filters?: MovieCatalogFilters
   genreName?: string
   catalogSort: MovieCatalogSort
 }
@@ -104,8 +109,8 @@ export async function loadMovieCollectionData(url: string, page: number, config:
   }
 }
 
-export function useMovieCollection(config: CollectionConfig, { activeView, screenMode, hideWatchedMovies, user, watchedMovies, page, setState, genreName, catalogSort }: CollectionOptions): void {
-  const enabled = activeView === 'Movies' && (config.screenMode !== movieScreenModes.genreList || (screenMode === movieScreenModes.genreList && Boolean(genreName)))
+export function useMovieCollection(config: CollectionConfig, { activeView, screenMode, hideWatchedMovies, user, watchedMovies, page, setState, genreName, catalogSort, filters }: CollectionOptions): void {
+  const enabled = activeView === 'Movies' && (config.screenMode !== movieScreenModes.allList || screenMode === movieScreenModes.allList) && (config.screenMode !== movieScreenModes.genreList || (screenMode === movieScreenModes.genreList && Boolean(genreName)))
   const hideWatched = Boolean(user) && hideWatchedMovies && screenMode === config.screenMode
   const watchedFilterVersion = hideWatched ? watchedMovies : null
   const sort = screenMode === config.screenMode ? catalogSort : 'featured'
@@ -121,6 +126,14 @@ export function useMovieCollection(config: CollectionConfig, { activeView, scree
 
     const params = new URLSearchParams({ page: String(page), limit: String(moviePageSize), sort })
     if (genreName) params.set('genre', genreName)
+    if (filters) {
+      if (filters.year) params.set('year', filters.year)
+      if (filters.decade) params.set('decade', filters.decade)
+      if (filters.genre) params.set('genre', filters.genre)
+      if (filters.minRating > 0) params.set('minRating', String(filters.minRating))
+      if (filters.maxRating < 10) params.set('maxRating', String(filters.maxRating))
+      if (filters.streamingOnly) params.set('streamingOnly', 'true')
+    }
     if (hideWatched) params.set('hideWatched', 'true')
 
     void loadMovieCollectionData(`${config.path}?${params.toString()}`, page, config).then((state) => {
@@ -128,5 +141,5 @@ export function useMovieCollection(config: CollectionConfig, { activeView, scree
       setState(state)
     })
     return () => { cancelled = true }
-  }, [config, enabled, genreName, hideWatched, page, setState, sort, watchedFilterVersion])
+  }, [config, enabled, filters, genreName, hideWatched, page, setState, sort, watchedFilterVersion])
 }

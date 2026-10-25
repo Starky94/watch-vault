@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="70" viewBox="0 0 480 70">
+<defs>
+  <radialGradient id="red" cx="30%" cy="25%"><stop stop-color="#ffb28a"/><stop offset=".28" stop-color="#e63637"/><stop offset="1" stop-color="#680e23"/></radialGradient>
+  <filter id="glow" x="-200%" y="-200%" width="500%" height="500%"><feGaussianBlur stdDeviation="4"/></filter>
+  <g id="sprig"><path d="M-48 2 48 0" stroke="#4f6444" stroke-width="3"/><g stroke="#224e3e" stroke-width="3" stroke-linecap="round"><path d="m-35 1-17-18m24 19-11-25m19 25-5-27m15 28 2-28m5 29 13-27m-43 24-14 15m24-13-9 19m20-17-2 21m12-22 7 20m4-21 16 15"/></g><g stroke="#52816b" stroke-width="1.5"><path d="m-32 0-20-9m31 9-18-18m27 19-7-22m18 23 5-23m-25 24-16 12m25-12-8 18m17-19 6 17m5-18 17 12"/></g><path d="m-42-4 13-3 7 2m13-6 12-2 8 3" fill="none" stroke="#e5eff3" stroke-width="3" stroke-linecap="round" opacity=".8"/></g>
+</defs>
+<path d="M0 10Q120 45 240 12T480 10" fill="none" stroke="#182f28" stroke-width="13"/>
+<g><use href="#sprig" x="20" y="14"/><use href="#sprig" x="83" y="26" transform="rotate(8 83 26)"/><use href="#sprig" x="151" y="27"/><use href="#sprig" x="220" y="15" transform="rotate(-12 220 15)"/><use href="#sprig" x="288" y="3"/><use href="#sprig" x="353" y="2"/><use href="#sprig" x="421" y="6"/><use href="#sprig" x="478" y="15"/></g>
+<path d="M0 22Q120 58 240 22T480 22" fill="none" stroke="#a47d38" stroke-width="1.4"/>
+<g fill="#ffb848" filter="url(#glow)"><circle cx="24" cy="28" r="7"/><circle cx="105" cy="40" r="7"/><circle cx="191" cy="34" r="7"/><circle cx="275" cy="15" r="7"/><circle cx="360" cy="5" r="7"/><circle cx="448" cy="17" r="7"/></g>
+<g fill="#fff3bb" stroke="#ffc45e"><ellipse cx="24" cy="28" rx="2.8" ry="4.5"/><ellipse cx="105" cy="40" rx="2.8" ry="4.5"/><ellipse cx="191" cy="34" rx="2.8" ry="4.5"/><ellipse cx="275" cy="15" rx="2.8" ry="4.5"/><ellipse cx="360" cy="5" rx="2.8" ry="4.5"/><ellipse cx="448" cy="17" rx="2.8" ry="4.5"/></g>
+<g stroke="#b99252"><path d="M64 22v13m182-22v14m154-16v14"/><g fill="url(#red)" stroke-width=".5"><circle cx="64" cy="43" r="9"/><circle cx="246" cy="35" r="9"/><circle cx="400" cy="33" r="9"/></g></g>
+</svg>

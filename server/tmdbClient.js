@@ -265,6 +265,7 @@ export async function fetchTvDetails(fetchImpl, options) {
     token,
     baseUrl,
     path: `tv/${tvShowId}`,
+    searchParams: { append_to_response: 'watch/providers' },
   })
 }
 

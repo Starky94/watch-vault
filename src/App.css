@@ -6037,7 +6037,7 @@
 .stats-watched-movies-heading h2 { margin:0; font-family:var(--font-display); font-size:1.35rem; letter-spacing:-.03em; }
 .stats-watched-movies-heading p { margin:5px 0 0; color:var(--text-secondary); font-size:.85rem; }
 .stats-watched-movies-heading > span { flex:0 0 auto; color:var(--text-secondary); font-size:.78rem; }
-.stats-watched-movies-grid { display:grid; grid-template-columns:repeat(6, minmax(0, 1fr)); margin-bottom:22px; }
+.stats-watched-movies-grid { display:grid; grid-template-columns:repeat(6, minmax(0, 1fr)); gap:14px; margin-bottom:22px; }
 .stats-watched-movie-card > p { margin:7px 0 0; color:var(--text-muted); font-size:.72rem; }
 .stats-watched-tv { max-width:960px; min-height:360px; }
 .stats-tv-history-list { display:grid; overflow:hidden; margin-bottom:22px; border:1px solid var(--border-soft); border-radius:15px; background:rgba(14,20,34,.74); }
@@ -6079,6 +6079,21 @@
 @media (max-width: 980px) { .stats-page { padding-top:20px; }.stats-metric-grid { grid-template-columns:repeat(2,1fr); }.stats-insights-grid { grid-template-columns:repeat(2,1fr); }.stats-activity-card { grid-column:span 2; }.stats-habits-card { grid-column:auto; }.stats-detail-grid { grid-template-columns:repeat(2,1fr); } }
 @media (max-width: 980px) { .achievement-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 @media (max-width: 620px) { .stats-page { padding: 17px 0 95px; }.stats-page-heading h1 { font-size:1.8rem; }.stats-page-heading p { font-size:.85rem; }.stats-page-period { align-self:flex-start; }.stats-period-button { width:42px; padding:0; justify-content:center; font-size:0; }.stats-metric-grid { gap:9px; }.stats-metric-card { min-height:100px; gap:9px; padding:12px; border-radius:13px; }.stats-metric-icon { width:36px; height:36px; border-radius:10px; }.stats-metric-icon svg { width:20px; }.stats-metric-card strong { font-size:1.28rem; }.stats-metric-card span { font-size:.67rem; }.stats-metric-card p { font-size:.58rem; }.stats-insights-grid, .stats-detail-grid { grid-template-columns:1fr; gap:10px; }.stats-activity-card { grid-column:auto; min-height:215px; }.stats-activity-bars { gap:6px; height:150px; }.stats-activity-bar-wrap small { font-size:.52rem; }.stats-donut-card, .stats-genres-card { min-height:auto; }.stats-habits-card { grid-column:auto; }.stats-surface { padding:14px; border-radius:14px; }.stats-detail-grid { margin-bottom:10px; }.stats-bottom-grid { gap:10px; }.stats-history-list > div { width:78px; flex-basis:78px; }.stats-history-list .stats-title-art { height:98px; }.stats-review-metrics, .stats-review-highlights { grid-template-columns:repeat(2,1fr); gap:12px 0; }.stats-review-metrics span:nth-child(2), .stats-review-highlights span:nth-child(2) { border-right:0; }.stats-tabs button { height:35px; padding:0 12px; font-size:.78rem; }.stats-watched-movies-heading { align-items:flex-start; flex-direction:column; gap:6px; }.stats-tv-history-item { align-items:flex-start; }.stats-tv-history-item time { padding-top:2px; } }
+@media (max-width: 620px) {
+  .stats-movie-history-grid { grid-template-columns: 1fr; gap: 0; overflow: hidden; margin-bottom: 22px; border: 1px solid var(--border-soft); border-radius: 15px; background: rgba(14,20,34,.74); }
+  .stats-movie-history-grid .stats-watched-movie-card { display: flex; align-items: center; gap: 11px; min-height: 68px; padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,.06); }
+  .stats-movie-history-grid .stats-watched-movie-card:last-child { border-bottom: 0; }
+  .stats-movie-history-grid .movie-card-button { display: flex; flex: 1 1 auto; align-items: center; gap: 11px; width: auto; min-width: 0; text-align: left; }
+  .stats-movie-history-grid .movie-card-poster { width: 32px; height: 46px; flex: 0 0 32px; aspect-ratio: auto; border-radius: 5px; }
+  .stats-movie-history-grid .movie-card-poster::after { display: none; }
+  .stats-movie-history-grid .movie-card-watched-badge { right: 2px; bottom: 2px; left: auto; width: 14px; height: 14px; border-radius: 4px; }
+  .stats-movie-history-grid .movie-card-watched-badge svg { width: 9px; height: 9px; }
+  .stats-movie-history-grid .movie-card-copy { min-width: 0; }
+  .stats-movie-history-grid .movie-card-copy h3 { margin: 0 0 3px; font-size: .8rem; }
+  .stats-movie-history-grid .movie-card-copy p { overflow: hidden; color: var(--text-muted); font-size: .67rem; text-overflow: ellipsis; white-space: nowrap; }
+  .stats-movie-history-grid .movie-card-copy .rating-row { display: none; }
+  .stats-movie-history-grid .stats-watched-movie-card > p { flex: 0 0 auto; margin: 0 0 0 auto; color: var(--text-secondary); font-size: .67rem; text-align: right; white-space: nowrap; }
+}
 @media (max-width: 620px) { .achievements-page { padding:17px 0 95px; }.achievements-heading h1 { font-size:1.8rem; }.achievements-heading { flex-direction:column; }.achievement-grid { grid-template-columns:1fr; }.achievement-toast { left:14px; right:14px; bottom:80px; min-width:0; }.watch-together-celebration { right:14px; bottom:145px; max-width:calc(100vw - 28px); } }
 @media (max-width: 980px) { .achievement-recent-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }.achievement-toolbar { align-items:flex-start; flex-direction:column; }.achievements-page .achievement-filters { justify-content:flex-start; } }
 @media (max-width: 620px) { .achievements-banner { min-height:150px; margin-bottom:11px; padding:19px 17px; }.achievements-banner-copy { max-width:78%; }.achievements-banner-copy h1 { font-size:1.8rem; }.achievements-banner-copy p { font-size:.75rem; }.achievements-banner-art { width:40%; opacity:.64; }.achievements-reel { right:-12%; width:142px; height:142px; }.achievements-popcorn { right:0; width:60px; }.achievement-summary-grid { gap:8px; margin-bottom:12px; }.achievement-summary-card { min-height:72px; gap:8px; padding:9px; }.achievement-summary-icon { width:34px; height:34px; border-radius:9px; }.achievement-summary-icon svg { width:18px; }.achievement-completion-ring { width:36px; height:36px; }.achievement-completion-ring::before { width:29px; height:29px; }.achievement-completion-ring > span { width:24px; height:24px; }.achievement-completion-ring svg { width:13px; }.achievement-summary-card > div > span { font-size:.61rem; }.achievement-summary-card strong { font-size:1.05rem; }.achievement-summary-card strong small { margin-left:2px; font-size:.68rem; }.achievement-summary-card > div > small { font-size:.55rem; }.achievement-status-tabs { width:100%; }.achievement-status-tabs button { gap:5px; padding:0 8px; font-size:.66rem; }.achievements-page .achievement-filters { width:100%; }.achievements-page .achievement-filters label { flex:1; min-width:0; }.achievements-page .achievement-filters select { width:100%; min-width:0; padding-left:8px; padding-right:22px; font-size:.64rem; }.achievement-recent-grid { grid-template-columns:1fr; }.achievement-recent-grid .achievement-card { min-height:0; }.achievement-section-heading h2 { font-size:.94rem; } }
@@ -8160,7 +8175,7 @@ html[data-theme='halloween'] ::selection {
 .tv-detail-activity, .tv-detail-cast { padding: 16px; border: 1px solid rgba(158, 140, 218, .17); border-radius: 14px; background: linear-gradient(145deg, rgba(21, 27, 47, .92), rgba(12, 17, 31, .92)); }.tv-detail-panel .section-header { margin-bottom: 14px; }.tv-detail-panel .section-header > span { color: #c485ff; font-size: .78rem; }
 .tv-detail-activity .section-header { display: flex; align-items: baseline; gap: 8px; }.tv-detail-activity .section-header span { margin-left: auto; color: #ddd8ed; font-size: .76rem; }.tv-detail-progress { height: 10px; overflow: hidden; border-radius: 999px; background: #252d45; }.tv-detail-progress span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #8f54f7, #c47cff); }.tv-detail-activity-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 14px; padding-top: 13px; border-top: 1px solid rgba(255,255,255,.1); color: #ccc6e0; font-size: .8rem; }.tv-detail-activity-footer span { display: inline-flex; align-items: center; gap: 7px; }.tv-detail-activity-footer svg { width: 18px; color: #e6dff4; }.tv-detail-activity-footer button { border: 0; padding: 0; color: #c179ff; background: transparent; font: inherit; font-size: .78rem; cursor: pointer; }
 .tv-detail-cast-list { display: flex; gap: 11px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: none; }.tv-detail-cast-list::-webkit-scrollbar { display:none; }.tv-detail-cast-card { flex: 0 0 78px; min-width: 0; padding: 0; border: 0; color: var(--text-primary); background: transparent; font: inherit; text-align: center; cursor: pointer; }.tv-detail-cast-card:disabled { cursor: default; opacity: .7; }.tv-detail-cast-avatar { width: 68px; height: 68px; margin: 0 auto 7px; border: 1px solid rgba(255,255,255,.27); border-radius: 50%; background-color: #282e40; background-position: center; background-size: cover; }.tv-detail-cast-card strong, .tv-detail-cast-card small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.tv-detail-cast-card strong { font-size: .7rem; }.tv-detail-cast-card small { margin-top: 3px; color: var(--text-secondary); font-size: .63rem; }
-.tv-detail-recommendation-list { display: flex; gap: 12px; overflow-x: auto; padding: 2px 1px 7px; scrollbar-width: thin; }.tv-detail-recommendation { flex: 0 0 144px; min-width: 0; padding: 0; border: 0; color: var(--text-primary); background: transparent; font: inherit; text-align: left; cursor: pointer; }.tv-detail-recommendation img { display: block; aspect-ratio: 1.65; border: 1px solid rgba(255,255,255,.1); border-radius: 9px; background: #242a3d; }.tv-detail-recommendation span, .tv-detail-recommendation small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.tv-detail-recommendation span { margin-top: 7px; font-size: .8rem; font-weight: 700; }.tv-detail-recommendation small { margin-top: 3px; color: #ffc95a; font-size: .71rem; }
+.tv-detail-recommendation-list { display: flex; align-items: flex-start; gap: 12px; overflow-x: auto; overflow-y: hidden; padding: 2px 1px 7px; scrollbar-width: thin; }.tv-detail-recommendation { flex: 0 0 144px; min-width: 0; padding: 0; border: 0; color: var(--text-primary); background: transparent; font: inherit; text-align: left; cursor: pointer; }.tv-detail-recommendation img { display: block; width: 100%; height: auto; aspect-ratio: 2 / 3; object-fit: cover; border: 1px solid rgba(255,255,255,.1); border-radius: 9px; background: #242a3d; }.tv-detail-recommendation span, .tv-detail-recommendation small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.tv-detail-recommendation span { margin-top: 7px; font-size: .8rem; font-weight: 700; }.tv-detail-recommendation small { margin-top: 3px; color: #ffc95a; font-size: .71rem; }
 .tv-detail-facts .movie-detail-fact { min-width: 0; }
 
 @media (max-width: 920px) { .tv-detail-layout { grid-template-columns: minmax(0, 1fr) 270px; }.tv-detail-hero-content { grid-template-columns: 180px minmax(0, 1fr); }.tv-detail-episode-grid { grid-template-columns: 1fr; } }
@@ -9153,3 +9168,217 @@ html[data-theme] .admin-shell .admin-summary-card, html[data-theme] .admin-shell
 html[data-theme] .admin-shell .admin-job-row { border-color: #29364d; background: transparent; box-shadow: none; }
 html[data-theme] .admin-shell .admin-nav-item.active, html[data-theme] .admin-shell .admin-nav-item:hover { color: #ffbd35; border-left-color: #ffbd35; background: #ffbd3518; box-shadow: none; }
 @media (max-width: 1100px) { html[data-theme] .admin-shell .admin-job-row { border-color: #2b3a55; background: #101b2d; } }
+
+/* Christmas keeps live content and the familiar purple controls within a snowy,
+   midnight-blue setting. Every decoration is a non-interactive background. */
+:root[data-theme='christmas'] {
+  --bg-base: #050b18;
+  --bg-shell: #091224;
+  --surface: rgba(12, 21, 39, .94);
+  --border-soft: rgba(194, 219, 244, .13);
+  --border-strong: rgba(194, 219, 244, .25);
+  --text-primary: #f6f7ff;
+  --text-secondary: #ccd5e7;
+  --text-muted: #a8b9d1;
+  --accent: #b568ff;
+  --accent-soft: rgba(174, 88, 255, .18);
+}
+html[data-theme='christmas'] .app-shell::before {
+  background: url('/themes/christmas/garland.svg') left top / 480px 70px repeat-x,
+    radial-gradient(ellipse at 80% 0, #15335566, transparent 60%),
+    radial-gradient(ellipse at 0 80%, #3f201f44, transparent 45%);
+}
+html[data-theme='christmas'] .app-shell::after {
+  content: '';
+  position: fixed;
+  inset: -180px 0 0;
+  z-index: 4;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='251' height='227' viewBox='0 0 251 227'%3E%3Cg transform='translate(60 42) scale(.6)' fill='none' stroke='%23e5efff' stroke-opacity='.65' stroke-width='1.5' stroke-linecap='round'%3E%3Cpath d='M0-8V8M-7-4L7 4M-7 4L7-4M-3-6L0-4L3-6M-3 6L0 4L3 6M-6 0L-4-2L-4-5M6 0L4 2L4 5'/%3E%3C/g%3E%3C/svg%3E"),
+    radial-gradient(circle, #f3f8ffb3 1.2px, transparent 2px),
+    radial-gradient(circle, #e5efff70 2px, transparent 3px),
+    radial-gradient(circle, #ffffff55 .9px, transparent 1.5px);
+  background-size: 251px 227px, 137px 173px, 293px 263px, 83px 113px;
+  background-position: 0 0, 12px 0, 110px 95px, 30px 75px;
+  animation: christmas-snow 24s linear infinite;
+}
+@keyframes christmas-snow {
+  to { transform: translateY(173px); }
+}
+html[data-theme='christmas'] :is(.sidebar, .hero-panel, .next-up-section) {
+  border: 1px solid #acc4df66;
+  box-shadow: 0 -3px 0 -1px #e3eaf0cc, 0 1px 22px #ffb95817, var(--shadow-panel);
+}
+html[data-theme='christmas'] .sidebar {
+  background: linear-gradient(#081020f0, #081020e8),
+    url('/themes/christmas/scene.webp') 80% bottom / auto 620px;
+}
+html[data-theme='christmas'] :is(.sidebar, .hero-panel, .next-up-section)::after {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto;
+  height: 66px;
+  z-index: 3;
+  pointer-events: none;
+  background: url('/themes/christmas/garland.svg') left top / 480px 70px repeat-x;
+}
+html[data-theme='christmas'] .sidebar::after { height: 36px; background-size: 330px 48px; }
+html[data-theme='christmas'] .brand { position: relative; padding-top: 12px; }
+html[data-theme='christmas'] .brand::after {
+  content: '🎅';
+  position: absolute;
+  right: -9px;
+  top: -4px;
+  font-size: 25px;
+  transform: rotate(15deg);
+  pointer-events: none;
+}
+html[data-theme='christmas'] :is(.searchbar, .profile-button, .icon-button, .mobile-header, .mobile-nav) {
+  border-color: #a4bdd333;
+  background-color: #0b1427ed;
+}
+html[data-theme='christmas'] .hero-panel {
+  position: relative;
+  min-height: 460px;
+  background: linear-gradient(90deg, #071024c9, #08132444 68%, #07102499),
+    url('/themes/christmas/scene.webp') center / cover;
+}
+html[data-theme='christmas'] .hero-copy { position: relative; z-index: 2; padding-top: 55px; padding-bottom: 40px; }
+html[data-theme='christmas'] .hero-copy h1 { text-shadow: 0 3px 25px #0009; }
+html[data-theme='christmas'] .hero-art {
+  background: transparent;
+  margin-top: 44px;
+  margin-bottom: 20px;
+  border-radius: 18px;
+  box-shadow: 0 12px 40px #0004;
+}
+html[data-theme='christmas'] .hero-art:not(.has-image) { box-shadow: none; }
+html[data-theme='christmas'] .hero-art.tonight-pick-art::before { background: linear-gradient(0deg, #081225ee, transparent 65%); }
+html[data-theme='christmas'] .hero-art img { mask-image: linear-gradient(90deg, transparent, #000 16%, #000 80%, transparent); }
+html[data-theme='christmas'] .stats-panel {
+  position: relative;
+  z-index: 2;
+  margin-top: 46px;
+  background: #0a1325d9;
+  border-color: #c6def340;
+  box-shadow: inset 0 3px #f3f6ff99;
+}
+html[data-theme='christmas'] .stat-card {
+  border: 1px solid #c6def31f;
+  background: linear-gradient(120deg, #232a40b3, #121c32e6);
+}
+html[data-theme='christmas'] .next-up-section {
+  padding-top: 60px;
+  background: linear-gradient(100deg, #0b152aef, #0b152ae8),
+    url('/themes/christmas/scene.webp') center / cover;
+}
+html[data-theme='christmas'] :is(.tonight-pick-label, .next-up-eyebrow, .section-link) { color: #d68aff; }
+html[data-theme='christmas'] :is(.home-secondary-section, .home-tertiary-section, .movies-page, .tv-shows-page, .news-page, .watchlist-page, .calendar-main-panel, .account-card, .stats-surface, .seasonal-movies-page, .watch-together-hero) {
+  border-color: #bad0e633;
+  background-color: #0a1426;
+  box-shadow: inset 0 2px 0 #dfecf444, 0 8px 30px #0002;
+}
+html[data-theme='christmas'] :is(.next-up-card, .movie-card, .tv-show-card, .achievement-card) { border-color: #c5d9ed38; }
+html[data-theme='christmas'] .nav-item.active { box-shadow: inset 0 1px #edf5ff55, 0 0 25px #b268ff15; }
+@media (max-width: 1100px) {
+  html[data-theme='christmas'] .hero-panel { min-height: 0; }
+  html[data-theme='christmas'] .hero-art { min-height: 280px; margin: 0 18px 18px; }
+}
+@media (max-width: 720px) {
+  html[data-theme='christmas'] .hero-copy { padding: 54px 20px 24px; }
+  html[data-theme='christmas'] .next-up-section { padding: 54px 18px 20px; }
+  html[data-theme='christmas'] .hero-panel { background-position: 70% center; }
+  html[data-theme='christmas'] .mobile-header { border-top: 2px solid #e7f1ff88; }
+  html[data-theme='christmas'] .app-shell::after { opacity: .6; }
+}
+@media (prefers-reduced-motion: reduce) {
+  html[data-theme='christmas'] .app-shell::after { animation: none; }
+}
+/* A tree and gifts sit beside the recommendation, above the snowy lower edge. */
+html[data-theme='christmas'] .hero-panel::before {
+  content: '';
+  position: absolute;
+  z-index: 1;
+  right: 242px;
+  bottom: 0;
+  width: 175px;
+  height: 210px;
+  pointer-events: none;
+  background: url('/themes/christmas/scene.webp') right bottom / auto 350px no-repeat;
+  mask-image: linear-gradient(90deg, transparent, #000 28%), linear-gradient(0deg, #000 70%, transparent);
+  mask-composite: intersect;
+}
+html[data-theme='christmas'] .sidebar::before {
+  content: '';
+  position: absolute;
+  inset: auto 0 0;
+  height: 260px;
+  border-radius: 0 0 28px 28px;
+  pointer-events: none;
+  opacity: .65;
+  background: url('/themes/christmas/gifts.svg') center bottom / 185px auto no-repeat,
+    url('/themes/christmas/scene.webp') right bottom / auto 390px no-repeat;
+  mask-image: linear-gradient(0deg, #000, transparent);
+}
+@media (max-width: 1100px) {
+  html[data-theme='christmas'] .hero-panel::before { display: none; }
+}
+
+/* Gifts occupy their own space and are inline SVG, so they cannot disappear
+   behind artwork or depend on an additional static asset being deployed. */
+.christmas-gifts { display: none; }
+.christmas-hero-welcome { display: contents; }
+html[data-theme='christmas'] .christmas-hero-welcome {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+html[data-theme='christmas'] .christmas-hero-welcome .eyebrow { margin: 0; }
+html[data-theme='christmas'] .christmas-gifts {
+  display: block;
+  pointer-events: none;
+  flex-shrink: 0;
+  filter: drop-shadow(0 5px 12px #0006);
+}
+html[data-theme='christmas'] .christmas-hero-gifts {
+  width: 125px;
+  height: 90px;
+  margin: 0;
+}
+html[data-theme='christmas'] .next-up-heading {
+  position: relative;
+  min-height: 140px;
+  padding-right: 195px;
+}
+html[data-theme='christmas'] .christmas-next-up-gifts {
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 185px;
+  height: 135px;
+}
+@media (max-width: 720px) {
+  html[data-theme='christmas'] .christmas-hero-gifts {
+    width: 110px;
+    height: 80px;
+  }
+  html[data-theme='christmas'] .next-up-heading { padding-right: 115px; }
+  html[data-theme='christmas'] .christmas-next-up-gifts { width: 115px; height: 95px; }
+}
+
+.movie-catalog-filters {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 18px;
+  padding: 18px; margin-bottom: 24px; border: 1px solid rgba(168,133,255,.2);
+  border-radius: 14px; background: var(--surface-secondary, rgba(255,255,255,.03));
+}
+.movie-catalog-filters > label:not(.movie-catalog-checkbox) { display: grid; gap: 7px; flex: 1 1 130px; }
+.movie-catalog-filters label, .movie-rating-filter legend { color: var(--text-secondary); font-size: .82rem; }
+.movie-catalog-filters select { width: 100%; padding: 9px; border: 1px solid rgba(168,133,255,.3); border-radius: 8px; color: var(--text-primary); background: var(--bg-card, #171827); font: inherit; }
+.movie-rating-filter { flex: 1 1 210px; min-width: 0; padding: 0; border: 0; }
+.movie-rating-filter label { display: flex; align-items: center; gap: 8px; }
+.movie-rating-filter input { width: 100%; accent-color: #a883ff; }
+.movie-catalog-checkbox { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 6px; }
+.movie-catalog-checkbox input { accent-color: #a883ff; }
+.movie-catalog-checkbox span { grid-column: 2; color: var(--text-muted); font-size: .72rem; }

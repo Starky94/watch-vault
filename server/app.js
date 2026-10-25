@@ -125,6 +125,7 @@ import {
   listAuthorsForBook,
   listBooksForAuthor,
   listGenres,
+  listTvGenres,
   listMovieSummariesByTmdbIds,
   listNewsArticles,
   removeNewsArticleLikeForUser,
@@ -2171,7 +2172,20 @@ export async function createApp(pool, options = {}) {
       const hideWatched = request.query.hideWatched === 'true'
       const user = hideWatched ? await getAuthenticatedUser(pool, request) : null
       if (hideWatched && !user) return response.status(401).json({ error: 'Authentication required' })
+      const filters = {}
+      for (const [key, min, max] of [['year', 1870, 9999], ['decade', 1870, 9990], ['minRating', 0, 10], ['maxRating', 0, 10]]) {
+        if (request.query[key] === undefined) continue
+        const raw = request.query[key]
+        const value = typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : NaN
+        if (!Number.isFinite(value) || value < min || value > max || ((key === 'year' || key === 'decade') && !Number.isInteger(value)) || (key === 'decade' && value % 10 !== 0)) {
+          return response.status(400).json({ error: `Invalid ${key} filter` })
+        }
+        filters[key] = value
+      }
+      if ((filters.minRating ?? 0) > (filters.maxRating ?? 10)) return response.status(400).json({ error: 'Minimum rating must not exceed maximum rating' })
       const movies = await listMovies(pool, {
+        ...filters,
+        streamingOnly: request.query.streamingOnly === 'true',
         genre,
         sort,
         excludeWatchedForUsername: user?.username,
@@ -2585,10 +2599,36 @@ export async function createApp(pool, options = {}) {
   app.get('/api/movies/top-rated', movieCollectionHandler(listTopRatedMovies))
   app.get('/api/movies/upcoming', movieCollectionHandler(listUpcomingMovies))
 
+  app.get('/api/tv/genres', async (_request, response, next) => {
+    try {
+      const genres = await listTvGenres(pool)
+      response.json({ genres: genres.map((genre) => ({ id: genre.tmdb_genre_id, name: genre.name })) })
+    } catch (error) { next(error) }
+  })
+
   app.get('/api/tv', async (request, response, next) => {
     try {
       const pagination = readPaginationQuery(request, { defaultLimit: 30 })
+      const hideWatched = request.query.hideWatched === 'true'
+      const user = hideWatched ? await getAuthenticatedUser(pool, request) : null
+      if (hideWatched && !user) return response.status(401).json({ error: 'Authentication required' })
+      const filters = {}
+      for (const [key, min, max] of [['year', 1870, 9999], ['decade', 1870, 9990], ['minRating', 0, 10], ['maxRating', 0, 10]]) {
+        if (request.query[key] === undefined) continue
+        const raw = request.query[key]
+        const value = typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : NaN
+        if (!Number.isFinite(value) || value < min || value > max || ((key === 'year' || key === 'decade') && !Number.isInteger(value)) || (key === 'decade' && value % 10 !== 0)) {
+          return response.status(400).json({ error: `Invalid ${key} filter` })
+        }
+        filters[key] = value
+      }
+      if ((filters.minRating ?? 0) > (filters.maxRating ?? 10)) return response.status(400).json({ error: 'Minimum rating must not exceed maximum rating' })
       const shows = await listTvShows(pool, {
+        ...filters,
+        genre: typeof request.query.genre === 'string' ? request.query.genre.trim() : '',
+        streamingOnly: request.query.streamingOnly === 'true',
+        excludeWatchedForUsername: user?.username,
+        pageSize: pagination.limit,
         limit: pagination.limit + 1,
         page: pagination.page,
       })

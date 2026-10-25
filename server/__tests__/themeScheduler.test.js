@@ -58,7 +58,16 @@ test('seasonal theme resolver honors Halloween boundaries in Bucharest', () => {
   assert.equal(resolveScheduledTheme({ date: date('2026-10-31T22:00:00Z') }), 'default')
 })
 
-test('available Autumn and Halloween schedules do not overlap', () => {
+test('seasonal theme resolver honors inclusive Christmas boundaries in Bucharest every year', () => {
+  for (const year of [2026, 2027]) {
+    assert.equal(resolveScheduledTheme({ date: date(`${year}-12-05T21:59:59Z`) }), 'default')
+    assert.equal(resolveScheduledTheme({ date: date(`${year}-12-05T22:00:00Z`) }), 'christmas')
+    assert.equal(resolveScheduledTheme({ date: date(`${year}-12-26T21:59:59Z`) }), 'christmas')
+    assert.equal(resolveScheduledTheme({ date: date(`${year}-12-26T22:00:00Z`) }), 'default')
+  }
+})
+
+test('available seasonal schedules do not overlap', () => {
   assert.ok(seasonalThemes.every((theme) => theme.schedule?.startsOn && theme.schedule?.endsOn))
   assert.deepEqual(seasonalThemes.find(({ key }) => key === 'new-years-eve').schedule, { startsOn: '12-28', endsOn: '01-03' })
   assert.doesNotThrow(() => validateScheduledThemes())
@@ -198,6 +207,30 @@ test('authenticated Admin can run the seasonal scheduler and receive the public 
       timeZone: 'Europe/Bucharest',
     })
     assert.deepEqual(await (await fetch(`${baseUrl}/api/theme`)).json(), { activeTheme: 'autumn' })
+  } finally {
+    await closeServer(server)
+  }
+})
+
+test('Admin can activate Christmas globally and restore the default theme', async () => {
+  const app = await createApp(createThemePool())
+  const server = app.listen(0, '127.0.0.1')
+  await new Promise((resolve, reject) => {
+    server.once('listening', resolve)
+    server.once('error', reject)
+  })
+  try {
+    const baseUrl = `http://127.0.0.1:${server.address().port}`
+    for (const activeTheme of ['christmas', 'default']) {
+      const response = await fetch(`${baseUrl}/api/admin/theme`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Cookie: sessionCookieFor('florind') },
+        body: JSON.stringify({ activeTheme }),
+      })
+      assert.equal(response.status, 200)
+      assert.deepEqual(await response.json(), { activeTheme })
+      assert.deepEqual(await (await fetch(`${baseUrl}/api/theme`)).json(), { activeTheme })
+    }
   } finally {
     await closeServer(server)
   }

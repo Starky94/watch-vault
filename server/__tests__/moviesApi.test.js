@@ -14,6 +14,7 @@ function isSchemaSetupQuery(sql) {
     sql.includes('CREATE TABLE IF NOT EXISTS movie_keyword') ||
     sql.includes('CREATE TABLE IF NOT EXISTS movie_collections') ||
     sql.includes('CREATE TABLE IF NOT EXISTS trending_video_') ||
+    sql.includes('CREATE TABLE IF NOT EXISTS trending_game_video_cache') ||
     sql.includes('CREATE INDEX IF NOT EXISTS movie_collections') ||
     sql.includes('CREATE TABLE IF NOT EXISTS books') ||
     sql.includes('CREATE TABLE IF NOT EXISTS games') ||
@@ -5974,4 +5975,103 @@ test('episode ratings upsert one score per user and validate the selected episod
   assert.match(calls[0].sql, /INSERT INTO tv_episode_ratings/i)
   assert.match(calls[0].sql, /s\.season_number > 0/i)
   assert.match(calls[0].sql, /ON CONFLICT \(user_id, tv_episode_id\)/i)
+})
+
+
+test('all movies combines filters before pagination and only accepts subscription providers', async () => {
+  let query
+  const pool = { async query(sql, params) { query = { sql, params }; return { rows: [] } } }
+  await listMovies(pool, { genre: 'Drama', year: 2024, decade: 2020, minRating: 6.5, maxRating: 9, streamingOnly: true, excludeWatchedForUsername: 'viewer', page: 3, limit: 31, pageSize: 30 })
+  assert.deepEqual(query.params, [31, 60, 'Drama', 'viewer', 2024, 2020, 6.5, 9])
+  assert.match(query.sql, /EXTRACT\(YEAR FROM movies.release_date\) = \$5/)
+  assert.match(query.sql, /FLOOR\(EXTRACT\(YEAR FROM movies.release_date\) \/ 10\) \* 10 = \$6/)
+  assert.match(query.sql, /movies.vote_average >= \$7/)
+  assert.match(query.sql, /movies.vote_average <= \$8/)
+  assert.match(query.sql, /->'flatrate'/)
+  assert.doesNotMatch(query.sql, /->'(rent|buy)'/)
+  assert.match(query.sql, /watch\/providers,results,RO/)
+  assert.match(query.sql, /LIMIT \$1\s+OFFSET \$2/)
+})
+
+test('GET all movies validates filters and preserves the pagination lookahead', async () => {
+  const queries = []
+  const pool = { async query(sql, params) {
+    if (isSchemaSetupQuery(sql)) return { rowCount: null }
+    if (sql.includes('FROM movies')) {
+      queries.push({ sql, params })
+      return { rows: Array.from({ length: 31 }, (_, index) => ({ tmdb_id: index + 1, title: `Movie ${index + 1}` })) }
+    }
+    throw new Error(`Unexpected query: ${sql}`)
+  } }
+  const app = await createApp(pool)
+  const server = app.listen(0)
+  try {
+    const base = `http://127.0.0.1:${server.address().port}/api/movies`
+    const response = await fetch(`${base}?page=2&year=2024&minRating=6.5&maxRating=9&streamingOnly=true`)
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.movies.length, 30)
+    assert.equal(payload.pagination.page, 2)
+    assert.equal(payload.pagination.hasNextPage, true)
+    assert.deepEqual(queries[0].params, [31, 30, 2024, 6.5, 9])
+    for (const query of ['year=abc', 'decade=2021', 'minRating=-1', 'maxRating=11', 'minRating=9&maxRating=2', 'year=']) {
+      assert.equal((await fetch(`${base}?${query}`)).status, 400, query)
+    }
+    assert.equal(queries.length, 1)
+  } finally { await closeServer(server) }
+})
+
+test('all TV shows combines filters, scopes watched exclusions, and paginates without skipped rows', async () => {
+  let query
+  const pool = { async query(sql, params) { query = { sql, params }; return { rows: [] } } }
+  await listTvShows(pool, { genre: 'Drama', year: 2024, decade: 2020, minRating: 6.5, maxRating: 9, streamingOnly: true, excludeWatchedForUsername: 'viewer', page: 3, limit: 31, pageSize: 30 })
+  assert.deepEqual(query.params, [31, 60, 'Drama', 'viewer', 2024, 2020, 6.5, 9])
+  assert.match(query.sql, /EXTRACT\(YEAR FROM tv_shows.first_air_date\) = \$5/)
+  assert.match(query.sql, /FLOOR\(EXTRACT\(YEAR FROM tv_shows.first_air_date\) \/ 10\) \* 10 = \$6/)
+  assert.match(query.sql, /tv_shows.vote_average >= \$7/)
+  assert.match(query.sql, /tv_shows.vote_average <= \$8/)
+  assert.match(query.sql, /watched_tv_shows.tv_show_id = tv_shows.id AND users.username = \$4/)
+  assert.match(query.sql, /selected_genres.tmdb_genre_id = ANY\(tv_shows.genre_ids\)/)
+  assert.match(query.sql, /->'flatrate'/)
+  assert.doesNotMatch(query.sql, /->'(rent|buy)'/)
+  assert.match(query.sql, /LIMIT \$1\s+OFFSET \$2/)
+  await listTvShows(pool, { page: 2, limit: 31, pageSize: 30 })
+  assert.deepEqual(query.params, [31, 30])
+  assert.doesNotMatch(query.sql, /watched_tv_shows|vote_average >=|vote_average <=/)
+})
+
+test('GET all TV shows validates filters, returns genres, and protects watched exclusions', async () => {
+  const queries = []
+  const pool = { async query(sql, params) {
+    if (isSchemaSetupQuery(sql)) return { rowCount: null }
+    if (sql.includes('SELECT tv_genres.tmdb_genre_id')) return { rows: [{ tmdb_genre_id: 10765, name: 'Sci-Fi & Fantasy' }] }
+    if (sql.includes('FROM users')) return { rows: [{ id: 1, username: 'viewer' }] }
+    if (sql.includes('FROM tv_shows')) {
+      queries.push({ sql, params })
+      return { rows: Array.from({ length: 31 }, (_, index) => ({ tmdb_id: index + 1, name: `Show ${index + 1}` })) }
+    }
+    throw new Error(`Unexpected query: ${sql}`)
+  } }
+  const app = await createApp(pool)
+  const server = app.listen(0)
+  try {
+    const base = `http://127.0.0.1:${server.address().port}/api/tv`
+    const response = await fetch(`${base}?page=2&year=2024&genre=Drama&minRating=6.5&maxRating=9&streamingOnly=true`)
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.shows.length, 30)
+    assert.equal(payload.pagination.page, 2)
+    assert.equal(payload.pagination.hasNextPage, true)
+    assert.deepEqual(queries[0].params, [31, 30, 'Drama', 2024, 6.5, 9])
+    assert.equal((await fetch(`${base}?hideWatched=true`)).status, 401)
+    assert.equal((await fetch(`${base}?hideWatched=true`, { headers: { Cookie: sessionCookieFor('viewer') } })).status, 200)
+    assert.deepEqual(queries[1].params, [31, 0, 'viewer'])
+    for (const query of ['year=abc', 'decade=2021', 'minRating=-1', 'maxRating=11', 'minRating=9&maxRating=2', 'year=']) {
+      assert.equal((await fetch(`${base}?${query}`)).status, 400, query)
+    }
+    assert.equal(queries.length, 2)
+    const genres = await fetch(`${base}/genres`)
+    assert.equal(genres.status, 200)
+    assert.deepEqual((await genres.json()).genres, [{ id: 10765, name: 'Sci-Fi & Fantasy' }])
+  } finally { await closeServer(server) }
 })

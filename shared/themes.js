@@ -30,6 +30,16 @@ export const seasonalThemes = [
     available: true,
   },
   { key: 'winter', name: 'Winter Theme', emoji: '❄️', date: '1 December', period: '1–27 Dec', schedule: { startsOn: '12-01', endsOn: '12-27' }, available: false },
+  {
+    key: 'christmas',
+    name: 'Christmas',
+    emoji: '🎄',
+    date: '25 December',
+    period: '6–26 Dec',
+    schedule: { startsOn: '12-06', endsOn: '12-26' },
+    tmdbKeywords: ['christmas', 'christmas tree', 'santa claus'],
+    available: true,
+  },
   { key: 'new-years-eve', name: "New Year's Eve", emoji: '🎆', date: '31 December', period: '28 Dec–3 Jan', schedule: { startsOn: '12-28', endsOn: '01-03' }, available: false },
 ]
 
