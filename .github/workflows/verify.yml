@@ -10,13 +10,17 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [24, 26]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version-file: .nvmrc
+          node-version: ${{ matrix.node-version }}
           cache: npm
       - run: npm install --global npm@12.2.0
       - run: npm ci
+      - run: npm test
       - run: npm run lint
       - run: npm run build
