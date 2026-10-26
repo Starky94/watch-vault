@@ -42,7 +42,7 @@
     "schedule:trending-videos": "node server/trendingVideoWorker.js"
   },
   "dependencies": {
-    "dotenv": "^18.0.8",
+    "dotenv": "^18.0.9",
     "express": "^5.3.0",
     "fast-xml-parser": "^5.11.2",
     "pg": "^8.23.1",
@@ -53,8 +53,8 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",
-    "oxlint": "^1.88.0",
+    "oxlint": "^1.89.0",
     "typescript": "^6.0.3",
-    "vite": "^8.3.4"
+    "vite": "^8.3.5"
   }
 }
