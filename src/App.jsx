@@ -196,7 +196,7 @@ const emptyGameActivity = {
   lastCompletedAt: null,
 }
 const movieRatingOptions = Array.from({ length: 9 }, (_value, index) => 1 + index * 0.5)
-const watchServiceOptions = ['Netflix', 'Prime Video', 'Disney+', 'Max', 'Apple TV+', 'Hulu', 'Paramount+', 'Peacock']
+const watchServiceOptions = ['Netflix', 'Prime Video', 'Disney+', 'Max', 'Apple TV+', 'Hulu', 'Cinema', 'Filelist']
 const bookCompletionFields = [
   ['favorite', 'This is a favorite'], ['translated', 'Read in translation'], ['newAuthor', 'A new-to-you author'], ['seriesStarted', 'Started a series'], ['seriesFinished', 'Finished a series'], ['classic', 'A recognized classic'], ['library', 'Borrowed from a library'], ['recommended', 'Recommended by someone'], ['plotTwist', 'A surprising plot twist'], ['madeCry', 'Made me cry'], ['madeLaugh', 'Made me laugh aloud'], ['fictionalCrush', 'A favorite character'], ['foundFamily', 'Found-family theme'], ['villainFavorite', 'Favorite villain/antihero'], ['enemiesToLovers', 'Enemies-to-lovers'], ['slowBurn', 'Slow-burn romance'], ['cozy', 'A cozy read'], ['vacation', 'Read on vacation'], ['coverEnjoyed', 'Chose it for the cover and enjoyed it'], ['coverRegretted', 'Chose it for the cover and regretted it'], ['hyped', 'A hyped or trending read'], ['moodRead', 'Picked for my mood'], ['adaptationWatched', 'Watched its adaptation'], ['bookWasBetter', 'The book was better'], ['adaptationWon', 'The adaptation was better'], ['mapUsed', 'Had a map'], ['trickyNames', 'Names were hard to pronounce'], ['slumpEscape', 'Helped end a reading slump'],
 ]
@@ -8027,7 +8027,6 @@ function TvEpisodeCatchUpDialog({ episode, earlierCount, isSaving, onCancel, onM
 
 function WatchServiceDialog({ title, onCancel, onSelect }) {
   const [service, setService] = useState('')
-  const [isOther, setIsOther] = useState(false)
 
   return createPortal(<div className="movie-rating-dialog-backdrop" role="presentation" onMouseDown={onCancel}>
     <section className="movie-rating-dialog" role="dialog" aria-modal="true" aria-labelledby="watch-service-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
@@ -8035,10 +8034,8 @@ function WatchServiceDialog({ title, onCancel, onSelect }) {
       <h2 id="watch-service-dialog-title">Where did you watch {title}?</h2>
       <p>This is optional and helps build your streaming stats.</p>
       <div className="movie-rating-options" role="radiogroup" aria-label="Watch service">
-        {watchServiceOptions.map((option) => <button key={option} type="button" className={`movie-rating-option${service === option && !isOther ? ' selected' : ''}`} role="radio" aria-checked={service === option && !isOther} onClick={() => { setService(option); setIsOther(false) }}>{option}</button>)}
-        <button type="button" className={`movie-rating-option${isOther ? ' selected' : ''}`} role="radio" aria-checked={isOther} onClick={() => { setService(''); setIsOther(true) }}>Other</button>
+        {[...watchServiceOptions, 'other'].map((option) => <button key={option} type="button" className={`movie-rating-option${service === option ? ' selected' : ''}`} role="radio" aria-checked={service === option} onClick={() => setService(option)}>{option === 'other' ? 'Other' : option}</button>)}
       </div>
-      {isOther ? <input className="watch-service-other-input" autoFocus value={service} maxLength={80} placeholder="Service name" onChange={(event) => setService(event.target.value)} /> : null}
       <div className="movie-rating-dialog-actions"><button type="button" className="secondary-button" onClick={onCancel}>Cancel</button><button type="button" className="secondary-button" onClick={() => onSelect(null)}>Skip</button><button type="button" className="primary-button" onClick={() => onSelect(service)} disabled={!service.trim()}><CheckIcon /><span>Mark watched</span></button></div>
     </section>
   </div>, document.body)

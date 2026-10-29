@@ -17,8 +17,13 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARCHIVE_PATH="$(mktemp /tmp/watchvault-8181.XXXXXX.tar.gz)"
 KEYWORD_DUMP_PATH=""
 SYNC_MOVIE_KEYWORDS="${SYNC_MOVIE_KEYWORDS:-0}"
+REMOTE_CLEANUP_REQUIRED=0
 
 cleanup() {
+  if [[ "$REMOTE_CLEANUP_REQUIRED" == "1" ]]; then
+    ssh "$REMOTE_HOST" "rm -f '$REMOTE_TMP_ARCHIVE' '$REMOTE_KEYWORD_DUMP'" >/dev/null 2>&1 || true
+  fi
+
   rm -f "$ARCHIVE_PATH"
   if [[ -n "$KEYWORD_DUMP_PATH" ]]; then
     rm -f "$KEYWORD_DUMP_PATH"
@@ -88,6 +93,7 @@ tar -czf "$ARCHIVE_PATH" \
 
 echo "Preparing ${REMOTE_HOST}:${REMOTE_DIR}..."
 ssh "$REMOTE_HOST" "mkdir -p '$REMOTE_DIR'"
+REMOTE_CLEANUP_REQUIRED=1
 
 echo "Uploading release archive..."
 scp "$ARCHIVE_PATH" "${REMOTE_HOST}:${REMOTE_TMP_ARCHIVE}"

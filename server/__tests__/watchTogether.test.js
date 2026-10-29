@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createApp, sessionCookieFor } from './sessionTestHelpers.js'
-import { buildWatchTogetherRelationshipSummary, buildWatchTogetherStats, calculateCurrentWatchTogetherStreak, ensureWatchTogetherTables, evaluateWatchTogetherAchievementsForUser, getWatchTogetherAchievementProgressDetailsForUser, getWatchTogetherAchievementsForUser } from '../database.js'
+import { buildWatchTogetherRelationshipSummary, buildWatchTogetherStats, calculateCurrentWatchTogetherStreak, confirmWatchTogetherMovieForUser, ensureWatchTogetherTables, evaluateWatchTogetherAchievementsForUser, getWatchTogetherAchievementProgressDetailsForUser, getWatchTogetherAchievementsForUser, migrateWatchTogetherHistoryToPersonalLibraries } from '../database.js'
 import { ACHIEVEMENTS } from '../achievements.js'
 import { WATCH_TOGETHER_ACHIEVEMENTS, WATCH_TOGETHER_AUTOMATIC_GENRE_RULES } from '../watchTogetherAchievements.js'
 
@@ -73,6 +73,110 @@ test('shortlist deletion cascades through ballot entries and votes, including ex
   assert.match(migration, /FOREIGN KEY \(item_id\) REFERENCES watch_together_items\(id\) ON DELETE CASCADE/)
   const votes = queries.find((sql) => sql.includes('CREATE TABLE IF NOT EXISTS watch_together_votes'))
   assert.match(votes, /REFERENCES watch_together_vote_round_items\(round_id, item_id\) ON DELETE CASCADE/)
+})
+
+test('completing a shared movie ensures both partners have personal watched records without overwriting existing data', async () => {
+  const personalHistory = new Map([
+    [1, { userId: 1, movieId: 42, watchService: 'Netflix', createdAt: '2026-07-03T11:30:00.000Z' }],
+  ])
+  const sharedHistory = new Set()
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          if (['BEGIN', 'COMMIT', 'ROLLBACK'].includes(sql.trim())) return { rows: [] }
+          if (sql.includes('SELECT members.pair_id, members.user_id, movies.id AS movie_id')) {
+            return { rows: [{ pair_id: 70, user_id: 2, movie_id: 42 }] }
+          }
+          if (sql.includes('SELECT items.id, items.media_id FROM watch_together_items')) {
+            return { rows: [{ id: 90, media_id: 42 }] }
+          }
+          if (sql.includes('INSERT INTO watch_together_item_confirmations')) return { rows: [] }
+          if (sql.includes('SELECT COUNT(*)::INTEGER AS count FROM watch_together_item_confirmations')) return { rows: [{ count: 2 }] }
+          if (sql.includes('INSERT INTO watched_movies (user_id, movie_id)')) {
+            assert.match(sql, /ON CONFLICT \(user_id, movie_id\) DO NOTHING/i)
+            const [pairId, movieId] = params
+            assert.equal(pairId, 70)
+            for (const userId of [1, 2]) {
+              if (!personalHistory.has(userId)) personalHistory.set(userId, { userId, movieId, watchService: null, createdAt: '2026-07-03T11:35:00.000Z' })
+            }
+            return { rows: [] }
+          }
+          if (sql.includes('INSERT INTO watch_together_watched_movies')) {
+            const [pairId, movieId] = params
+            const key = `${pairId}:${movieId}`
+            const wasInserted = !sharedHistory.has(key)
+            sharedHistory.add(key)
+            return { rows: wasInserted ? [{ watched_together_at: '2026-07-03T11:35:00.000Z' }] : [] }
+          }
+          if (sql.includes('DELETE FROM watch_together_plans') || sql.includes('DELETE FROM watch_together_items')) return { rows: [] }
+          throw new Error(`Unexpected query: ${sql}`)
+        },
+        release() {},
+      }
+    },
+  }
+
+  const first = await confirmWatchTogetherMovieForUser(pool, { username: 'alex', movieId: 42 })
+  assert.equal(first.status, 'completed')
+  assert.deepEqual(personalHistory.get(1), { userId: 1, movieId: 42, watchService: 'Netflix', createdAt: '2026-07-03T11:30:00.000Z' })
+  assert.deepEqual(personalHistory.get(2), { userId: 2, movieId: 42, watchService: null, createdAt: '2026-07-03T11:35:00.000Z' })
+
+  const repeated = await confirmWatchTogetherMovieForUser(pool, { username: 'alex', movieId: 42 })
+  assert.equal(repeated.status, 'completed')
+  assert.equal(personalHistory.size, 2)
+  assert.equal(sharedHistory.size, 1)
+})
+
+test('historical Watch Together library migration backfills personal history once', async () => {
+  let migrationApplied = false
+  const queries = []
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          queries.push({ sql, params })
+          if (['BEGIN', 'COMMIT', 'ROLLBACK'].includes(sql.trim())) return { rows: [] }
+          if (sql.includes('pg_advisory_xact_lock')) return { rows: [] }
+          if (sql.includes('CREATE TABLE IF NOT EXISTS watchvault_data_migrations')) return { rows: [] }
+          if (sql.includes('SELECT 1 FROM watchvault_data_migrations')) return { rows: migrationApplied ? [{ '?column?': 1 }] : [] }
+          if (sql.includes('INSERT INTO watched_movies')) {
+            assert.match(sql, /watched\.watched_together_at/i)
+            assert.match(sql, /ON CONFLICT \(user_id, movie_id\) DO NOTHING/i)
+            return { rows: [], rowCount: 3 }
+          }
+          if (sql.includes('INSERT INTO watched_tv_episodes')) {
+            assert.match(sql, /watched\.watched_together_at/i)
+            assert.match(sql, /ON CONFLICT \(user_id, tv_episode_id\) DO NOTHING/i)
+            return { rows: [], rowCount: 5 }
+          }
+          if (sql.includes('WITH shared_shows AS')) {
+            assert.match(sql, /completedTvShowSql|season_number/i)
+            assert.match(sql, /ON CONFLICT \(user_id, tv_show_id\) DO NOTHING/i)
+            return { rows: [], rowCount: 1 }
+          }
+          if (sql.includes('DELETE FROM tv_watchlist_items wi')) return { rows: [], rowCount: 1 }
+          if (sql.includes('INSERT INTO watchvault_data_migrations')) {
+            migrationApplied = true
+            return { rows: [] }
+          }
+          throw new Error(`Unexpected query: ${sql}`)
+        },
+        release() {},
+      }
+    },
+  }
+
+  const first = await migrateWatchTogetherHistoryToPersonalLibraries(pool)
+  assert.deepEqual(first, { status: 'applied', moviesInserted: 3, episodesInserted: 5, showsInserted: 1 })
+  assert.equal(queries.some(({ sql }) => sql.includes('INSERT INTO watched_movies')), true)
+  assert.equal(queries.some(({ sql }) => sql.includes('INSERT INTO watched_tv_episodes')), true)
+  assert.equal(queries.some(({ sql }) => sql.includes('INSERT INTO watched_tv_shows')), true)
+
+  const previousQueryCount = queries.length
+  const second = await migrateWatchTogetherHistoryToPersonalLibraries(pool)
+  assert.deepEqual(second, { status: 'already_applied', moviesInserted: 0, episodesInserted: 0, showsInserted: 0 })
+  assert.equal(queries.slice(previousQueryCount).some(({ sql }) => sql.includes('INSERT INTO watched_movies')), false)
 })
 
 test('Watch Together relationship summary counts titles and uses an active local-day streak', () => {

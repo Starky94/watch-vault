@@ -806,6 +806,72 @@ export async function ensureWatchTogetherTables(pool) {
   `)
 }
 
+export async function migrateWatchTogetherHistoryToPersonalLibraries(pool) {
+  const migrationKey = 'watch-together-history-to-personal-libraries-v1'
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1), 1)', [`watchvault:${migrationKey}`])
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS watchvault_data_migrations (
+        migration_key TEXT PRIMARY KEY,
+        applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `)
+    const applied = await client.query('SELECT 1 FROM watchvault_data_migrations WHERE migration_key = $1', [migrationKey])
+    if (applied.rows[0]) {
+      await client.query('COMMIT')
+      return { status: 'already_applied', moviesInserted: 0, episodesInserted: 0, showsInserted: 0 }
+    }
+
+    const movies = await client.query(`
+      INSERT INTO watched_movies (user_id, movie_id, created_at)
+      SELECT members.user_id, watched.movie_id, watched.watched_together_at
+      FROM watch_together_watched_movies watched
+      JOIN watch_together_pair_members members ON members.pair_id = watched.pair_id
+      ON CONFLICT (user_id, movie_id) DO NOTHING
+    `)
+    const episodes = await client.query(`
+      INSERT INTO watched_tv_episodes (user_id, tv_episode_id, watched_at)
+      SELECT members.user_id, watched.tv_episode_id, watched.watched_together_at
+      FROM watch_together_watched_episodes watched
+      JOIN watch_together_pair_members members ON members.pair_id = watched.pair_id
+      ON CONFLICT (user_id, tv_episode_id) DO NOTHING
+    `)
+    const shows = await client.query(`
+      WITH shared_shows AS (
+        SELECT members.user_id, seasons.tv_show_id, MAX(watched.watched_together_at) AS completed_at
+        FROM watch_together_watched_episodes watched
+        JOIN watch_together_pair_members members ON members.pair_id = watched.pair_id
+        JOIN tv_episodes episodes ON episodes.id = watched.tv_episode_id
+        JOIN tv_seasons seasons ON seasons.id = episodes.tv_season_id
+        WHERE seasons.season_number > 0
+        GROUP BY members.user_id, seasons.tv_show_id
+      )
+      INSERT INTO watched_tv_shows (user_id, tv_show_id, created_at)
+      SELECT shared.user_id, shows.id, shared.completed_at
+      FROM shared_shows shared
+      JOIN tv_shows shows ON shows.id = shared.tv_show_id
+      WHERE (${completedTvShowSql('shows', 'shared.user_id')})
+      ON CONFLICT (user_id, tv_show_id) DO NOTHING
+    `)
+    await reconcileCompletedTvWatchlists(client)
+    await client.query('INSERT INTO watchvault_data_migrations (migration_key) VALUES ($1)', [migrationKey])
+    await client.query('COMMIT')
+    return {
+      status: 'applied',
+      moviesInserted: movies.rowCount ?? 0,
+      episodesInserted: episodes.rowCount ?? 0,
+      showsInserted: shows.rowCount ?? 0,
+    }
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally {
+    client.release()
+  }
+}
+
 export async function ensureBooksTable(pool) {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS books (
@@ -3322,6 +3388,14 @@ export async function confirmWatchTogetherMovieForUser(pool, { username, movieId
       await client.query('COMMIT')
       return { status: 'waiting_for_partner' }
     }
+    await client.query(
+      `INSERT INTO watched_movies (user_id, movie_id)
+       SELECT members.user_id, $2
+       FROM watch_together_pair_members members
+       WHERE members.pair_id = $1
+       ON CONFLICT (user_id, movie_id) DO NOTHING`,
+      [row.pair_id, row.movie_id]
+    )
     const history = await client.query(
       `INSERT INTO watch_together_watched_movies (pair_id, movie_id) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING watched_together_at`,
       [row.pair_id, row.movie_id]

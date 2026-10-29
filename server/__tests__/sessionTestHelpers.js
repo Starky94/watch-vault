@@ -12,6 +12,7 @@ export function sessionCookieFor(username) {
 export function createApp(pool, options = {}) {
   return createProductionApp(pool, {
     ...options,
+    migrateWatchTogetherHistory: options.migrateWatchTogetherHistory ?? false,
     initializeAuthSchema: async () => {},
     persistSession: async () => {},
     resolveSession: async (_pool, tokenHash) => {

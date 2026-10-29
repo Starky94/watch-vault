@@ -45,6 +45,7 @@ import {
   ensureSeasonalThemeSchedulesTable,
   ensureAdminJobExecutionsTable,
   ensureRssSourcesTable,
+  migrateWatchTogetherHistoryToPersonalLibraries,
   getActiveSiteTheme,
   getSeasonalThemesWithSavedSchedules,
   getAdminJobLastExecutions,
@@ -269,6 +270,7 @@ export async function createApp(pool, options = {}) {
         requireDatabase: false,
         requireTmdbToken: true,
       }),
+    migrateWatchTogetherHistory = true,
   } = options
 
   async function hydrateMissingMovie(movieId) {
@@ -340,6 +342,7 @@ export async function createApp(pool, options = {}) {
   await ensureBooksTable(pool)
   await ensureGamesTable(pool)
   await ensureTvDetailTables(pool)
+  if (migrateWatchTogetherHistory) await migrateWatchTogetherHistoryToPersonalLibraries(pool)
   await ensureAchievementTables(pool)
   await ensureSiteThemePreferencesTable(pool)
   await ensureSeasonalThemeSchedulesTable(pool)

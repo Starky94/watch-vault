@@ -1758,6 +1758,14 @@ test('Watch Together movie confirmations also update each confirmer’s watched 
         return { rows: [] }
       }
       if (sql.includes('SELECT COUNT(*)::INTEGER AS count FROM watch_together_item_confirmations')) return { rows: [{ count: confirmations.size }] }
+      if (sql.includes('INSERT INTO watched_movies (user_id, movie_id)')) {
+        assert.deepEqual(params, [70, 42])
+        for (const username of Object.keys(users)) {
+          const watched = watchedByUser.get(username)
+          if (!watched.some((item) => item.tmdb_id === 42)) watched.push({ ...movie, watched_at: '2026-07-03T11:35:00.000Z' })
+        }
+        return { rows: [] }
+      }
       if (sql.includes('INSERT INTO watch_together_watched_movies')) {
         watchedTogether.push({ pairId: params[0], movieId: params[1] })
         return { rows: [{ watched_together_at: '2026-07-03T11:35:00.000Z' }] }
