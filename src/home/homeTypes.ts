@@ -84,6 +84,9 @@ export interface PopularMoviesState extends CollectionState {
   movies: Omit<HomeMovie, 'kind'>[]
   featuredMovie: Omit<HomeMovie, 'kind'> | null
 }
+export interface TrendingMoviesState extends CollectionState {
+  movies: Omit<HomeMovie, 'kind'>[]
+}
 export interface LatestEpisodesState extends CollectionState {
   shows: Omit<HomeTvShow, 'kind'>[]
   pagination: { page: number; pageSize: number; hasNextPage: boolean; hasPreviousPage: boolean }
@@ -139,6 +142,7 @@ export interface HomeActions {
 export interface HomeViewData extends HomeInputData {
   user: HomeUser | null
   popularMoviesState: PopularMoviesState
+  trendingMoviesState: TrendingMoviesState
   latestEpisodesState: LatestEpisodesState
   homeWatchlistItems: HomeWatchlistItem[]
   nextUpItems: NextUpItem[]

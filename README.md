@@ -116,6 +116,10 @@ docker compose down
 
 TV watchlist completion integration tests also run when `WATCHVAULT_TEST_DATABASE_URL` points to a disposable PostgreSQL database. Run `WATCHVAULT_TEST_DATABASE_URL=postgresql://... node --test server/__tests__/tvWatchlistCompletion.integration.test.js`; the test creates and drops its own isolated schema.
 
+## Trending Now
+
+The home movie rail shows the first five entries from TMDB's daily movie trending chart, in TMDB order. `/api/movies/trending` caches preview responses in server memory for ten minutes and never imports those previews into the catalog. Opening a movie uses the existing detail endpoint to save missing movies. Watchlist and watched actions are available on the detail page; **See all** opens Popular Movies. Existing background importers continue independently.
+
 ## Trending videos
 
 The homepage's **Trending Videos** carousel serves twelve cached movie/TV videos from

@@ -1,3 +1,4 @@
+import { createTrendingMovieFeed } from './trendingMovieService.js'
 import { ensureCollectionsTable, listCollections, getCollection } from './collectionRepository.js'
 import express from 'express'
 import { ensureTrendingVideoTables, readTrendingVideoCache } from './trendingVideoRepository.js'
@@ -83,6 +84,9 @@ import {
   listWatchTogetherUsers,
   listWatchTogetherWatchedMovieIdsForUser,
   getWatchTogetherStateForUser,
+  getDirectWatchEligibility,
+  listDirectWatchLogsForUser,
+  confirmDirectWatchForUser,
   getWatchTogetherStatsForUser,
   createWatchTogetherPartnerRequest,
   respondToWatchTogetherPartnerRequest,
@@ -272,6 +276,8 @@ export async function createApp(pool, options = {}) {
       }),
     migrateWatchTogetherHistory = true,
   } = options
+
+  const loadTrendingMovies = createTrendingMovieFeed({ fetchImpl, loadRuntimeConfig })
 
   async function hydrateMissingMovie(movieId) {
     const config = loadRuntimeConfig()
@@ -815,15 +821,57 @@ export async function createApp(pool, options = {}) {
     }
   })
 
+  app.get('/api/watch-together/eligibility', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const mediaType = request.query.mediaType
+      const mediaId = Number(request.query.mediaId)
+      if (!['movie', 'tv'].includes(mediaType) || !Number.isSafeInteger(mediaId) || mediaId <= 0) return response.status(400).json({ error: 'Invalid title' })
+      response.json(await getDirectWatchEligibility(pool, { username: user.username, mediaType, mediaId }))
+    } catch (error) { next(error) }
+  })
+
+  app.post('/api/watch-together/watches', async (request, response, next) => {
+    try {
+      const user = await getAuthenticatedUser(pool, request)
+      if (!user) return response.status(401).json({ error: 'Authentication required' })
+      const { mediaType, watchService } = request.body ?? {}
+      const mediaId = Number(request.body?.mediaId)
+      const episodeId = Number(request.body?.episodeId)
+      const targetId = mediaType === 'movie' ? mediaId : episodeId
+      if (!['movie', 'tv'].includes(mediaType) || !Number.isSafeInteger(targetId) || targetId <= 0) return response.status(400).json({ error: 'Invalid title or episode' })
+      const result = await confirmDirectWatchForUser(pool, { username: user.username, mediaType, mediaId, episodeId, watchService })
+      const errors = {
+        no_pair: 'No active partner connection.', missing_media: 'Title or episode is not available.',
+        already_watched: 'You or your partner already watched this title independently.',
+        progress_mismatch: 'You and your partner need to be on the same episode.',
+        no_next_episode: 'There are no aired episodes left to watch together.',
+        not_next_episode: 'Only your next shared unwatched episode can be marked together.',
+      }
+      if (errors[result.status]) return response.status(result.status === 'missing_media' ? 404 : 409).json({ error: errors[result.status], reason: result.status })
+      if (result.added) await recordAchievementEventForUser(pool, {
+        username: user.username, eventType: mediaType === 'movie' ? 'movie_watched' : 'tv_episode_watched',
+        mediaType, entityId: result.entityId, baselineKind: mediaType === 'movie' ? 'movie_watch' : 'tv_episode_watch',
+        metadata: { fromWatchlist: result.removedFromWatchlist },
+      })
+      if (result.newlyCompletedShowId) await recordAchievementEventForUser(pool, { username: user.username, eventType: 'tv_show_completed', mediaType: 'tv', entityId: result.newlyCompletedShowId, baselineKind: 'tv_show' })
+      const achievements = result.added ? await evaluateAchievementsForUser(pool, user.username) : []
+      const sharedAchievements = result.status === 'completed' ? await evaluateWatchTogetherAchievementsForUser(pool, user.username) : []
+      response.json({ watchTogether: result, newlyUnlockedAchievements: [...achievements, ...sharedAchievements] })
+    } catch (error) { next(error) }
+  })
+
   app.get('/api/watch-together', async (request, response, next) => {
     try {
       const user = await getAuthenticatedUser(pool, request)
       if (!user) return response.status(401).json({ error: 'Authentication required' })
       const timeZone = readStatsTimeZone(request, response)
       if (!timeZone) return
-      const [state, users] = await Promise.all([
+      const [state, users, directLogs] = await Promise.all([
         getWatchTogetherStateForUser(pool, user.username, { timeZone }),
         listWatchTogetherUsers(pool, user.username),
+        listDirectWatchLogsForUser(pool, user.username),
       ])
       response.json({
         partner: state.partner ? mapWatchTogetherUser(state.partner) : null,
@@ -832,6 +880,7 @@ export async function createApp(pool, options = {}) {
         pendingRequest: state.pendingRequest ? { id: state.pendingRequest.id, direction: state.pendingRequest.direction, user: mapWatchTogetherUser(state.pendingRequest.user) } : null,
         users: users.map(mapWatchTogetherUser),
         items: state.items.map(mapWatchTogetherItem),
+        directLogs: directLogs.map(mapWatchTogetherItem),
         watchedMovies: state.watchedMovies.map(mapWatchedTogetherMovie),
         watchedEpisodes: state.watchedEpisodes.map(mapWatchedTogetherEpisode),
         inProgressShows: state.inProgressShows.map(mapWatchTogetherInProgressShow),
@@ -2847,6 +2896,12 @@ export async function createApp(pool, options = {}) {
       const detail = Number.isInteger(showId) ? await getTvDetailForUser(pool, { showId, username: user.username }) : null
       const newlyUnlockedAchievements = savedRating.entityId && await recordAchievementEventForUser(pool, { username: user.username, eventType: 'tv_rated', mediaType: 'tv', entityId: savedRating.entityId, baselineKind: 'tv_episode_rating', metadata: { score } }) ? await evaluateAchievementsForUser(pool, user.username) : []
       response.json({ score: savedRating.score, show: detail ? mapTvDetail(detail) : null, newlyUnlockedAchievements })
+    } catch (error) { next(error) }
+  })
+
+  app.get('/api/movies/trending', async (_request, response, next) => {
+    try {
+      response.json(await loadTrendingMovies())
     } catch (error) { next(error) }
   })
 

@@ -1,4 +1,5 @@
 import pg from 'pg'
+import { sharedEpisodeEligibility } from './watchTogetherEligibility.js'
 import { ACHIEVEMENTS, ACHIEVEMENT_BY_ID } from './achievements.js'
 import { evaluateMovieTvAchievementEvidence, evaluateWatchTogetherAchievementEvidence } from './achievementEvidence.js'
 import { BOOK_ACHIEVEMENTS } from './bookAchievements.js'
@@ -804,6 +805,16 @@ export async function ensureWatchTogetherTables(pool) {
       PRIMARY KEY (pair_id, movie_id)
     )
   `)
+  // Direct logs are independent of shortlist items and active voting rounds.
+  await pool.query(`CREATE TABLE IF NOT EXISTS watch_together_direct_logs (
+    pair_id BIGINT NOT NULL REFERENCES watch_together_pairs(id) ON DELETE CASCADE,
+    media_type TEXT NOT NULL CHECK (media_type IN ('movie', 'tv')),
+    entity_id BIGINT NOT NULL,
+    confirmed_user_ids BIGINT[] NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMPTZ,
+    PRIMARY KEY (pair_id, media_type, entity_id)
+  )`)
 }
 
 export async function migrateWatchTogetherHistoryToPersonalLibraries(pool) {
@@ -7402,4 +7413,131 @@ export async function countStoredDataBytes(pool) {
   `)
 
   return Number(result.rows[0]?.stored_data_bytes ?? 0)
+}
+
+async function directWatchPair(client, username, lock = false) {
+  const result = await client.query(`
+    SELECT pairs.id AS pair_id, mine.user_id, other.user_id AS partner_user_id,
+      partner.username AS partner_username
+    FROM watch_together_pairs pairs
+    JOIN watch_together_pair_members mine ON mine.pair_id = pairs.id
+    JOIN users me ON me.id = mine.user_id
+    JOIN watch_together_pair_members other ON other.pair_id = pairs.id AND other.user_id <> mine.user_id
+    JOIN users partner ON partner.id = other.user_id
+    WHERE me.username = $1 ${lock ? 'FOR UPDATE OF pairs' : ''}`, [username])
+  return result.rows[0] ?? null
+}
+
+async function directShowEligibility(client, pair, showId) {
+  const episodes = await client.query(`
+    SELECT e.id FROM tv_episodes e JOIN tv_seasons s ON s.id = e.tv_season_id
+    WHERE s.tv_show_id = $1 AND s.season_number > 0
+      AND (e.air_date IS NULL OR e.air_date <= CURRENT_DATE)
+    ORDER BY s.season_number, e.episode_number`, [showId])
+  const watched = await client.query(`SELECT user_id, tv_episode_id FROM watched_tv_episodes
+    WHERE user_id = ANY($1::bigint[]) AND tv_episode_id = ANY($2::bigint[])`,
+  [[pair.user_id, pair.partner_user_id], episodes.rows.map((episode) => episode.id)])
+  return sharedEpisodeEligibility(episodes.rows, watched.rows, pair.user_id, pair.partner_user_id)
+}
+
+export async function getDirectWatchEligibility(pool, { username, mediaType, mediaId }) {
+  const pair = await directWatchPair(pool, username)
+  if (!pair) return { eligible: false, reason: 'no_pair' }
+  if (mediaType === 'tv') {
+    const show = await pool.query('SELECT id FROM tv_shows WHERE tmdb_id = $1', [mediaId])
+    if (!show.rows[0]) return { eligible: false, reason: 'missing_media' }
+    return directShowEligibility(pool, pair, show.rows[0].id)
+  }
+  const watched = await pool.query(`SELECT 1 FROM watched_movies w JOIN movies m ON m.id = w.movie_id
+    WHERE m.tmdb_id = $1 AND w.user_id = ANY($2::bigint[]) LIMIT 1`, [mediaId, [pair.user_id, pair.partner_user_id]])
+  return { eligible: !watched.rows.length, reason: watched.rows.length ? 'already_watched' : null }
+}
+
+export async function listDirectWatchLogsForUser(pool, username) {
+  const result = await pool.query(`
+    SELECT logs.media_type, COALESCE(m.tmdb_id, t.tmdb_id) AS media_id,
+      CASE WHEN logs.media_type = 'tv' THEN logs.entity_id END AS tv_episode_id,
+      logs.created_at, mine.user_id = ANY(logs.confirmed_user_ids) AS confirmed_by_current_user,
+      other.user_id = ANY(logs.confirmed_user_ids) AS confirmed_by_partner,
+      m.title, m.release_date, m.poster_path, m.backdrop_path, m.vote_average, m.runtime_minutes, m.detail_payload,
+      t.name AS show_name, t.first_air_date, t.poster_path AS show_poster_path,
+      t.backdrop_path AS show_backdrop_path, t.vote_average AS show_vote_average,
+      s.season_number, e.episode_number, e.name AS episode_name, e.runtime_minutes AS episode_runtime_minutes
+    FROM watch_together_direct_logs logs
+    JOIN watch_together_pair_members mine ON mine.pair_id = logs.pair_id
+    JOIN users me ON me.id = mine.user_id
+    JOIN watch_together_pair_members other ON other.pair_id = logs.pair_id AND other.user_id <> mine.user_id
+    LEFT JOIN movies m ON logs.media_type = 'movie' AND m.id = logs.entity_id
+    LEFT JOIN tv_episodes e ON logs.media_type = 'tv' AND e.id = logs.entity_id
+    LEFT JOIN tv_seasons s ON s.id = e.tv_season_id
+    LEFT JOIN tv_shows t ON t.id = s.tv_show_id
+    WHERE me.username = $1 AND logs.completed_at IS NULL
+    ORDER BY logs.created_at DESC`, [username])
+  return result.rows
+}
+
+export async function confirmDirectWatchForUser(pool, { username, mediaType, mediaId, episodeId, watchService }) {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const reject = async (status) => { await client.query('ROLLBACK'); return { status } }
+    // Serialize both partners' submissions, including concurrent first submissions.
+    const pair = await directWatchPair(client, username, true)
+    if (!pair) return await reject('no_pair')
+    const targetResult = mediaType === 'movie'
+      ? await client.query('SELECT id FROM movies WHERE tmdb_id = $1', [mediaId])
+      : await client.query(`SELECT e.id, s.tv_show_id FROM tv_episodes e
+          JOIN tv_seasons s ON s.id = e.tv_season_id WHERE e.id = $1`, [episodeId])
+    const target = targetResult.rows[0]
+    if (!target) return await reject('missing_media')
+    const params = [pair.pair_id, mediaType, target.id]
+    const logResult = await client.query(`SELECT confirmed_user_ids, completed_at FROM watch_together_direct_logs
+      WHERE pair_id = $1 AND media_type = $2 AND entity_id = $3 FOR UPDATE`, params)
+    const log = logResult.rows[0]
+    const confirmed = (log?.confirmed_user_ids ?? []).map(Number)
+    if (log?.completed_at || confirmed.includes(Number(pair.user_id))) {
+      await client.query('COMMIT')
+      return { status: log?.completed_at ? 'completed' : 'waiting_for_partner', added: false, entityId: Number(target.id) }
+    }
+    const watchedTable = mediaType === 'movie' ? 'watched_movies' : 'watched_tv_episodes'
+    const entityColumn = mediaType === 'movie' ? 'movie_id' : 'tv_episode_id'
+    const watched = await client.query(`SELECT user_id FROM ${watchedTable}
+      WHERE ${entityColumn} = $1 AND user_id = ANY($2::bigint[])`, [target.id, [pair.user_id, pair.partner_user_id]])
+    // A partner's watched row is expected after they have explicitly confirmed.
+    if (watched.rows.some((row) => !confirmed.includes(Number(row.user_id)))) return await reject('already_watched')
+    if (!log && mediaType === 'tv') {
+      const eligibility = await directShowEligibility(client, pair, target.tv_show_id)
+      if (!eligibility.eligible) return await reject(eligibility.reason)
+      if (eligibility.nextEpisodeId !== Number(target.id)) return await reject('not_next_episode')
+    }
+    // Personal writes and shared confirmations are committed atomically.
+    let personal
+    let completion
+    if (mediaType === 'movie') {
+      personal = await addMovieToWatchedForUser(client, { username, movieId: mediaId, watchService })
+      if (!personal.added) return await reject('already_watched')
+    } else {
+      const inserted = await client.query(`INSERT INTO watched_tv_episodes (user_id, tv_episode_id, watch_service)
+        VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING tv_episode_id`, [pair.user_id, target.id, normalizeWatchService(watchService)])
+      if (!inserted.rowCount) return await reject('already_watched')
+      await resumeStoppedTvShow(client, pair.user_id, target.tv_show_id)
+      completion = await syncTvShowWatchCompletion(client, username, target.tv_show_id)
+    }
+    confirmed.push(Number(pair.user_id))
+    const completed = confirmed.includes(Number(pair.partner_user_id))
+    await client.query(`INSERT INTO watch_together_direct_logs (pair_id, media_type, entity_id, confirmed_user_ids, completed_at)
+      VALUES ($1, $2, $3, $4, CASE WHEN $5 THEN NOW() END)
+      ON CONFLICT (pair_id, media_type, entity_id) DO UPDATE
+      SET confirmed_user_ids = EXCLUDED.confirmed_user_ids, completed_at = EXCLUDED.completed_at`, [...params, confirmed, completed])
+    if (completed) {
+      const historyTable = mediaType === 'movie' ? 'watch_together_watched_movies' : 'watch_together_watched_episodes'
+      await client.query(`INSERT INTO ${historyTable} (pair_id, ${entityColumn}) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [pair.pair_id, target.id])
+    }
+    await client.query('COMMIT')
+    return { status: completed ? 'completed' : 'waiting_for_partner', added: true, entityId: Number(target.id),
+      removedFromWatchlist: Boolean(personal?.removedFromWatchlist), newlyCompletedShowId: completion?.newlyCompletedShowId ?? null }
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally { client.release() }
 }

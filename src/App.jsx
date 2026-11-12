@@ -529,7 +529,7 @@ function App() {
   const [tvWatchlistIds, setTvWatchlistIds] = useState(() => new Set(initialTvWatchlistIds))
   const [tvWatchlistShows, setTvWatchlistShows] = useState([])
   const [tvWatchedIds, setTvWatchedIds] = useState(() => new Set(initialTvWatchedIds))
-  const [watchTogetherState, setWatchTogetherState] = useState({ status: 'idle', partner: null, relationship: null, voting: [], pendingRequest: null, users: [], items: [], watchedMovies: [], watchedEpisodes: [], inProgressShows: [], error: '' })
+  const [watchTogetherState, setWatchTogetherState] = useState({ status: 'idle', partner: null, relationship: null, voting: [], pendingRequest: null, users: [], items: [], directLogs: [], watchedMovies: [], watchedEpisodes: [], inProgressShows: [], error: '' })
   const [watchTogetherSearch, setWatchTogetherSearch] = useState({ query: '', type: 'all', status: 'idle', items: [], error: '' })
   const [watchTogetherAction, setWatchTogetherAction] = useState({ status: 'idle', key: null, error: '' })
   const [watchTogetherTab, setWatchTogetherTab] = useState('movies')
@@ -2180,7 +2180,7 @@ function App() {
 
   async function loadWatchTogetherForUser(nextUser) {
     if (!nextUser?.username) {
-      setWatchTogetherState({ status: 'idle', partner: null, relationship: null, voting: [], pendingRequest: null, users: [], items: [], watchedMovies: [], watchedEpisodes: [], inProgressShows: [], error: '' })
+      setWatchTogetherState({ status: 'idle', partner: null, relationship: null, voting: [], pendingRequest: null, users: [], items: [], directLogs: [], watchedMovies: [], watchedEpisodes: [], inProgressShows: [], error: '' })
       return
     }
     setWatchTogetherState((state) => ({ ...state, status: 'loading', error: '' }))
@@ -2188,7 +2188,7 @@ function App() {
       const response = await fetch(`/api/watch-together?timeZone=${encodeURIComponent(resolveBrowserTimeZone())}`, { headers: buildAuthHeaders(nextUser) })
       const payload = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(payload.error || 'Unable to load Watch Together.')
-      setWatchTogetherState({ status: 'success', partner: payload.partner || null, relationship: payload.relationship || null, voting: Array.isArray(payload.voting) ? payload.voting : [], pendingRequest: payload.pendingRequest || null, users: Array.isArray(payload.users) ? payload.users : [], items: Array.isArray(payload.items) ? payload.items : [], watchedMovies: Array.isArray(payload.watchedMovies) ? payload.watchedMovies : [], watchedEpisodes: Array.isArray(payload.watchedEpisodes) ? payload.watchedEpisodes : [], inProgressShows: Array.isArray(payload.inProgressShows) ? payload.inProgressShows : [], error: '' })
+      setWatchTogetherState({ status: 'success', partner: payload.partner || null, relationship: payload.relationship || null, voting: Array.isArray(payload.voting) ? payload.voting : [], pendingRequest: payload.pendingRequest || null, users: Array.isArray(payload.users) ? payload.users : [], items: Array.isArray(payload.items) ? payload.items : [], directLogs: Array.isArray(payload.directLogs) ? payload.directLogs : [], watchedMovies: Array.isArray(payload.watchedMovies) ? payload.watchedMovies : [], watchedEpisodes: Array.isArray(payload.watchedEpisodes) ? payload.watchedEpisodes : [], inProgressShows: Array.isArray(payload.inProgressShows) ? payload.inProgressShows : [], error: '' })
     } catch (error) {
       setWatchTogetherState((state) => ({ ...state, status: 'error', error: error instanceof Error ? error.message : 'Unable to load Watch Together.' }))
     }
@@ -2350,6 +2350,35 @@ function App() {
       setWatchTogetherAction({ status: 'error', key, error: error instanceof Error ? error.message : 'Unable to update the shared vote.' })
       return false
     }
+  }
+
+  async function handleDirectWatch(item, watchService, { deferSharedRefresh = false } = {}) {
+    if (!user) { handleOpenLogin(); return false }
+    const response = await fetch('/api/watch-together/watches', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...buildAuthHeaders(user) },
+      body: JSON.stringify({ mediaType: item.mediaType, mediaId: item.id, episodeId: item.episodeId, watchService }),
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(payload.error || 'Unable to mark watched together.')
+    receiveAchievementUnlocks(payload.newlyUnlockedAchievements)
+    const refreshes = [loadWatchlistForUser(user), loadWatchTogetherAchievements(user)]
+    if (!deferSharedRefresh) refreshes.push(loadWatchTogetherForUser(user))
+    if (item.mediaType === 'movie') {
+      refreshes.push(loadWatchedForUser(user))
+      updatePersonFilmographyPersonalState('movie', Number(item.id), { watched: true, watchlisted: false })
+    } else {
+      refreshes.push(loadTvLibraryForUser(user), loadTvWatchedHistoryForUser(user))
+      if (currentRoute.kind === routeKinds.tvDetail && Number(currentRoute.showId) === Number(item.id)) {
+        refreshes.push(fetch(`/api/tv/${item.id}`, { headers: buildAuthHeaders(user) })
+          .then(async (result) => {
+            const detail = await result.json()
+            if (result.ok) setTvDetailState({ status: 'success', show: mapTvDetailPayload(detail.show), error: '' })
+          }))
+      }
+    }
+    await Promise.allSettled(refreshes)
+    if (payload.watchTogether?.status === 'completed') celebrateWatchTogether('complete', 'Watched together!', `${item.title} is now part of your shared story.`)
+    return true
   }
 
   async function handleWatchTogetherEpisodeWatched(item, watchService) {
@@ -3877,6 +3906,7 @@ function App() {
                 watchlistIds={tvWatchlistIds}
                 tvEpisodeRatingActionState={tvEpisodeRatingActionState}
                 onOpenTvShow={handleOpenTvDetail}
+                onDirectWatch={handleDirectWatch}
                 onSaveWatchTogetherSession={handleSaveWatchTogetherSession}
               />
             ) : currentRoute.kind === routeKinds.continueWatching ? (
@@ -4000,6 +4030,7 @@ function App() {
                 onItemAction={handleWatchTogetherItem}
                 onTabChange={setWatchTogetherTab}
                 onMarkWatched={(movie, watchService) => handleAddMovieToWatched(movie, watchService, { watchTogether: true })}
+                onDirectWatch={handleDirectWatch}
                 onMarkEpisodeWatched={handleWatchTogetherEpisodeWatched}
                 watchedActionState={watchedActionState}
                 onSubmitMovieRating={handleSubmitMovieRating}
@@ -4132,6 +4163,7 @@ function App() {
                 watchedMovies={watchedState.movies}
                 watchlistActionState={watchlistActionState}
                 watchlistMovieIds={watchlistMovieIds}
+                onDirectWatch={handleDirectWatch}
                 onSaveWatchTogetherSession={handleSaveWatchTogetherSession}
               />
             ) : currentRoute.kind === routeKinds.gameDetail ? (
@@ -6498,7 +6530,7 @@ function TvShowsScreen({
   )
 }
 
-function WatchTogetherScreen({ isSignedIn, state, search, action, activeTab, onOpenLogin, onChoosePartner, onReset, onSearchChange, onSearch, onItemAction, onTabChange, onMarkWatched, onMarkEpisodeWatched, watchedActionState, onSubmitMovieRating, movieRatingActionState, onSubmitEpisodeRating, tvEpisodeRatingActionState, onOpenTvShow, onOpenMovie, onOpenAchievement, onRefresh, achievementsState, statsState, onSaveSession, onSavePlan, onVotingAction }) {
+function WatchTogetherScreen({ onDirectWatch, isSignedIn, state, search, action, activeTab, onOpenLogin, onChoosePartner, onReset, onSearchChange, onSearch, onItemAction, onTabChange, onMarkWatched, onMarkEpisodeWatched, watchedActionState, onSubmitMovieRating, movieRatingActionState, onSubmitEpisodeRating, tvEpisodeRatingActionState, onOpenTvShow, onOpenMovie, onOpenAchievement, onRefresh, achievementsState, statsState, onSaveSession, onSavePlan, onVotingAction }) {
   const [resetOpen, setResetOpen] = useState(false)
   const [planOpen, setPlanOpen] = useState(false)
   const [historyTab, setHistoryTab] = useState('movies')
@@ -6550,6 +6582,7 @@ function WatchTogetherScreen({ isSignedIn, state, search, action, activeTab, onO
     {action.status === 'error' ? <SectionMessage tone="error" message={action.error} /> : null}
     {!state.partner && state.status === 'success' ? <section className="watch-together-empty"><UserIcon /><h2>{pending?.direction === 'outgoing' ? 'Request sent' : pending ? 'Request awaiting your choice' : 'Pick your watch partner'}</h2><p>{pending?.direction === 'outgoing' ? `${pending.user.fullName} will receive an alert with options to accept or deny.` : pending ? `Open Alerts to accept or deny ${pending.user.fullName}'s request.` : 'Select another WatchVault user above to send them a Watch Together request.'}</p></section> : null}
     {state.partner ? <>
+      {(state.directLogs || []).length ? <section className="watch-together-pending"><h2>Pending confirmations</h2><div className="watch-together-results">{state.directLogs.map((item) => <DirectWatchPendingRow key={`${item.mediaType}-${item.episodeId || item.id}`} item={item} partner={state.partner} onMarkWatched={(service) => onDirectWatch(item, service, { deferSharedRefresh: true })} onSubmitRating={item.mediaType === 'tv' ? onSubmitEpisodeRating : onSubmitMovieRating} ratingActionState={item.mediaType === 'tv' ? tvEpisodeRatingActionState : movieRatingActionState} onRefresh={onRefresh} />)}</div></section> : null}
       <WatchTogetherDecisionRail activeMediaType={activeMediaType} selected={selected} voteRound={voteRound} shortlistCount={tabItems.length} />
       <WatchTogetherFocalPick selected={selected} voteRound={voteRound} shortlistCount={tabItems.length} action={action} onStartVote={() => onVotingAction('start', activeMediaType)} onChooseMatch={(item) => onVotingAction('choose', activeMediaType, item)} onClear={() => onItemAction('clear')} onMarkWatched={onMarkWatched} onMarkEpisodeWatched={onMarkEpisodeWatched} watchedActionState={watchedActionState} onSubmitMovieRating={onSubmitMovieRating} movieRatingActionState={movieRatingActionState} onSubmitEpisodeRating={onSubmitEpisodeRating} tvEpisodeRatingActionState={tvEpisodeRatingActionState} onRefresh={onRefresh} items={tabItems} />
       <div className="watch-together-tabs" role="tablist" aria-label="Watch Together content"><button type="button" role="tab" aria-selected={activeTab === 'movies'} className={activeTab === 'movies' ? 'active' : ''} onClick={() => { onTabChange('movies'); onSearchChange({ type: 'movie' }) }}>Movies <span>{movieItems.length}</span></button><button type="button" role="tab" aria-selected={activeTab === 'tv'} className={activeTab === 'tv' ? 'active' : ''} onClick={() => { onTabChange('tv'); onSearchChange({ type: 'tv' }) }}>TV Episodes <span>{tvItems.length}</span></button><button type="button" role="tab" aria-selected={activeTab === 'history'} className={activeTab === 'history' ? 'active' : ''} onClick={() => onTabChange('history')}>History <span>{state.watchedMovies.length + state.watchedEpisodes.length}</span></button><button type="button" role="tab" aria-selected={activeTab === 'stats'} className={activeTab === 'stats' ? 'active' : ''} onClick={() => onTabChange('stats')}>Stats</button><button type="button" role="tab" aria-selected={activeTab === 'achievements'} className={activeTab === 'achievements' ? 'active' : ''} onClick={() => onTabChange('achievements')}>Achievements <span>{achievementsState?.achievements?.filter((item) => item.unlocked).length || 0}</span></button></div>
@@ -6702,7 +6735,7 @@ function WatchTogetherMarkWatched({ movie, onMarkWatched, watchedActionState, on
   const isWatchingUpdate = watchedActionState.status === 'loading' && Number(watchedActionState.movieId) === Number(movie.id)
   const isRatingSaving = movieRatingActionState?.status === 'loading' && Number(movieRatingActionState.movieId) === Number(movie.id)
   const closeRating = () => { setRatingOpen(false); onRefresh?.() }
-  return <><button type="button" className="secondary-button" disabled={isWatchingUpdate || waitingForPartner} onClick={() => setWatchServiceOpen(true)}>{isWatchingUpdate ? 'Updating...' : waitingForPartner ? 'Waiting for partner' : 'Mark watched'}</button>{watchServiceOpen ? <WatchServiceDialog title={movie.title} onCancel={() => setWatchServiceOpen(false)} onSelect={async (watchService) => { const saved = await onMarkWatched(movie, watchService); setWatchServiceOpen(false); if (saved) { setSelectedRating(5); setRatingOpen(true) } }} /> : null}{ratingOpen ? <MovieRatingDialog movie={movie} selectedRating={selectedRating} onSelectRating={setSelectedRating} onCancel={closeRating} onSubmit={async () => { if (await onSubmitMovieRating(movie, selectedRating)) closeRating() }} isSaving={isRatingSaving} error={movieRatingActionState?.status === 'error' && Number(movieRatingActionState.movieId) === Number(movie.id) ? movieRatingActionState.error : ''} cancelLabel="Skip" /> : null}</>
+  return <><button type="button" className="secondary-button" disabled={isWatchingUpdate || waitingForPartner} onClick={() => setWatchServiceOpen(true)}>{isWatchingUpdate ? 'Updating...' : waitingForPartner ? 'Waiting for partner' : 'Mark watched'}</button>{watchServiceOpen ? <WatchServiceDialog title={movie.title} onCancel={() => setWatchServiceOpen(false)} onSelect={async (watchService) => { const saved = await onMarkWatched(movie, watchService); if (saved) { setWatchServiceOpen(false); setSelectedRating(5); setRatingOpen(true) } return saved }} /> : null}{ratingOpen ? <MovieRatingDialog movie={movie} selectedRating={selectedRating} onSelectRating={setSelectedRating} onCancel={closeRating} onSubmit={async () => { if (await onSubmitMovieRating(movie, selectedRating)) closeRating() }} isSaving={isRatingSaving} error={movieRatingActionState?.status === 'error' && Number(movieRatingActionState.movieId) === Number(movie.id) ? movieRatingActionState.error : ''} cancelLabel="Skip" /> : null}</>
 }
 
 function WatchTogetherMarkEpisode({ episode, onMarkWatched, action, onSubmitRating, ratingActionState, onRefresh }) {
@@ -6713,7 +6746,7 @@ function WatchTogetherMarkEpisode({ episode, onMarkWatched, action, onSubmitRati
   const saving = action.status === 'loading' && action.key === `watch-tv-${episode.episodeId}`
   const ratingEpisode = { id: episode.episodeId, name: `${episode.title} · ${episode.episodeTitle}` }
   function closeRating() { setRatingOpen(false); onRefresh?.() }
-  return <>{action.status === 'error' && action.key === `watch-tv-${episode.episodeId}` ? <span className="tmdb-search-error">{action.error}</span> : null}<button type="button" className="secondary-button" disabled={saving || waiting} onClick={() => setOpen(true)}>{saving ? 'Updating...' : waiting ? 'Waiting for partner' : 'Mark watched'}</button>{open ? <WatchServiceDialog title={`${episode.title} · ${formatWatchTogetherEpisode(episode)}`} onCancel={() => setOpen(false)} onSelect={async (service) => { const status = await onMarkWatched(episode, service); if (status) { setOpen(false); setSelectedRating(5); setRatingOpen(true) } }} /> : null}{ratingOpen ? <MovieRatingDialog movie={ratingEpisode} selectedRating={selectedRating} onSelectRating={setSelectedRating} onCancel={closeRating} onSubmit={async () => { if (await onSubmitRating(ratingEpisode, selectedRating)) closeRating() }} isSaving={ratingActionState?.status === 'loading' && Number(ratingActionState.episodeId) === Number(episode.episodeId)} error={ratingActionState?.status === 'error' && Number(ratingActionState.episodeId) === Number(episode.episodeId) ? ratingActionState.error : ''} kicker="Your Episode Rating" cancelLabel="Skip" /> : null}</>
+  return <>{action.status === 'error' && action.key === `watch-tv-${episode.episodeId}` ? <span className="tmdb-search-error">{action.error}</span> : null}<button type="button" className="secondary-button" disabled={saving || waiting} onClick={() => setOpen(true)}>{saving ? 'Updating...' : waiting ? 'Waiting for partner' : 'Mark watched'}</button>{open ? <WatchServiceDialog title={`${episode.title} · ${formatWatchTogetherEpisode(episode)}`} onCancel={() => setOpen(false)} onSelect={async (service) => { const status = await onMarkWatched(episode, service); if (status) { setOpen(false); setSelectedRating(5); setRatingOpen(true) } return Boolean(status) }} /> : null}{ratingOpen ? <MovieRatingDialog movie={ratingEpisode} selectedRating={selectedRating} onSelectRating={setSelectedRating} onCancel={closeRating} onSubmit={async () => { if (await onSubmitRating(ratingEpisode, selectedRating)) closeRating() }} isSaving={ratingActionState?.status === 'loading' && Number(ratingActionState.episodeId) === Number(episode.episodeId)} error={ratingActionState?.status === 'error' && Number(ratingActionState.episodeId) === Number(episode.episodeId) ? ratingActionState.error : ''} kicker="Your Episode Rating" cancelLabel="Skip" /> : null}</>
 }
 
 function WatchTogetherHistoryRow({ item, onLogSession, achievements = [] }) {
@@ -7171,7 +7204,7 @@ function TvWatchlistPanel({ items, onOpenWatchlist, onSelectShow }) {
   )
 }
 
-function TvDetailPage({ tvDetailState, tvReviewsState, watchTogetherState, watchTogetherAchievementsState, user, onBackToTv, onToggleWatchlist, onUpdateEpisodes, onSetWatchingStatus, onSubmitEpisodeRating, onOpenTv, onOpenPerson, onOpenLogin, isSignedIn, watchlistIds, tvEpisodeRatingActionState, onSaveWatchTogetherSession }) {
+function TvDetailPage({ onDirectWatch, tvDetailState, tvReviewsState, watchTogetherState, watchTogetherAchievementsState, user, onBackToTv, onToggleWatchlist, onUpdateEpisodes, onSetWatchingStatus, onSubmitEpisodeRating, onOpenTv, onOpenPerson, onOpenLogin, isSignedIn, watchlistIds, tvEpisodeRatingActionState, onSaveWatchTogetherSession }) {
   const [seasonNumber, setSeasonNumber] = useState(null)
   const [trailer, setTrailer] = useState(null)
   const [catchUpEpisode, setCatchUpEpisode] = useState(null)
@@ -7184,6 +7217,15 @@ function TvDetailPage({ tvDetailState, tvReviewsState, watchTogetherState, watch
   const [watchingStatusAction, setWatchingStatusAction] = useState({ saving: false, error: '' })
   const [filelistState, setFilelistState] = useState({ open: false, status: 'idle', results: [], error: '', minutesUntilReset: null, episode: null })
   useEffect(() => { setWatchingStatusAction({ saving: false, error: '' }); setSeasonNumber(null); setTrailer(null); setCatchUpEpisode(null); setPendingWatchRequest(null); setRatingEpisode(null); setSessionItem(null); setIsOverviewExpanded(false); setIsUpdatingEpisodes(false); setFilelistState({ open: false, status: 'idle', results: [], error: '', minutesUntilReset: null, episode: null }) }, [tvDetailState.show?.id])
+  const directEligibility = useDirectWatchEligibility('tv', tvDetailState.show?.id, user, tvDetailState.show, watchTogetherState)
+  const partner = watchTogetherState.partner
+  const pendingDirectEpisodes = (watchTogetherState.directLogs || []).filter((item) => item.mediaType === 'tv' && Number(item.id) === Number(tvDetailState.show?.id))
+  function episodeTogetherState(episode) {
+    const pending = pendingDirectEpisodes.find((item) => Number(item.episodeId) === Number(episode.id))
+    const eligible = !episode.watched && directEligibility.eligible && Number(directEligibility.nextEpisodeId) === Number(episode.id)
+    return { pending, eligible, reason: pending ? `Waiting for ${pending.confirmedByCurrentUser ? partner?.fullName : 'your confirmation'}` : directEligibility.eligible && !eligible ? 'Only your next shared unwatched episode can be marked together.' : directEligibilityMessage(directEligibility, partner) }
+  }
+
   if (tvDetailState.status === 'loading' || tvDetailState.status === 'idle') return <section className="movie-detail-page"><SectionMessage message="Loading TV series detail..." /></section>
   if (tvDetailState.status === 'error' || !tvDetailState.show) return <section className="movie-detail-page"><SectionMessage tone="error" message={tvDetailState.error || 'TV series detail is not available.'} /></section>
   const show = tvDetailState.show
@@ -7229,8 +7271,8 @@ function TvDetailPage({ tvDetailState, tvReviewsState, watchTogetherState, watch
     }
   }
 
-  function requestEpisodeWatch(request, episodeToRate = null) {
-    setPendingWatchRequest({ request, episodeToRate })
+  function requestEpisodeWatch(request, episodeToRate = null, together = false) {
+    setPendingWatchRequest({ request, episodeToRate, together })
   }
 
   function handleEpisodeToggle(episode) {
@@ -7299,8 +7341,9 @@ function TvDetailPage({ tvDetailState, tvReviewsState, watchTogetherState, watch
     <nav className="tv-detail-tabs" aria-label="TV show sections"><button type="button" className="active" onClick={() => scrollToSection('tv-episodes')}>Episodes</button><button type="button" onClick={() => scrollToSection('tv-cast')}>Cast &amp; Crew</button><button type="button" onClick={() => scrollToSection('tv-recommendations')}>More Like This</button><button type="button" onClick={() => scrollToSection('tv-reviews')}>Reviews</button></nav>
     <div className="tv-detail-layout">
       <section id="tv-episodes" className="content-section tv-detail-panel tv-detail-episodes"><div className="tv-detail-section-heading"><h2>Episodes</h2></div><div className="tv-detail-season-controls"><label><span className="sr-only">Season</span><select value={season?.seasonNumber ?? ''} onChange={(event) => setSeasonNumber(Number(event.target.value))}>{show.seasons.map((item) => <option key={item.id} value={item.seasonNumber}>{item.name}</option>)}</select></label><span>{episodes.length} Episodes</span><button type="button" className="secondary-button tv-season-watch-button" disabled={watchingStatusAction.saving || isUpdatingEpisodes || isSeasonWatched || seasonAiredEpisodes.length === 0} onClick={handleMarkSeasonWatched}><CheckIcon /><span>{isSeasonWatched ? 'Season watched' : isUpdatingEpisodes ? 'Updating...' : 'Mark season watched'}</span></button></div><div className="tv-detail-episode-grid">{episodes.map((episode) => {
+        const togetherState = episodeTogetherState(episode)
         const sharedEpisode = sharedEpisodes.find((item) => Number(item.episodeId) === Number(episode.tmdbId))
-        return <article className="tv-detail-episode-card" key={episode.id}><div className="tv-detail-episode-still">{episode.stillUrl ? <img src={episode.stillUrl} alt="" /> : null}<span>E{episode.episodeNumber}</span></div><div className="tv-detail-episode-copy"><h3>{episode.name}</h3><p>{episode.overview || 'Episode overview is not available.'}</p></div><div className="tv-detail-episode-actions"><span>{episode.runtimeLabel}</span>{sharedEpisode ? <button type="button" className="secondary-button tv-session-button" onClick={() => setSessionItem(sharedEpisode)}>{sharedEpisode.sessionDetails ? 'Edit session' : 'Log session'}</button> : null}{episode.watched ? <button type="button" className="tv-episode-rate" onClick={() => handleOpenEpisodeRating(episode)} aria-label={`${episode.yourScore === null ? 'Rate' : 'Update rating for'} ${episode.name}`}><StarOutlineIcon /></button> : null}<button type="button" disabled={watchingStatusAction.saving || !episode.isAired || isUpdatingEpisodes} className={`tv-episode-toggle${episode.watched ? ' watched' : ''}`} aria-label={episode.isAired ? `${episode.watched ? 'Mark unwatched' : 'Mark watched'} ${episode.name}` : `${episode.name} has not aired yet`} onClick={() => handleEpisodeToggle(episode)}><CheckIcon /></button></div></article>
+        return <article className="tv-detail-episode-card" key={episode.id}><div className="tv-detail-episode-still">{episode.stillUrl ? <img src={episode.stillUrl} alt="" /> : null}<span>E{episode.episodeNumber}</span></div><div className="tv-detail-episode-copy"><h3>{episode.name}</h3><p>{episode.overview || 'Episode overview is not available.'}</p></div><div className="tv-detail-episode-actions"><span>{episode.runtimeLabel}</span>{sharedEpisode ? <span className="watch-together-completed">Watched together</span> : null}{sharedEpisode ? <button type="button" className="secondary-button tv-session-button" onClick={() => setSessionItem(sharedEpisode)}>{sharedEpisode.sessionDetails ? 'Edit session' : 'Log session'}</button> : null}{partner && (!episode.watched || togetherState.pending) ? <button type="button" className="secondary-button tv-together-button" disabled={isUpdatingEpisodes || togetherState.pending?.confirmedByCurrentUser || (!togetherState.pending && (!episode.isAired || !togetherState.eligible))} title={togetherState.reason} onClick={() => requestEpisodeWatch({ action: 'mark_episode', episodeId: episode.id }, episode, true)}>{togetherState.pending?.confirmedByCurrentUser ? `Waiting for ${partner.fullName}` : togetherState.pending ? 'Confirm watched together' : 'Watched together'}</button> : null}{episode.watched ? <button type="button" className="tv-episode-rate" onClick={() => handleOpenEpisodeRating(episode)} aria-label={`${episode.yourScore === null ? 'Rate' : 'Update rating for'} ${episode.name}`}><StarOutlineIcon /></button> : null}<button type="button" disabled={watchingStatusAction.saving || !episode.isAired || isUpdatingEpisodes} className={`tv-episode-toggle${episode.watched ? ' watched' : ''}`} aria-label={episode.isAired ? `${episode.watched ? 'Mark unwatched' : 'Mark watched'} ${episode.name}` : `${episode.name} has not aired yet`} onClick={() => handleEpisodeToggle(episode)}><CheckIcon /></button></div></article>
       })}</div></section>
       <aside className="tv-detail-side"><section className="content-section tv-detail-panel tv-detail-activity"><div className="section-header"><h2>Your Activity</h2><span>{show.stoppedWatching ? 'Stopped watching' : `${watchedCount} of ${totalEpisodes} watched`}</span></div><div className="tv-detail-progress"><span style={{ width: `${watchedPercentage}%` }} /></div><div className="tv-detail-activity-footer"><span><StarOutlineIcon /> {yourEpisodeRating.ratingCount ? `${formatCommunityRating(yourEpisodeRating.average)} · Rated` : 'Not rated'}</span><button type="button" onClick={() => scrollToSection('tv-reviews')}>Rate show</button></div></section><section id="tv-cast" className="content-section tv-detail-panel tv-detail-cast"><div className="section-header"><h2>Cast &amp; Crew</h2><span>View all</span></div><div className="tv-detail-cast-list">{show.credits.map((member) => <button type="button" className="tv-detail-cast-card" key={`${member.id}-${member.role}`} aria-label={`Open ${member.name}`} onClick={() => onOpenPerson?.(member)} disabled={!Number.isInteger(Number(member.id))}><div className="tv-detail-cast-avatar" style={buildMovieCreditAvatarStyle(member.profileUrl)}>{!member.profileUrl ? getMovieCreditInitials(member.name) : null}</div><strong>{member.name}</strong><small>{member.role}</small></button>)}</div></section></aside>
       <section id="tv-recommendations" className="content-section tv-detail-panel tv-detail-recommendations"><div className="section-header"><h2>More Like This</h2><span>View all</span></div><div className="tv-detail-recommendation-list">{show.recommendations.map((item) => <button key={item.id} type="button" onClick={() => onOpenTv(item)} className="tv-detail-recommendation"><img src={item.posterUrl} alt="" /><span>{item.title}</span><small>{item.rating}</small></button>)}</div></section>
@@ -7310,7 +7353,26 @@ function TvDetailPage({ tvDetailState, tvReviewsState, watchTogetherState, watch
     {trailer ? <MovieTrailerDialog movie={{ title: show.title }} trailer={trailer} onClose={() => setTrailer(null)} /> : null}
     {filelistState.open ? <FilelistDialog title={show.title} subtitle={filelistState.episode ? formatFilelistEpisodeLabel(filelistState.episode) : null} emptyMessage="No Filelist results found for this episode." state={filelistState} onClose={() => setFilelistState((state) => ({ ...state, open: false }))} /> : null}
     {catchUpEpisode ? <TvEpisodeCatchUpDialog episode={catchUpEpisode.episode} earlierCount={catchUpEpisode.earlierCount} isSaving={isUpdatingEpisodes} onCancel={() => setCatchUpEpisode(null)} onMarkCurrent={() => { setCatchUpEpisode(null); requestEpisodeWatch({ action: 'mark_episode', episodeId: catchUpEpisode.episode.id }, catchUpEpisode.episode) }} onMarkEarlier={() => { setCatchUpEpisode(null); requestEpisodeWatch({ action: 'mark_through_episode', episodeId: catchUpEpisode.episode.id }, catchUpEpisode.episode) }} /> : null}
-    {pendingWatchRequest ? <WatchServiceDialog title={pendingWatchRequest.episodeToRate?.name || show.title} onCancel={() => setPendingWatchRequest(null)} onSelect={(watchService) => { const pending = pendingWatchRequest; setPendingWatchRequest(null); void updateEpisodes({ ...pending.request, watchService }, pending.episodeToRate) }} /> : null}
+    {pendingWatchRequest ? <WatchServiceDialog title={pendingWatchRequest.episodeToRate?.name || show.title}
+      partner={pendingWatchRequest.request.action === 'mark_episode' ? partner : null}
+      initialTogether={pendingWatchRequest.together}
+      partnerConfirmed={Boolean(pendingWatchRequest.episodeToRate && episodeTogetherState(pendingWatchRequest.episodeToRate).pending?.confirmedByPartner)}
+      togetherOnly={Boolean(pendingWatchRequest.episodeToRate && episodeTogetherState(pendingWatchRequest.episodeToRate).pending)}
+      togetherDisabled={!pendingWatchRequest.episodeToRate || (!episodeTogetherState(pendingWatchRequest.episodeToRate).pending && !episodeTogetherState(pendingWatchRequest.episodeToRate).eligible)}
+      togetherReason={pendingWatchRequest.episodeToRate ? episodeTogetherState(pendingWatchRequest.episodeToRate).reason : ''}
+      onCancel={() => setPendingWatchRequest(null)} onSelect={async (watchService, together) => {
+        const pending = pendingWatchRequest
+        if (together) {
+          setIsUpdatingEpisodes(true)
+          try {
+            await onDirectWatch({ mediaType: 'tv', id: show.id, title: show.title, episodeId: pending.request.episodeId }, watchService)
+            setSelectedRating(pending.episodeToRate.yourScore ?? 5)
+            setRatingEpisode(pending.episodeToRate)
+          } finally { setIsUpdatingEpisodes(false) }
+        } else await updateEpisodes({ ...pending.request, watchService }, pending.episodeToRate)
+        setPendingWatchRequest(null)
+        return true
+      }} /> : null}
     {ratingEpisode ? <MovieRatingDialog movie={{ title: ratingEpisode.name }} selectedRating={selectedRating} onSelectRating={setSelectedRating} onCancel={() => setRatingEpisode(null)} onSubmit={async () => { if (await onSubmitEpisodeRating(ratingEpisode, selectedRating)) setRatingEpisode(null) }} isSaving={tvEpisodeRatingActionState.status === 'loading' && Number(tvEpisodeRatingActionState.episodeId) === Number(ratingEpisode.id)} error={tvEpisodeRatingActionState.status === 'error' && Number(tvEpisodeRatingActionState.episodeId) === Number(ratingEpisode.id) ? tvEpisodeRatingActionState.error : ''} kicker="Your Episode Rating" cancelLabel="Skip" /> : null}
     {sessionItem ? <WatchTogetherSessionDialog item={sessionItem} achievements={watchTogetherAchievementsState?.achievements || []} onCancel={() => setSessionItem(null)} onSave={async (ids, details) => {
       const saved = await onSaveWatchTogetherSession(sessionItem, ids, details)
@@ -7545,14 +7607,16 @@ function useMovieDetailChrome(movieId) {
   return { isOverflowOpen, setIsOverflowOpen, overflowMenuOffset, isStickyHeaderVisible, heroRef, overflowRef, overflowMenuRef, toggleOverflow }
 }
 
-function useMovieWatchActions({ movie, isSignedIn, onOpenLogin, onToggleWatchlist, onToggleWatched, onSubmitMovieRating, onSaveWatchTogetherSession, isWatched, isInWatchlist }) {
+function useMovieWatchActions({ onDirectWatch, movie, isSignedIn, onOpenLogin, onToggleWatchlist, onToggleWatched, onSubmitMovieRating, onSaveWatchTogetherSession, isWatched, isInWatchlist }) {
   const [isRatingDialogOpen, setIsRatingDialogOpen] = useState(false)
   const [selectedRating, setSelectedRating] = useState(5)
   const [isWatchServiceDialogOpen, setIsWatchServiceDialogOpen] = useState(false)
   const [sessionItem, setSessionItem] = useState(null)
+  const [watchAudience, setWatchAudience] = useState('solo')
 
   useEffect(() => {
     setIsWatchServiceDialogOpen(false)
+    setWatchAudience('solo')
     setSessionItem(null)
   }, [movie?.id])
 
@@ -7565,6 +7629,7 @@ function useMovieWatchActions({ movie, isSignedIn, onOpenLogin, onToggleWatchlis
   function handlePrimaryAction() {
     if (isWatched) return openRating()
     if (!isInWatchlist) return onToggleWatchlist(movie)
+    setWatchAudience('solo')
     setIsWatchServiceDialogOpen(true)
   }
 
@@ -7572,13 +7637,15 @@ function useMovieWatchActions({ movie, isSignedIn, onOpenLogin, onToggleWatchlis
     if (await onSubmitMovieRating(movie, selectedRating)) setIsRatingDialogOpen(false)
   }
 
-  async function markWatched(watchService) {
-    const saved = await onToggleWatched(movie, watchService)
-    setIsWatchServiceDialogOpen(false)
+  async function markWatched(watchService, together = false) {
+    const saved = together ? await onDirectWatch({ ...movie, mediaType: 'movie' }, watchService) : await onToggleWatched(movie, watchService)
     if (saved) {
+      setIsWatchServiceDialogOpen(false)
+      setWatchAudience('solo')
       setSelectedRating(movie.communityRating?.yourScore ?? 5)
       setIsRatingDialogOpen(true)
     }
+    return saved
   }
 
   async function saveSession(ids, details) {
@@ -7587,10 +7654,11 @@ function useMovieWatchActions({ movie, isSignedIn, onOpenLogin, onToggleWatchlis
     return saved
   }
 
-  return { isRatingDialogOpen, setIsRatingDialogOpen, selectedRating, setSelectedRating, isWatchServiceDialogOpen, setIsWatchServiceDialogOpen, sessionItem, setSessionItem, handlePrimaryAction, submitRating, markWatched, saveSession }
+  return { watchAudience, setWatchAudience, isRatingDialogOpen, setIsRatingDialogOpen, selectedRating, setSelectedRating, isWatchServiceDialogOpen, setIsWatchServiceDialogOpen, sessionItem, setSessionItem, handlePrimaryAction, submitRating, markWatched, saveSession }
 }
 
 function MovieDetailPage({
+  onDirectWatch,
   movieDetailState,
   similarMoviesState,
   watchTogetherState,
@@ -7619,9 +7687,13 @@ function MovieDetailPage({
   const { isOverflowOpen, setIsOverflowOpen, overflowMenuOffset, isStickyHeaderVisible, heroRef, overflowRef, overflowMenuRef, toggleOverflow } = useMovieDetailChrome(movieId)
   const isInWatchlist = watchlistMovieIds.has(Number(movieId))
   const isWatched = watchedMovieIds.has(Number(movieId))
-  const { isRatingDialogOpen, setIsRatingDialogOpen, selectedRating, setSelectedRating, isWatchServiceDialogOpen, setIsWatchServiceDialogOpen, sessionItem, setSessionItem, handlePrimaryAction, submitRating, markWatched, saveSession } = useMovieWatchActions({
-    movie: movieDetailState.movie, isSignedIn, onOpenLogin, onToggleWatchlist, onToggleWatched, onSubmitMovieRating, onSaveWatchTogetherSession, isWatched, isInWatchlist,
+  const { watchAudience, setWatchAudience, isRatingDialogOpen, setIsRatingDialogOpen, selectedRating, setSelectedRating, isWatchServiceDialogOpen, setIsWatchServiceDialogOpen, sessionItem, setSessionItem, handlePrimaryAction, submitRating, markWatched, saveSession } = useMovieWatchActions({
+    onDirectWatch, movie: movieDetailState.movie, isSignedIn, onOpenLogin, onToggleWatchlist, onToggleWatched, onSubmitMovieRating, onSaveWatchTogetherSession, isWatched, isInWatchlist,
   })
+
+  const directEligibility = useDirectWatchEligibility('movie', movieId, user, watchTogetherState)
+  const pendingDirect = (watchTogetherState.directLogs || []).find((item) => item.mediaType === 'movie' && Number(item.id) === Number(movieId))
+  const partner = watchTogetherState.partner
 
   if (movieDetailState.status === 'loading' || movieDetailState.status === 'idle') {
     return (
@@ -7746,6 +7818,8 @@ function MovieDetailPage({
               {isWatched ? <StarOutlineIcon /> : !isInWatchlist ? <PlusIcon /> : <CheckIcon />}
               <span>{primaryActionLabel}</span>
             </button>
+            {partner && (!isWatched || pendingDirect) ? <button type="button" className="secondary-button movie-detail-secondary" disabled={pendingDirect?.confirmedByCurrentUser || (!pendingDirect && !directEligibility.eligible)} title={pendingDirect ? pendingDirect.confirmedByCurrentUser ? `Waiting for ${partner.fullName}` : 'Your partner has already confirmed.' : directEligibilityMessage(directEligibility, partner)} onClick={() => { setWatchAudience('together'); setIsWatchServiceDialogOpen(true) }}>{pendingDirect?.confirmedByCurrentUser ? `Waiting for ${partner.fullName}` : pendingDirect ? 'Confirm watched together' : 'Watched together'}</button> : null}
+            {sharedMovie ? <span className="watch-together-completed">Watched together</span> : null}
             {sharedMovie ? <button type="button" className="secondary-button movie-detail-secondary watch-together-session-action" onClick={() => setSessionItem(sharedMovie)}><span>{sharedMovie.sessionDetails ? 'Edit session' : 'Log session'}</span></button> : null}
             <button type="button" className="secondary-button movie-detail-secondary ghost desktop-only" onClick={openTrailer} disabled={isTrailerLoading}>
               <PlayIcon />
@@ -7786,7 +7860,7 @@ function MovieDetailPage({
         />
       ) : null}
 
-      {isWatchServiceDialogOpen ? <WatchServiceDialog title={movie.title} onCancel={() => setIsWatchServiceDialogOpen(false)} onSelect={markWatched} /> : null}
+      {isWatchServiceDialogOpen ? <WatchServiceDialog title={movie.title} partner={partner} partnerConfirmed={Boolean(pendingDirect?.confirmedByPartner)} initialTogether={watchAudience === 'together'} togetherOnly={Boolean(pendingDirect)} togetherDisabled={!pendingDirect && !directEligibility.eligible} togetherReason={directEligibilityMessage(directEligibility, partner)} onCancel={() => { setIsWatchServiceDialogOpen(false); setWatchAudience('solo') }} onSelect={markWatched} /> : null}
 
       {trailerState.status === 'success' && trailerState.trailer ? (
         <MovieTrailerDialog movie={movie} trailer={trailerState.trailer} onClose={closeTrailer} />
@@ -7799,7 +7873,7 @@ function MovieDetailPage({
       <div className="movie-detail-grid">
         <MovieCastPanel key={movie.id} movie={movie} onOpenPerson={onOpenPerson} />
 
-        <MovieActivityPanel isWatched={isWatched} watchedLabel={watchedLabel} onMarkWatched={() => setIsWatchServiceDialogOpen(true)} />
+        <MovieActivityPanel isWatched={isWatched} watchedLabel={watchedLabel} onMarkWatched={() => { setWatchAudience('solo'); setIsWatchServiceDialogOpen(true) }} />
 
         <section id="movie-similar" className="content-section movie-detail-panel movie-detail-more-like-this">
           <div className="section-header">
@@ -8025,18 +8099,98 @@ function TvEpisodeCatchUpDialog({ episode, earlierCount, isSaving, onCancel, onM
   )
 }
 
-function WatchServiceDialog({ title, onCancel, onSelect }) {
-  const [service, setService] = useState('')
+function useDirectWatchEligibility(mediaType, mediaId, user, revision, sharedRevision) {
+  const [state, setState] = useState({ key: '', eligible: false, reason: 'loading' })
+  const key = `${user?.username || ''}-${mediaType}-${mediaId}`
+  useEffect(() => {
+    if (!user || !mediaId) return
+    const controller = new AbortController()
+    fetch(`/api/watch-together/eligibility?mediaType=${mediaType}&mediaId=${mediaId}`, { headers: buildAuthHeaders(user), signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error('Unable to check shared progress.')
+        const payload = await response.json()
+        if (!controller.signal.aborted) setState({ ...payload, key, revision, sharedRevision })
+      }).catch(() => { if (!controller.signal.aborted) setState({ key, revision, sharedRevision, eligible: false, reason: 'error' }) })
+    return () => controller.abort()
+  }, [key, mediaType, mediaId, user, revision, sharedRevision])
+  return state.key === key && state.revision === revision && state.sharedRevision === sharedRevision ? state : { eligible: false, reason: 'loading' }
+}
 
-  return createPortal(<div className="movie-rating-dialog-backdrop" role="presentation" onMouseDown={onCancel}>
-    <section className="movie-rating-dialog" role="dialog" aria-modal="true" aria-labelledby="watch-service-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
-      <p className="movie-rating-dialog-kicker">Watch service</p>
-      <h2 id="watch-service-dialog-title">Where did you watch {title}?</h2>
-      <p>This is optional and helps build your streaming stats.</p>
+function directEligibilityMessage(state, partner) {
+  if (state.reason === 'progress_mismatch') return `You and ${partner?.fullName || 'your partner'} need to be on the same episode.`
+  if (state.reason === 'already_watched') return 'You or your partner already watched this title independently.'
+  if (state.reason === 'loading') return 'Checking shared progress…'
+  if (state.reason === 'error') return 'Unable to check shared progress. Please reload and try again.'
+  if (state.reason === 'no_next_episode') return 'There are no aired episodes left to watch together.'
+  if (state.reason === 'no_pair') return 'Connect a partner in Watch Together first.'
+  if (state.reason === 'missing_media') return 'Title is not available.'
+  return ''
+}
+
+function DirectWatchPendingRow({ item, partner, onMarkWatched, onSubmitRating, ratingActionState, onRefresh }) {
+  const [dialogOpen, setDialogOpen] = useState(false)
+  const [ratingOpen, setRatingOpen] = useState(false)
+  const [selectedRating, setSelectedRating] = useState(5)
+  const episode = item.mediaType === 'tv'
+  const ratingItem = episode ? { id: item.episodeId, title: item.episodeTitle } : item
+  const savingRating = ratingActionState?.status === 'loading' && Number(episode ? ratingActionState.episodeId : ratingActionState.movieId) === Number(ratingItem.id)
+  const ratingError = ratingActionState?.status === 'error' && Number(episode ? ratingActionState.episodeId : ratingActionState.movieId) === Number(ratingItem.id) ? ratingActionState.error : ''
+  const closeRating = () => { setRatingOpen(false); onRefresh() }
+  return <><article className="watch-together-title"><div className="watch-together-title-main"><span><b>{item.title}</b><small>{episode ? `${formatWatchTogetherEpisode(item)} · ${item.episodeTitle}` : 'Movie'} · {item.confirmedByCurrentUser ? `Waiting for ${partner.fullName}` : `${partner.fullName} marked this watched together`}</small></span></div><button type="button" className="secondary-button" disabled={item.confirmedByCurrentUser} onClick={() => setDialogOpen(true)}>{item.confirmedByCurrentUser ? 'Waiting for partner' : 'Confirm watched together'}</button></article>
+    {dialogOpen ? <WatchServiceDialog title={episode ? `${item.title} · ${formatWatchTogetherEpisode(item)}` : item.title} partner={partner} partnerConfirmed={item.confirmedByPartner} initialTogether togetherOnly onCancel={() => setDialogOpen(false)} onSelect={async (service) => { const saved = await onMarkWatched(service); if (saved) { setDialogOpen(false); setRatingOpen(true) } return saved }} /> : null}
+    {ratingOpen ? <MovieRatingDialog movie={ratingItem} selectedRating={selectedRating} onSelectRating={setSelectedRating} onCancel={closeRating} onSubmit={async () => { if (await onSubmitRating(ratingItem, selectedRating)) closeRating() }} isSaving={savingRating} error={ratingError} kicker={episode ? 'Your Episode Rating' : 'Your Movie Rating'} cancelLabel="Skip" /> : null}
+  </>
+}
+
+function WatchServiceDialog({ title, onCancel, onSelect, partner = null, partnerConfirmed = false, initialTogether = false, togetherOnly = false, togetherDisabled = false, togetherReason = '' }) {
+  const [service, setService] = useState('')
+  const [together, setTogether] = useState(initialTogether || togetherOnly)
+  const [isSaving, setIsSaving] = useState(false)
+  const [error, setError] = useState('')
+  const savingRef = useRef(false)
+  const dialogRef = useRef(null)
+  useEffect(() => {
+    const previousFocus = document.activeElement
+    dialogRef.current?.focus()
+    const handleKey = (event) => {
+      if (event.key === 'Escape' && !savingRef.current) onCancel()
+      if (event.key === 'Tab') {
+        const controls = [...(dialogRef.current?.querySelectorAll('button:not(:disabled), input:not(:disabled)') || [])]
+        const first = controls[0]; const last = controls[controls.length - 1]
+        if (event.shiftKey && (document.activeElement === first || document.activeElement === dialogRef.current)) { event.preventDefault(); last?.focus() }
+        else if (!event.shiftKey && (document.activeElement === last || document.activeElement === dialogRef.current)) { event.preventDefault(); first?.focus() }
+      }
+    }
+    document.addEventListener('keydown', handleKey)
+    return () => { document.removeEventListener('keydown', handleKey); previousFocus?.focus?.() }
+  }, [onCancel])
+  async function submit(selectedService) {
+    if (savingRef.current || (together && (!partner || togetherDisabled))) return
+    savingRef.current = true
+    setIsSaving(true); setError('')
+    try {
+      const saved = await onSelect(selectedService, together)
+      if (saved === false) setError('Unable to mark watched. Please try again.')
+    } catch (failure) { setError(failure instanceof Error ? failure.message : 'Unable to mark watched. Please try again.') }
+    finally { savingRef.current = false; setIsSaving(false) }
+  }
+  const blocked = isSaving || (together && (!partner || togetherDisabled))
+  return createPortal(<div className="movie-rating-dialog-backdrop" role="presentation" onMouseDown={isSaving ? undefined : onCancel}>
+    <section ref={dialogRef} tabIndex={-1} className="movie-rating-dialog watch-service-dialog" role="dialog" aria-modal="true" aria-labelledby="watch-service-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
+      <p className="movie-rating-dialog-kicker">Log your watch</p>
+      <h2 id="watch-service-dialog-title">{title}</h2>
+      {partner ? <fieldset className="watch-audience-field"><legend>Who watched?</legend><div className="watch-audience-options" role="radiogroup" aria-label="Who watched?">
+        {!togetherOnly ? <button type="button" className={`movie-rating-option${!together ? ' selected' : ''}`} role="radio" aria-checked={!together} disabled={isSaving} onClick={() => setTogether(false)}>Just me</button> : null}
+        <button type="button" className={`movie-rating-option${together ? ' selected' : ''}`} role="radio" aria-checked={together} disabled={isSaving || togetherDisabled} aria-describedby={togetherDisabled ? 'watch-together-unavailable' : undefined} onClick={() => setTogether(true)}>Together with {partner.fullName}</button>
+      </div>{togetherDisabled && togetherReason ? <p id="watch-together-unavailable">{togetherReason}</p> : null}
+        {together ? <p>{partnerConfirmed ? 'Your partner has already confirmed. Confirm to add this to your shared history.' : `This marks it watched for you. ${partner.fullName} must confirm before it appears in your shared history.`}</p> : null}
+      </fieldset> : null}
+      <p>Where did you watch? Optional, for your streaming stats.</p>
       <div className="movie-rating-options" role="radiogroup" aria-label="Watch service">
-        {[...watchServiceOptions, 'other'].map((option) => <button key={option} type="button" className={`movie-rating-option${service === option ? ' selected' : ''}`} role="radio" aria-checked={service === option} onClick={() => setService(option)}>{option === 'other' ? 'Other' : option}</button>)}
+        {[...watchServiceOptions, 'other'].map((option) => <button key={option} type="button" className={`movie-rating-option${service === option ? ' selected' : ''}`} role="radio" aria-checked={service === option} disabled={isSaving} onClick={() => setService(option)}>{option === 'other' ? 'Other' : option}</button>)}
       </div>
-      <div className="movie-rating-dialog-actions"><button type="button" className="secondary-button" onClick={onCancel}>Cancel</button><button type="button" className="secondary-button" onClick={() => onSelect(null)}>Skip</button><button type="button" className="primary-button" onClick={() => onSelect(service)} disabled={!service.trim()}><CheckIcon /><span>Mark watched</span></button></div>
+      {error ? <p className="tmdb-search-error" role="alert">{error}</p> : null}
+      <div className="movie-rating-dialog-actions"><button type="button" className="secondary-button" onClick={onCancel} disabled={isSaving}>Cancel</button><button type="button" className="secondary-button" onClick={() => submit(null)} disabled={blocked}>Skip service</button><button type="button" className="primary-button" onClick={() => submit(service || null)} disabled={blocked}><CheckIcon /><span>{isSaving ? 'Saving…' : together ? 'Confirm watched together' : 'Mark watched'}</span></button></div>
     </section>
   </div>, document.body)
 }

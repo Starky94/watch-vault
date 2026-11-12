@@ -3168,6 +3168,7 @@ test('GET /api/people/:personId returns a server error when TMDB detail refresh 
 test('GET /api/movies/:movieId hydrates a missing movie from TMDB before responding', async () => {
   let movieLookupCount = 0
   let hydrateOptions = null
+  let hydrateCalls = 0
 
   const pool = {
     async query(sql, params) {
@@ -3240,6 +3241,7 @@ test('GET /api/movies/:movieId hydrates a missing movie from TMDB before respond
       tmdbBaseUrl: 'https://example.test',
     }),
     hydrateMovie: async (_pool, options) => {
+      hydrateCalls++
       hydrateOptions = options
     },
   })
@@ -3261,6 +3263,10 @@ test('GET /api/movies/:movieId hydrates a missing movie from TMDB before respond
     assert.equal(payload.movie.title, 'Hydrated Movie')
     assert.equal(payload.movie.runtime, '2h 20m')
     assert.equal(payload.movie.director?.name, 'Denis Villeneuve')
+    const reopened = await fetch(`http://127.0.0.1:${address.port}/api/movies/404`)
+    assert.equal(reopened.status, 200)
+    assert.equal((await reopened.json()).movie.title, 'Hydrated Movie')
+    assert.equal(hydrateCalls, 1)
   } finally {
     await new Promise((resolve, reject) => {
       server.close((error) => {
@@ -6081,5 +6087,41 @@ test('GET all TV shows validates filters, returns genres, and protects watched e
     const genres = await fetch(`${base}/genres`)
     assert.equal(genres.status, 200)
     assert.deepEqual((await genres.json()).genres, [{ id: 10765, name: 'Sci-Fi & Fantasy' }])
+  } finally { await closeServer(server) }
+})
+
+test('GET /api/movies/trending serves ordered TMDB previews without catalog queries or hydration', async () => {
+  let queries = 0
+  let hydrationCalls = 0
+  let fetchCalls = 0
+  const pool = { async query(sql) {
+    queries++
+    if (isSchemaSetupQuery(sql)) return { rows: [], rowCount: 0 }
+    throw new Error(`Unexpected query: ${sql}`)
+  } }
+  const app = await createApp(pool, {
+    loadRuntimeConfig: () => ({ tmdbBearerToken: 'token', tmdbBaseUrl: 'https://tmdb.test/3' }),
+    hydrateMovie: async () => { hydrationCalls++ },
+    fetchImpl: async (url) => {
+      fetchCalls++
+      assert.equal(String(url), 'https://tmdb.test/3/trending/movie/day')
+      return { ok: true, json: async () => ({ results: [
+        { id: 900, title: 'Trending first', popularity: 1 },
+        { id: 100, title: 'Trending second', popularity: 99 },
+      ] }) }
+    },
+  })
+  const startupQueries = queries
+  const server = app.listen(0)
+  try {
+    const url = `http://127.0.0.1:${server.address().port}/api/movies/trending`
+    for (let i = 0; i < 2; i++) {
+      const response = await fetch(url)
+      assert.equal(response.status, 200)
+      assert.deepEqual((await response.json()).movies.map((movie) => movie.tmdb_id), [900, 100])
+    }
+    assert.equal(fetchCalls, 1)
+    assert.equal(hydrationCalls, 0)
+    assert.equal(queries, startupQueries)
   } finally { await closeServer(server) }
 })

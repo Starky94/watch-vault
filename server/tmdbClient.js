@@ -89,8 +89,8 @@ export async function fetchUpcomingMoviesPage(fetchImpl, options) {
   })
 }
 
-export async function fetchTrendingMedia(fetchImpl, { token, baseUrl, mediaType }) {
-  return tmdbRequest(fetchImpl, { token, baseUrl, path: `trending/${mediaType}/week`, timeoutMs: 15000 })
+export async function fetchTrendingMedia(fetchImpl, { token, baseUrl, mediaType, timeWindow = 'week' }) {
+  return tmdbRequest(fetchImpl, { token, baseUrl, path: `trending/${mediaType}/${timeWindow}`, timeoutMs: 15000 })
 }
 
 export async function fetchPopularMoviesPage(fetchImpl, options) {

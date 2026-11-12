@@ -152,25 +152,25 @@ function HomeWatchlistSection({ data, actions, ui }: HomeProps) {
   )
 }
 
-function TrendingMoviesSection({ data, actions, ui }: HomeProps) {
+export function TrendingMoviesSection({ data, actions, ui }: HomeProps) {
   const { ContentSection, SectionMessage, RatingCard } = ui
-  const { popularMoviesState, watchlistMovieIds, watchedMovieIds, trendingMovies } = data
-  const { onOpenMovie, onOpenPopularMovies, onToggleMovieWatchlist, onToggleMovieWatched } = actions
+  const { trendingMoviesState, trendingMovies } = data
+  const { onOpenMovie, onOpenPopularMovies } = actions
   return (
     <ContentSection title="Trending Now" action="See all" onAction={onOpenPopularMovies} compact className="home-tertiary-section">
-      {popularMoviesState.status === 'loading' || popularMoviesState.status === 'idle' ? (
-        <SectionMessage message="Loading trending movies from your local database..." />
+      {trendingMoviesState.status === 'loading' || trendingMoviesState.status === 'idle' ? (
+        <SectionMessage message="Loading today’s trending movies from TMDB..." />
       ) : null}
-      {popularMoviesState.status === 'error' ? (
-        <SectionMessage message={`Could not load trending movies. ${popularMoviesState.error}`} tone="error" />
+      {trendingMoviesState.status === 'error' ? (
+        <SectionMessage message={`Could not load trending movies. ${trendingMoviesState.error}`} tone="error" />
       ) : null}
-      {popularMoviesState.status === 'success' && trendingMovies.length === 0 ? (
-        <SectionMessage message="No trending movies are available in the local database yet." />
+      {trendingMoviesState.status === 'success' && trendingMovies.length === 0 ? (
+        <SectionMessage message="No trending movies are available from TMDB right now." />
       ) : null}
       {trendingMovies.length > 0 ? (
         <div className="home-tertiary-rail" aria-label="Trending movies">
           {trendingMovies.map((item) => (
-            <RatingCard key={item.id} item={item} onOpenMovie={onOpenMovie} isInWatchlist={watchlistMovieIds.has(Number(item.id))} isWatched={watchedMovieIds.has(Number(item.id))} onToggleWatchlist={onToggleMovieWatchlist} onToggleWatched={onToggleMovieWatched} />
+            <RatingCard key={item.id} item={item} onOpenMovie={onOpenMovie} />
           ))}
         </div>
       ) : null}

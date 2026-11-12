@@ -9382,3 +9382,51 @@ html[data-theme='christmas'] .christmas-next-up-gifts {
 .movie-catalog-checkbox { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 6px; }
 .movie-catalog-checkbox input { accent-color: #a883ff; }
 .movie-catalog-checkbox span { grid-column: 2; color: var(--text-muted); font-size: .72rem; }
+
+.watch-audience-field {
+  border: 0;
+  padding: 0;
+  margin: 20px 0;
+  min-width: 0;
+}
+.watch-audience-field legend { margin-bottom: 10px; font-weight: 600; }
+.watch-audience-options { display: flex; flex-wrap: wrap; gap: 10px; }
+.watch-audience-options .movie-rating-option { flex: 1 1 140px; }
+.watch-together-pending { margin: 24px 0; }
+.tv-detail-episode-actions .tv-together-button {
+  white-space: normal;
+  height: auto;
+  min-height: 36px;
+  max-width: 190px;
+  padding: 8px 12px;
+  font-size: 12px;
+}
+.watch-together-completed { color: #a5e2ba; font-size: 12px; align-self: center; }
+.watch-together-eligibility-note { color: var(--text-secondary); font-size: 13px; margin: 0 0 16px; }
+
+.watch-service-dialog .movie-rating-dialog-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.watch-service-dialog .movie-rating-dialog-actions > button {
+  min-width: 0;
+  height: auto;
+  min-height: 46px;
+  padding: 12px 14px;
+  justify-content: center;
+  font-size: .95rem;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+.watch-service-dialog .movie-rating-dialog-actions > .primary-button {
+  grid-column: 1 / -1;
+}
+.watch-service-dialog .movie-rating-dialog-actions > button > span {
+  min-width: 0;
+  font: inherit;
+}
+.watch-service-dialog .movie-rating-dialog-actions > button > svg {
+  flex-shrink: 0;
+}

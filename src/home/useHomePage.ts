@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { createHomeQueue, selectHomeWatchlistItems, selectNextUpItems, selectTonightPick } from './homeSelectors.ts'
 import { loadCollection } from '../collectionLoader.js'
-import type { HomeActions, HomeInputData, HomeMovie, HomeUser, HomeViewData, LatestEpisodeApi, LatestEpisodesState, MovieRowApi, FeaturedMovieApi, PopularMoviesState } from './homeTypes.ts'
+import type { HomeActions, HomeInputData, HomeMovie, HomeUser, HomeViewData, LatestEpisodeApi, LatestEpisodesState, MovieRowApi, FeaturedMovieApi, PopularMoviesState, TrendingMoviesState } from './homeTypes.ts'
 
 const emptyLatestEpisodes: LatestEpisodesState = {
   status: 'idle',
@@ -9,6 +9,8 @@ const emptyLatestEpisodes: LatestEpisodesState = {
   pagination: { page: 1, pageSize: 30, hasNextPage: false, hasPreviousPage: false },
   error: '',
 }
+
+const emptyTrendingMovies: TrendingMoviesState = { status: 'idle', movies: [], error: '' }
 
 const emptyPopularMovies: PopularMoviesState = { status: 'idle', movies: [], featuredMovie: null, error: '' }
 
@@ -48,6 +50,7 @@ export function useHomePage({ enabled, user, data, actions, mapMovie, mapFeature
   pageSize: number
 }): { data: HomeViewData; actions: HomeActions } {
   const [latestEpisodesState, setLatestEpisodesState] = useState<LatestEpisodesState>(emptyLatestEpisodes)
+  const [trendingMoviesState, setTrendingMoviesState] = useState<TrendingMoviesState>(emptyTrendingMovies)
   const [popularMoviesState, setPopularMoviesState] = useState<PopularMoviesState>(emptyPopularMovies)
 
   useEffect(() => {
@@ -71,10 +74,20 @@ export function useHomePage({ enabled, user, data, actions, mapMovie, mapFeature
     })
   }, [enabled])
 
+  useEffect(() => {
+    if (!enabled) return
+    return loadCollection<MovieRowApi, TrendingMoviesState>({
+      url: '/api/movies/trending',
+      setState: setTrendingMoviesState, loadingState: { ...emptyTrendingMovies, status: 'loading' },
+      itemsKey: 'movies', mapItem: mapMovie,
+      errorMessage: 'Unable to load trending movies right now.',
+    })
+  }, [enabled, mapMovie])
+
   const homeQueue = createHomeQueue({ ...data, popularMoviesState })
   const homeWatchlistItems = selectHomeWatchlistItems(homeQueue)
   const nextUpItems = selectNextUpItems(homeQueue)
-  const trendingMovies: HomeMovie[] = popularMoviesState.movies.slice(0, 5).map((movie) => ({ ...movie, kind: 'movie' }))
+  const trendingMovies: HomeMovie[] = trendingMoviesState.movies.slice(0, 5).map((movie) => ({ ...movie, kind: 'movie' }))
   const tonightPick = selectTonightPick(homeQueue, user)
   function openTonightPick() {
     if (!tonightPick) actions.onOpenDiscover()
@@ -83,7 +96,7 @@ export function useHomePage({ enabled, user, data, actions, mapMovie, mapFeature
   }
 
   return {
-    data: { ...data, user, popularMoviesState, latestEpisodesState, homeWatchlistItems, nextUpItems, trendingMovies, tonightPick },
+    data: { ...data, user, popularMoviesState, trendingMoviesState, latestEpisodesState, homeWatchlistItems, nextUpItems, trendingMovies, tonightPick },
     actions: { ...actions, openTonightPick },
   }
 }
