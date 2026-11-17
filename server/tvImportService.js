@@ -9,7 +9,7 @@ import {
   fetchTvSeason,
   fetchTvVideos,
 } from './tmdbClient.js'
-import { ensureMoviesTable, ensureTvDetailTables, listKnownTvGenreIds, replaceTvDetailRelations, upsertTvGenres, upsertTvShows } from './database.js'
+import { ensureMoviesTable, ensureTvDetailTables, getTvSeasonEpisodeCounts, listKnownTvGenreIds, replaceTvDetailRelations, saveRefreshedTvSeasons, upsertTvGenres, upsertTvShows } from './database.js'
 
 export function normalizeTvShow(show, index) {
   return {
@@ -333,6 +333,45 @@ export async function importOnTheAirTvShows(pool, options) {
   }
 }
 
+function regularTvSeasons(seasons) {
+  return (Array.isArray(seasons) ? seasons : [])
+    .filter((season) => Number.isInteger(season?.season_number) && season.season_number > 0)
+}
+
+export async function shouldRefreshTvSeasons(pool, show) {
+  const status = show.detail_payload?.status ?? show.raw_payload?.status
+  const normalizedStatus = typeof status === 'string' ? status.trim().toLowerCase() : ''
+  if (!['ended', 'canceled', 'cancelled'].includes(normalizedStatus)) return true
+
+  // A catalog import can advertise the final episodes before the season rows are synced.
+  const seasons = regularTvSeasons(show.detail_payload?.seasons ?? show.raw_payload?.seasons)
+  if (seasons.length === 0) return false
+  const storedCounts = await getTvSeasonEpisodeCounts(pool, show.id)
+  return seasons.some(({ season_number, episode_count }) =>
+    !storedCounts.has(season_number) || storedCounts.get(season_number) < episode_count
+  )
+}
+
+async function fetchRegularTvSeasons(fetchImpl, options, seasons) {
+  return Promise.all(regularTvSeasons(seasons).map(async ({ season_number: seasonNumber }) => {
+    const payload = await fetchTvSeason(fetchImpl, { ...options, seasonNumber })
+    if (payload?.season_number !== seasonNumber || !Array.isArray(payload.episodes)) {
+      throw new Error(`Invalid TMDB season ${seasonNumber} for TV show ${options.tvShowId}`)
+    }
+    return normalizeTvSeason(payload)
+  }))
+}
+
+export async function refreshTvShowSeasons(pool, { fetchImpl = fetch, token, baseUrl, tvShowId }) {
+  const options = { token, baseUrl, tvShowId }
+  const detailPayload = await fetchTvDetails(fetchImpl, options)
+  if (detailPayload?.id !== tvShowId || !Array.isArray(detailPayload.seasons)) {
+    throw new Error(`Invalid TMDB details for TV show ${tvShowId}`)
+  }
+  const seasons = await fetchRegularTvSeasons(fetchImpl, options, detailPayload.seasons)
+  await saveRefreshedTvSeasons(pool, tvShowId, { detailPayload: sanitizeTvDetailPayload(detailPayload), seasons })
+}
+
 export async function hydrateTvShowByTmdbId(pool, options) {
   const { fetchImpl = fetch, token, baseUrl, tvShowId, importRank = 1 } = options
 
@@ -360,11 +399,7 @@ export async function hydrateTvShowByTmdbId(pool, options) {
     fetchTvVideos(fetchImpl, { token, baseUrl, tvShowId }),
     fetchTvRecommendations(fetchImpl, { token, baseUrl, tvShowId }),
   ])
-  const seasons = await Promise.all(
-    (Array.isArray(detailPayload?.seasons) ? detailPayload.seasons : [])
-      .filter((season) => Number.isInteger(season?.season_number) && season.season_number > 0)
-      .map(async (season) => normalizeTvSeason(await fetchTvSeason(fetchImpl, { token, baseUrl, tvShowId, seasonNumber: season.season_number })))
-  )
+  const seasons = await fetchRegularTvSeasons(fetchImpl, { token, baseUrl, tvShowId }, detailPayload?.seasons)
   await replaceTvDetailRelations(pool, tvShowId, {
     seasons,
     credits: normalizeTvCredits(creditsPayload),

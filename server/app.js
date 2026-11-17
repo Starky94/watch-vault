@@ -202,7 +202,7 @@ import { adminJobs, findAdminJob, listAdminJobs } from './adminJobs.js'
 import { discoverMoviesByKeyword, discoverTitles, fetchMovieReviews, fetchMovieVideos, fetchPersonCombinedCredits, fetchPersonDetails, fetchTvReviews, fetchTvVideos, searchMovieKeywords, searchMovies as searchTmdbMovies, searchPeople, searchTvShows as searchTmdbTvShows } from './tmdbClient.js'
 import { hydrateMovieByTmdbId } from './movieImportService.js'
 import { hydrateGameByIgdbId } from './gameImportService.js'
-import { hydrateTvShowByTmdbId } from './tvImportService.js'
+import { hydrateTvShowByTmdbId, refreshTvShowSeasons, shouldRefreshTvSeasons } from './tvImportService.js'
 import { normalizeBook, sanitizeBookDescription } from './bookImportService.js'
 import { fetchBookById, fetchRelatedBooksByCategory, searchBooksByTitle } from './googleBooksClient.js'
 import { buildFilelistSearchUrl, buildFilelistTvEpisodeQuery, decryptFilelistValue, encryptFilelistValue, mapFilelistResults } from './filelist.js'
@@ -278,6 +278,23 @@ export async function createApp(pool, options = {}) {
   } = options
 
   const loadTrendingMovies = createTrendingMovieFeed({ fetchImpl, loadRuntimeConfig })
+  const tvSeasonRefreshes = new Map()
+
+  function refreshStoredTvShow(show) {
+    const tvShowId = show.tmdb_id
+    const pending = tvSeasonRefreshes.get(tvShowId)
+    if (pending) return pending
+
+    const refresh = (async () => {
+      if (!await shouldRefreshTvSeasons(pool, show)) return
+      const config = loadRuntimeConfig()
+      await refreshTvShowSeasons(pool, { fetchImpl, token: config.tmdbBearerToken, baseUrl: config.tmdbBaseUrl, tvShowId })
+    })().catch((error) => recordErrorSafely(pool, { source: 'api', context: `GET /api/tv/${tvShowId} season refresh`, error }))
+      .finally(() => tvSeasonRefreshes.delete(tvShowId))
+
+    tvSeasonRefreshes.set(tvShowId, refresh)
+    return refresh
+  }
 
   async function hydrateMissingMovie(movieId) {
     const config = loadRuntimeConfig()
@@ -2790,10 +2807,12 @@ export async function createApp(pool, options = {}) {
     if (!Number.isInteger(showId)) return response.status(400).json({ error: `Invalid TV show id: ${request.params.showId}` })
     try {
       await ensureTvDetailTables(pool)
-      let show = await getTvShowByTmdbId(pool, showId)
+      const show = await getTvShowByTmdbId(pool, showId)
       if (!show?.detail_hydrated_at) {
         const config = loadRuntimeConfig()
-        await hydrateTvShow(pool, { token: config.tmdbBearerToken, baseUrl: config.tmdbBaseUrl, tvShowId: showId, importRank: show?.import_rank ?? 1 })
+        await hydrateTvShow(pool, { token: config.tmdbBearerToken, baseUrl: config.tmdbBaseUrl, tvShowId: show?.tmdb_id ?? showId, importRank: show?.import_rank ?? 1 })
+      } else {
+        await refreshStoredTvShow(show)
       }
       const user = await getAuthenticatedUser(pool, request)
       const detail = await getTvDetailForUser(pool, { showId, username: user?.username ?? null })

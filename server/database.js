@@ -5376,6 +5376,36 @@ export async function getFilelistTvEpisodeTargetForUser(pool, { showId, username
   return nextEpisode ? { status: 'ok', show, episode: nextEpisode } : { status: 'caught_up', show }
 }
 
+export async function getTvSeasonEpisodeCounts(pool, showId) {
+  const result = await pool.query(
+    `SELECT s.season_number, COUNT(e.id)::INTEGER AS episode_count
+     FROM tv_seasons s
+     LEFT JOIN tv_episodes e ON e.tv_season_id = s.id
+     WHERE s.tv_show_id = $1 AND s.season_number > 0
+     GROUP BY s.season_number`,
+    [showId]
+  )
+  return new Map(result.rows.map(({ season_number, episode_count }) => [season_number, episode_count]))
+}
+
+export async function saveRefreshedTvSeasons(pool, tmdbId, { detailPayload, seasons }) {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const result = await client.query('SELECT id FROM tv_shows WHERE tmdb_id = $1 FOR UPDATE', [tmdbId])
+    const showId = result.rows[0]?.id
+    if (!showId) throw new Error(`TV show ${tmdbId} is missing during refresh`)
+    await upsertTvSeasons(client, showId, seasons)
+    await client.query('UPDATE tv_shows SET detail_payload = $2::jsonb, detail_hydrated_at = NOW() WHERE id = $1', [showId, JSON.stringify(detailPayload)])
+    await client.query('COMMIT')
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally {
+    client.release()
+  }
+}
+
 export async function replaceTvDetailRelations(pool, tmdbId, detail = {}) {
   const client = await pool.connect()
   try {
@@ -5406,29 +5436,33 @@ export async function replaceTvDetailRelations(pool, tmdbId, detail = {}) {
         VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (tv_show_id, provider, video_key) DO UPDATE SET name=EXCLUDED.name, site=EXCLUDED.site, video_type=EXCLUDED.video_type, is_official=EXCLUDED.is_official`,
       [showId, trailer.provider, trailer.key, trailer.name, trailer.site, trailer.type ?? null, Boolean(trailer.official)])
     }
-    for (const season of detail.seasons ?? []) {
-      if (!Number.isInteger(season.seasonNumber)) continue
-      const seasonResult = await client.query(`INSERT INTO tv_seasons (tv_show_id, tmdb_id, season_number, name, overview, air_date, poster_path, episode_count, raw_payload, updated_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,NOW()) ON CONFLICT (tv_show_id, season_number) DO UPDATE SET
-        tmdb_id=EXCLUDED.tmdb_id, name=EXCLUDED.name, overview=EXCLUDED.overview, air_date=EXCLUDED.air_date, poster_path=EXCLUDED.poster_path, episode_count=EXCLUDED.episode_count, raw_payload=EXCLUDED.raw_payload, updated_at=NOW() RETURNING id`,
-      [showId, season.tmdbId ?? null, season.seasonNumber, season.name || `Season ${season.seasonNumber}`, season.overview ?? null, season.airDate ?? null, season.posterPath ?? null, season.episodeCount ?? 0, JSON.stringify(season.rawPayload ?? {})])
-      const seasonId = seasonResult.rows[0].id
-      if (Array.isArray(season.episodes)) {
-        for (const episode of season.episodes) {
-          if (!Number.isInteger(episode.episodeNumber)) continue
-          await client.query(`INSERT INTO tv_episodes (tv_season_id, tmdb_id, episode_number, name, overview, air_date, runtime_minutes, still_path, raw_payload, updated_at)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,NOW())
-            ON CONFLICT (tv_season_id, episode_number) DO UPDATE SET
-              tmdb_id=EXCLUDED.tmdb_id, name=EXCLUDED.name, overview=EXCLUDED.overview,
-              air_date=EXCLUDED.air_date, runtime_minutes=EXCLUDED.runtime_minutes,
-              still_path=EXCLUDED.still_path, raw_payload=EXCLUDED.raw_payload, updated_at=NOW()`,
-          [seasonId, episode.tmdbId ?? null, episode.episodeNumber, episode.name || `Episode ${episode.episodeNumber}`, episode.overview ?? null, episode.airDate ?? null, episode.runtimeMinutes ?? null, episode.stillPath ?? null, JSON.stringify(episode.rawPayload ?? {})])
-        }
-      }
-    }
+    await upsertTvSeasons(client, showId, detail.seasons ?? [])
     await client.query('UPDATE tv_shows SET detail_hydrated_at=NOW() WHERE id=$1', [showId])
     await client.query('COMMIT')
   } catch (error) { await client.query('ROLLBACK'); throw error } finally { client.release() }
+}
+
+async function upsertTvSeasons(client, showId, seasons) {
+  for (const season of seasons) {
+    if (!Number.isInteger(season.seasonNumber)) continue
+    const seasonResult = await client.query(`INSERT INTO tv_seasons (tv_show_id, tmdb_id, season_number, name, overview, air_date, poster_path, episode_count, raw_payload, updated_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,NOW()) ON CONFLICT (tv_show_id, season_number) DO UPDATE SET
+      tmdb_id=EXCLUDED.tmdb_id, name=EXCLUDED.name, overview=EXCLUDED.overview, air_date=EXCLUDED.air_date, poster_path=EXCLUDED.poster_path, episode_count=EXCLUDED.episode_count, raw_payload=EXCLUDED.raw_payload, updated_at=NOW() RETURNING id`,
+    [showId, season.tmdbId ?? null, season.seasonNumber, season.name || `Season ${season.seasonNumber}`, season.overview ?? null, season.airDate ?? null, season.posterPath ?? null, season.episodeCount ?? 0, JSON.stringify(season.rawPayload ?? {})])
+    const seasonId = seasonResult.rows[0].id
+    if (Array.isArray(season.episodes)) {
+      for (const episode of season.episodes) {
+        if (!Number.isInteger(episode.episodeNumber)) continue
+        await client.query(`INSERT INTO tv_episodes (tv_season_id, tmdb_id, episode_number, name, overview, air_date, runtime_minutes, still_path, raw_payload, updated_at)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,NOW())
+          ON CONFLICT (tv_season_id, episode_number) DO UPDATE SET
+            tmdb_id=EXCLUDED.tmdb_id, name=EXCLUDED.name, overview=EXCLUDED.overview,
+            air_date=EXCLUDED.air_date, runtime_minutes=EXCLUDED.runtime_minutes,
+            still_path=EXCLUDED.still_path, raw_payload=EXCLUDED.raw_payload, updated_at=NOW()`,
+        [seasonId, episode.tmdbId ?? null, episode.episodeNumber, episode.name || `Episode ${episode.episodeNumber}`, episode.overview ?? null, episode.airDate ?? null, episode.runtimeMinutes ?? null, episode.stillPath ?? null, JSON.stringify(episode.rawPayload ?? {})])
+      }
+    }
+  }
 }
 
 export async function getTvDetailForUser(pool, { showId, username = null }) {

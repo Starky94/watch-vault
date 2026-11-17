@@ -360,6 +360,87 @@ test('TV completion and stop/resume watching against PostgreSQL', { skip: !conne
     assert.equal((await pool.query('SELECT 1 FROM watched_tv_episodes WHERE user_id = $1 AND tv_episode_id = $2', [alice, item.episodeIds[1]])).rowCount, 0)
   })
 
+  await t.test('TV detail syncs seasons on open and serves saved detail when the sync fails', async (t) => {
+    const item = await show({ status: 'Returning Series', episodes: 1 })
+    await pool.query('UPDATE tv_shows SET detail_hydrated_at = NOW() WHERE id = $1', [item.id])
+    await upsertTvEpisodeRatingForUser(pool, { username: 'alice', episodeId: item.episodeIds[0], score: 4 })
+
+    const showPath = `/3/tv/${item.tmdb_id}`
+    const calls = []
+    let status = 'Returning Series'
+    let seasonTwoEpisodes = 1
+    let failTmdb = false
+    let failWrite = false
+    const app = await createApp(pool, {
+      loadRuntimeConfig: () => ({ tmdbBearerToken: 'token', tmdbBaseUrl: 'https://example.test/3' }),
+      fetchImpl: async ({ pathname }) => {
+        calls.push(pathname)
+        if (pathname === showPath) {
+          return Response.json({ id: item.tmdb_id, status, seasons: [
+            { season_number: 0, episode_count: 1 },
+            { season_number: 1, episode_count: 2 },
+            { season_number: 2, episode_count: seasonTwoEpisodes },
+          ] })
+        }
+        if (pathname === `${showPath}/season/1`) {
+          return Response.json({ season_number: 1, episodes: [
+            { id: 11, episode_number: 1, name: failWrite ? 'Uncommitted change' : 'Pilot' },
+            { id: 12, episode_number: 2, name: 'Second episode' },
+          ] })
+        }
+        assert.equal(pathname, `${showPath}/season/2`)
+        if (failTmdb) return new Response('Unavailable', { status: 503 })
+        return Response.json({ season_number: 2, episodes: Array.from({ length: seasonTwoEpisodes }, (_, index) => ({
+          id: 21 + index, episode_number: index + 1, air_date: failWrite ? 'invalid' : '2026-06-01',
+        })) })
+      },
+    })
+    const server = app.listen(0, '127.0.0.1')
+    t.after(() => new Promise((resolve) => server.close(resolve)))
+    await new Promise((resolve) => server.once('listening', resolve))
+    async function openShow(username = 'alice') {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}/api/tv/${item.tmdb_id}`, { headers: { Cookie: sessionCookieFor(username) } })
+      const payload = await response.json()
+      assert.equal(response.status, 200, payload.error)
+      return payload.show
+    }
+
+    const [refreshed, bobDetail] = await Promise.all([openShow(), openShow('bob')])
+    assert.deepEqual(calls, [showPath, `${showPath}/season/1`, `${showPath}/season/2`])
+    assert.deepEqual(refreshed.seasons.map(({ seasonNumber, episodes }) => [seasonNumber, episodes.length]), [[1, 2], [2, 1]])
+    assert.equal(String(refreshed.seasons[0].id), item.seasonId)
+    const [pilot] = refreshed.seasons[0].episodes
+    assert.equal(String(pilot.id), item.episodeIds[0])
+    assert.equal(pilot.watched, true)
+    assert.equal(pilot.yourScore, 4)
+    assert.equal(bobDetail.seasons[0].episodes[0].watched, false)
+    assert.equal(bobDetail.seasons[0].episodes[0].yourScore, null)
+
+    status = 'Ended'
+    seasonTwoEpisodes = 2
+    failTmdb = true
+    assert.deepEqual(await openShow(), refreshed)
+    failTmdb = false
+    failWrite = true
+    assert.deepEqual(await openShow(), refreshed)
+    const errors = await pool.query('SELECT message FROM error_logs WHERE context = $1 ORDER BY id', [`GET /api/tv/${item.tmdb_id} season refresh`])
+    assert.match(errors.rows[0].message, /503/)
+    assert.match(errors.rows[1].message, /invalid input syntax for type date/)
+
+    failWrite = false
+    // Simulate a catalog import that learns about the finale before the episode rows do.
+    await pool.query('UPDATE tv_shows SET detail_payload = $2 WHERE id = $1', [item.id, { status, seasons: [{ season_number: 2, episode_count: 2 }] }])
+    const ended = await openShow()
+    assert.equal(ended.status, 'Ended')
+    assert.equal(ended.seasons[1].episodes.length, 2)
+    assert.equal(calls.filter((path) => path === showPath).length, 4)
+    assert.deepEqual(await openShow(), ended)
+
+    await pool.query(`UPDATE tv_shows SET detail_payload = detail_payload - 'status', raw_payload = '{"status":"Canceled"}' WHERE id = $1`, [item.id])
+    await openShow()
+    assert.equal(calls.filter((path) => path === showPath).length, 4)
+  })
+
   await t.test('watching-status endpoint validates input, authenticates, and persists returned detail state', async () => {
     const app = await createApp(pool)
     const server = app.listen(0, '127.0.0.1')

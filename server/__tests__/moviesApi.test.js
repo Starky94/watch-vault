@@ -5190,7 +5190,7 @@ test('GET /api/tv/:showId hydrates summary-only records once before returning de
     detail_payload: { number_of_seasons: 1 },
     import_rank: 5,
   }
-  const hydratedShow = { ...summaryOnlyShow, detail_hydrated_at: '2026-07-10T12:00:00.000Z' }
+  const hydratedShow = { ...summaryOnlyShow, detail_payload: { ...summaryOnlyShow.detail_payload, status: 'Ended' }, detail_hydrated_at: '2026-07-10T12:00:00.000Z' }
   let showLookupCount = 0
   let hydrationOptions = null
   let hydrationCalls = 0
